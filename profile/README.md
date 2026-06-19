@@ -14,11 +14,9 @@ pipeline to a merged PR. Most tooling secures a single action — the harder,
 unsolved problem is enforcement *between* components, keeping a growing set of
 agent-authored contracts honest against each other.
 
-The flagship is **prx**. Underneath it sits a stack of small,
-single-responsibility capability libraries — each one the single sanctioned
-access point for one kind of system authority (filesystem, network, env,
-subprocess), so every effect stays attributable and every policy stays
-enforceable.
+The flagship is **prx**, built on a stack of small, single-responsibility
+capability libraries — one for each kind of system authority (filesystem,
+network, env, subprocess).
 
 ## Start here
 
