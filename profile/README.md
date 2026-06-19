@@ -8,11 +8,17 @@ you trust what it did" — across many changes, many tools, and many
 agent-authored components that all have to stay consistent as they evolve.
 
 Bounded Systems builds that machinery: software *delivered by agents but
-governed like infrastructure*. Every privileged effect an agent performs is
-verified against its signed owner, and every change moves through one auditable
-pipeline to a merged PR. Most tooling secures a single action — the harder,
-unsolved problem is enforcement *between* components, keeping a growing set of
-agent-authored contracts honest against each other.
+governed like infrastructure*. Agent effects are signed and attributable, and
+every change moves through one content-addressed, auditable pipeline to a
+merged PR. Most tooling secures a single action — the harder, unsolved problem
+is enforcement *between* components, keeping a growing set of agent-authored
+contracts honest against each other.
+
+We hold our own claims to that same bar. Every one on this page is graded
+against the running code — *Enforced*, *Partial*, or *Aspirational* — by an
+instrument built to catch our **own** over-statements and file the gap. Docs
+generate from source and fail CI on drift; guest-room's specs execute against
+its engine. We keep ourselves as honest as we keep the agents.
 
 The flagship is **prx**, built on a stack of small, single-responsibility
 capability libraries — one for each kind of system authority (filesystem,
