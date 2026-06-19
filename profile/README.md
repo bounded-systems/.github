@@ -1,27 +1,49 @@
 # Bounded Systems
 
-**Outward-only, composably-published tooling for agent-run software delivery.**
+**Keeping AI agents honest when they build and ship software.**
 
-We build the machinery for software that is *delivered by agents but governed
-like infrastructure*: every privileged effect an agent performs is verified
-against its signed owner, and every change moves through one auditable pipeline
-to a merged PR. The flagship is **prx**; underneath it sits a stack of small,
-single-responsibility capability libraries published under the
-`@bounded-systems/*` npm scope.
+Agents are increasingly trusted to write and ship real code. The moment you let
+them, the bottleneck stops being "can the agent do the task" and becomes "can
+you trust what it did" — across many changes, many tools, and many
+agent-authored components that all have to stay consistent as they evolve.
+
+Bounded Systems builds that machinery: software *delivered by agents but
+governed like infrastructure*. Every privileged effect an agent performs is
+verified against its signed owner, and every change moves through one auditable
+pipeline to a merged PR. Most tooling secures a single action — the harder,
+unsolved problem is enforcement *between* components, keeping a growing set of
+agent-authored contracts honest against each other.
+
+The flagship is **prx**. Underneath it sits a stack of small,
+single-responsibility capability libraries — each one the single sanctioned
+access point for one kind of system authority (filesystem, network, env,
+subprocess), so every effect stays attributable and every policy stays
+enforceable.
 
 ## Start here
 
-### [`prx`](https://github.com/bounded-systems/prx) · public · TypeScript
+### [`guest-room`](https://github.com/bounded-systems/guest-room) — the model in one library
 
-The agent-run work-unit CLI: capability-scoped agents whose every privileged
-effect is verified against its signed owner, driving a work unit through one
-signed pipeline to a merged PR. This is the front door to everything below —
-the `@bounded-systems/*` libraries live in its monorepo under `packages/`.
+A guest-agnostic capability runtime built on **rooms and doors**. A *door* is a
+single unit of authority: you hold a socket to a brokered service, never the
+keys behind it. A *room* is a named bundle of doors, and authority can only ever
+be narrowed as it is handed onward, never widened. Its behavior specs execute
+against the engine, so the docs cannot drift from the code. Read this to see the
+capability model made physical.
+
+### [`prx`](https://github.com/bounded-systems/prx) — the flagship
+
+The agent-run **work-unit CLI** — a work unit is one scoped task an agent owns
+end-to-end. Capability-scoped agents whose every privileged effect is verified
+against its signed owner, driving each work unit through one signed,
+content-addressed pipeline to a merged PR. The `@bounded-systems/*` libraries
+below live in its monorepo under `packages/`.
 
 ## The `@bounded-systems/*` libraries
 
-Each is a narrow capability seam — one sanctioned access point for one ambient
-authority — so that effects stay attributable and policy stays enforceable.
+Each is a narrow capability seam — the one sanctioned access point for one kind
+of ambient system power — so that effects stay attributable and policy stays
+enforceable.
 
 | Package | What it is |
 |---|---|
@@ -50,6 +72,7 @@ authority — so that effects stay attributable and policy stays enforceable.
 
 - 🌐 [bounded.tools](http://bounded.tools)
 - 📦 [`prx` on GitHub](https://github.com/bounded-systems/prx)
+- 🚪 [`guest-room` on GitHub](https://github.com/bounded-systems/guest-room)
 
-> prx and the libraries are source-available under
+> prx, guest-room, and the libraries are source-available under
 > [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
