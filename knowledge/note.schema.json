@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bounded.tools/schemas/note.schema.json",
+  "title": "Knowledge node frontmatter",
+  "description": "Canonical contract for a knowledge-graph node. scripts/check-knowledge.py reads this file and enforces it, so the schema and the checker cannot drift.",
+  "type": "object",
+  "required": ["id", "type", "status", "sources"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable slug; must equal the filename stem."
+    },
+    "title": { "type": "string" },
+    "type": {
+      "enum": ["concept", "capability", "claim", "decision", "component"]
+    },
+    "status": {
+      "enum": ["Enforced", "Partial", "Aspirational", "Stale"],
+      "description": "Same grade vocabulary prx uses for its own claims."
+    },
+    "last_reviewed": { "type": "string", "format": "date" },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Repo-relative paths (existence-checked) or URLs (not fetched)."
+    },
+    "tracking": {
+      "type": "string",
+      "description": "Required when status is Aspirational: where the gap is tracked."
+    }
+  }
+}
