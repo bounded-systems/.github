@@ -1,5 +1,10 @@
 name: knowledge-check
 
+# No third-party actions: the org allow-list requires SHA-pinned actions
+# (front-desk-add.yml, hardening §4), so this workflow uses only preinstalled
+# git + python3 and pins nothing. The repo is public, so the checkout needs no
+# token — hence permissions: {}.
+
 on:
   pull_request:
     paths:
@@ -12,13 +17,20 @@ on:
       - "knowledge/**"
       - "scripts/check-knowledge.py"
 
+permissions: {}
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
+      - name: Check out the commit under test
+        env:
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          git init -q .
+          git remote add origin "https://github.com/${REPO}.git"
+          git fetch -q --depth 1 origin "${REF}"
+          git checkout -q FETCH_HEAD
       - name: Check knowledge graph consistency
         run: python3 scripts/check-knowledge.py
