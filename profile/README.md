@@ -20,9 +20,10 @@ instrument built to catch our **own** over-statements and file the gap. Docs
 generate from source and fail CI on drift; guest-room's specs execute against
 its engine. We keep ourselves as honest as we keep the agents.
 
-The flagship is **prx**, built on a stack of small, single-responsibility
-capability libraries — one for each kind of system authority (filesystem,
-network, env, subprocess).
+The capability model lives in two codebases: **guest-room** distills it into a
+single, readable library, while **prx** is the flagship that runs it at full
+scale on a stack of small, single-responsibility capability libraries — one for
+each kind of system authority (filesystem, network, env, subprocess).
 
 ## Start here
 
@@ -38,10 +39,10 @@ capability model made physical.
 ### [`prx`](https://github.com/bounded-systems/prx) — the flagship
 
 The agent-run **work-unit CLI** — a work unit is one scoped task an agent owns
-end-to-end. Capability-scoped agents whose every privileged effect is verified
-against its signed owner, driving each work unit through one signed,
-content-addressed pipeline to a merged PR. The `@bounded-systems/*` libraries
-below live in its monorepo under `packages/`.
+end-to-end. Capability-scoped agents whose effects are signed and attributable,
+driving each work unit through one content-addressed, auditable pipeline to a
+merged PR. The `@bounded-systems/*` libraries below live in its monorepo under
+`packages/`.
 
 ## The `@bounded-systems/*` libraries
 
