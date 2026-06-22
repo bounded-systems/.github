@@ -83,6 +83,41 @@ Not every `@bounded-systems/*` package is a capability seam:
 - **[`prx-config`](https://jsr.io/@bounded-systems/prx-config)** — TUI
   configuration schema parser/emitter for the L1/L2 tools.
 
+## The doors & the box
+
+A *door* made real: a brokered capability an agent acts through, holding a socket
+to a service rather than the keys behind it. `claude-box` is the box; its
+authority is exactly the door references it holds.
+
+| Repo | What it is |
+|---|---|
+| [`claude-box`](https://github.com/bounded-systems/claude-box) | A capability-secured box for agent sessions — authority is the door references it holds, parent-agnostic |
+| [`door-kit`](https://github.com/bounded-systems/door-kit) | In-box door-client SDK over the guest-room protocol |
+| [`door-keeper`](https://github.com/bounded-systems/door-keeper) | `keeperd` — the git-signing capability door (pinned OCI image) |
+| [`door-scout`](https://github.com/bounded-systems/door-scout) | `scoutd` — the external-read capability door |
+| [`door-concierge`](https://github.com/bounded-systems/door-concierge) | `concierged` — the capability-introducer door |
+| [`door-net`](https://github.com/bounded-systems/door-net) | `netd` — the allowlist-egress capability door |
+| [`door-peercred`](https://github.com/bounded-systems/door-peercred) | `SO_PEERCRED` launcherd helper (Rust) |
+
+## Provenance & substrate
+
+| Repo | What it is |
+|---|---|
+| [`ocap-provenance`](https://github.com/bounded-systems/ocap-provenance) | Capability-use provenance — a schema + SLSA mapping binding each privileged effect to a signed owner and an auditable chain |
+| [`dev-registry`](https://github.com/bounded-systems/dev-registry) | Local-first, OCI-compatible registry + devcontainer build system, with build traceability |
+| [`facilities`](https://github.com/bounded-systems/facilities) | Nix facilities — shared flakes, devshells, and build substrate |
+
+## Contracts beyond authority — design & semantics
+
+The same discipline — draw a boundary, verify at it, let typed proof flow across —
+applied past *system authority* to what actually ships.
+
+| Repo | What it is |
+|---|---|
+| [`brand`](https://github.com/bounded-systems/brand) | The design system as contracts — W3C tokens + build-time gates (no hardcoded values/copy, complete meta, WCAG-AA contrast) |
+| [`lone`](https://github.com/bounded-systems/lone) | Runtime semantic boundary — an untrusted DOM subtree becomes a typed `Blessed<T>` or a deterministic `Finding[]` |
+| [`site`](https://github.com/bounded-systems/site) | [bounded.tools](https://bounded.tools) — the static site, built on `@bounded-systems/brand` |
+
 ## Links
 
 - 🌐 [bounded.tools](http://bounded.tools)
