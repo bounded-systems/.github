@@ -20,14 +20,14 @@ instrument built to catch our **own** over-statements and file the gap. Docs
 generate from source and fail CI on drift; guest-room's specs execute against
 its engine. We keep ourselves as honest as we keep the agents.
 
-The capability model lives in two codebases: **guest-room** distills it into a
-single, readable library, while **prx** is the flagship that runs it at full
-scale on a stack of small, single-responsibility capability libraries — one for
-each kind of system authority (filesystem, network, env, subprocess).
+The capability model lives in two codebases: **guest-room** is the flagship —
+the model as a single, readable, spec-tested library — and **prx** runs it at
+full scale on a stack of small, single-responsibility capability libraries, one
+for each kind of system authority (filesystem, network, env, subprocess).
 
 ## Start here
 
-### [`guest-room`](https://github.com/bounded-systems/guest-room) — the model in one library
+### [`guest-room`](https://github.com/bounded-systems/guest-room) — the flagship: the model in one library
 
 A guest-agnostic capability runtime built on **rooms and doors**. A *door* is a
 single unit of authority: you hold a socket to a brokered service, never the
@@ -36,7 +36,7 @@ be narrowed as it is handed onward, never widened. Its behavior specs execute
 against the engine, so the docs cannot drift from the code. Read this to see the
 capability model made physical.
 
-### [`prx`](https://github.com/bounded-systems/prx) — the flagship
+### [`prx`](https://github.com/bounded-systems/prx) — the model, at full scale
 
 The agent-run **work-unit CLI** — a work unit is one scoped task an agent owns
 end-to-end. Capability-scoped agents — git-writes signed and attributable to their owner —
