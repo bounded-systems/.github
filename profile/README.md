@@ -50,28 +50,31 @@ Each is a narrow capability seam — the one sanctioned access point for one kin
 of ambient system power — so that effects stay attributable and policy stays
 enforceable.
 
-| Package | What it is |
-|---|---|
-| `anchored-chain` | Derivation chain with contract validation, signing, lineage tracking, and invalidation |
-| `anchored-chain-sqlite` | SQLite/Drizzle-backed implementation of the anchored-chain stores |
-| `audit-context` | Ambient runtime context for gh-call audit attribution |
-| `auth` | Service-credential resolver (GitHub, Notion) through a single sanctioned access point |
-| `bd` | Typed interface to the beads CLI with policy enforcement |
-| `cas` | Content-addressable storage: bytes addressed by their SHA-256 digest |
-| `disposition` | Pure classifier mapping work-unit state to a disposition (ok/prune/repair/review) |
-| `env` | The one sanctioned reader of `process.env` |
-| `fs` | Filesystem capability seam — the one allowed filesystem-access point |
-| `gh` | GitHub CLI wrapper with policy enforcement and budget audit logging |
-| `git` | Git CLI wrapper with policy enforcement and stale-lock recovery |
-| `github-budget` | Rate-limit-aware gh wrapper with bucket classification and audit trail |
-| `host` | The one sanctioned reader of host/OS ambient state |
-| `machine-schema` | Brands, handoff envelope, and state/phase primitives for work-unit machines |
-| `policy` | Tool-policy engine enforcing subcommand allowlists by tool, state, and role |
-| `proc` | The one allowed subprocess spawn point |
-| `repo-root` | Repo-root resolution capability |
-| `scout` | Content-addressed surface reads with anchored-chain provenance |
-| `slack` | Policy-gated, provenance-tracked Slack read surface |
-| `surface-sync` | Type ontology for work-unit change-detection across GH/branch/worktree/tmux/beads |
+| Package | What it is | JSR |
+|---|---|---|
+| `anchored-chain` | Derivation chain with contract validation, signing, lineage tracking, and invalidation | ✓ |
+| `anchored-chain-sqlite` | SQLite/Drizzle-backed implementation of the anchored-chain stores | ✓ |
+| `audit-context` | Ambient runtime context for gh-call audit attribution | ✓ |
+| `auth` | Service-credential resolver (GitHub, Notion) through a single sanctioned access point | ✓ |
+| `bd` | Typed interface to the beads CLI with policy enforcement | — |
+| `cas` | Content-addressable storage: bytes addressed by their SHA-256 digest | ✓ |
+| `disposition` | Pure classifier mapping work-unit state to a disposition (ok/prune/repair/review) | ✓ |
+| `env` | The one sanctioned reader of `process.env` | ✓ |
+| `fs` | Filesystem capability seam — the one allowed filesystem-access point | — |
+| `gh` | GitHub CLI wrapper with policy enforcement and budget audit logging | — |
+| `git` | Git CLI wrapper with policy enforcement and stale-lock recovery | — |
+| `github-budget` | Rate-limit-aware gh wrapper with bucket classification and audit trail | — |
+| `host` | The one sanctioned reader of host/OS ambient state | ✓ |
+| `machine-schema` | Brands, handoff envelope, and state/phase primitives for work-unit machines | ✓ |
+| `policy` | Tool-policy engine enforcing subcommand allowlists by tool, state, and role | — |
+| `proc` | The one allowed subprocess spawn point | — |
+| `repo-root` | Repo-root resolution capability | — |
+| `scout` | Content-addressed surface reads with anchored-chain provenance | ✓ |
+| `slack` | Policy-gated, provenance-tracked Slack read surface | — |
+| `surface-sync` | Type ontology for work-unit change-detection across GH/branch/worktree/tmux/beads | ✓ |
+
+> **`✓`** = on JSR today; **`—`** = not yet published. `verbspec` and
+> `prx-config` are also on JSR — libraries, not capability seams.
 
 ## Links
 
