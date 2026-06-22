@@ -8,7 +8,7 @@ you trust what it did" — across many changes, many tools, and many
 agent-authored components that all have to stay consistent as they evolve.
 
 Bounded Systems builds that machinery: software *delivered by agents but
-governed like infrastructure*. Agent effects are signed and attributable, and
+governed like infrastructure*. An agent's git-writes are signed and attributable to their owner today — egress and external reads next — and
 every change moves through one content-addressed, auditable pipeline to a
 merged PR. Most tooling secures a single action — the harder, unsolved problem
 is enforcement *between* components, keeping a growing set of agent-authored
@@ -39,7 +39,7 @@ capability model made physical.
 ### [`prx`](https://github.com/bounded-systems/prx) — the flagship
 
 The agent-run **work-unit CLI** — a work unit is one scoped task an agent owns
-end-to-end. Capability-scoped agents whose effects are signed and attributable,
+end-to-end. Capability-scoped agents — git-writes signed and attributable to their owner —
 driving each work unit through one content-addressed, auditable pipeline to a
 merged PR. The `@bounded-systems/*` libraries below live in its monorepo under
 `packages/`.
