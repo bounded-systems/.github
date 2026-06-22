@@ -73,6 +73,16 @@ enforceable.
 | `slack` | Policy-gated, provenance-tracked Slack read surface |
 | `surface-sync` | Type ontology for work-unit change-detection across GH/branch/worktree/tmux/beads |
 
+## Beyond the seams
+
+Not every `@bounded-systems/*` package is a capability seam:
+
+- **[`verbspec`](https://jsr.io/@bounded-systems/verbspec)** — spec-driven CLI
+  core: author a verb once as a typed `VerbSpec`, then project it to CLI, MCP,
+  OpenAPI, and Anthropic tool surfaces. One source, many surfaces.
+- **[`prx-config`](https://jsr.io/@bounded-systems/prx-config)** — TUI
+  configuration schema parser/emitter for the L1/L2 tools.
+
 ## Links
 
 - 🌐 [bounded.tools](http://bounded.tools)
