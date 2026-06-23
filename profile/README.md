@@ -1,48 +1,54 @@
 # Bounded Systems
 
-**Keeping AI agents honest when they build and ship software.**
+Agents wander. Hand one a real task and it will touch files you didn't mean to
+expose, call a tool you didn't intend, or act outside the job you gave it.
 
-Agents are increasingly trusted to write and ship real code. The moment you let
-them, the bottleneck stops being "can the agent do the task" and becomes "can
-you trust what it did" — across many changes, many tools, and many
-agent-authored components that all have to stay consistent as they evolve.
+Bounded Systems builds the machinery that keeps an agent inside that job:
+software delivered by agents but governed like infrastructure. Each kind of
+system authority — filesystem, network, environment, subprocess — is reached
+through one sanctioned capability seam, so effects stay attributable and policy
+stays enforceable at the point of use.
 
-Bounded Systems builds that machinery: software *delivered by agents but
-governed like infrastructure*. An agent's git-writes are signed and attributable to their owner today — egress and external reads next — and
-every change moves through one content-addressed, auditable pipeline to a
-merged PR. Most tooling secures a single action — the harder, unsolved problem
-is enforcement *between* components, keeping a growing set of agent-authored
-contracts honest against each other.
+This is the object-capability tradition — least authority, and authority held as
+an attenuable reference in the lineage of macaroons and Biscuit — carried into
+agent runs, next to the tools the field already uses: a policy engine that keeps
+the decision separate from the enforcement (the way Rego does for OPA), and an
+OS sandbox for containment (Docker, seccomp). An agent's git-writes are signed
+and attributable to their owner today; egress and external reads are next.
 
-We hold our own claims to that same bar. Every one on this page is graded
-against the running code — *Enforced*, *Partial*, or *Aspirational* — by an
-instrument built to catch our **own** over-statements and file the gap. Docs
-generate from source and fail CI on drift; guest-room's specs execute against
-its engine. We keep ourselves as honest as we keep the agents.
+Every claim on this page is graded against the running code — *Enforced*,
+*Partial*, or *Aspirational* — by an instrument built to catch our own
+over-statements and file the gap. Docs generate from source and fail CI on
+drift, and guest-room's specs execute against its engine.
 
 The capability model lives in two codebases: **guest-room** is the flagship —
 the model as a single, readable, spec-tested library — and **prx** runs it at
 full scale on a stack of small, single-responsibility capability libraries, one
-for each kind of system authority (filesystem, network, env, subprocess).
+for each kind of system authority.
+
+## Get started
+
+New here? Start with **[`guest-room`](https://github.com/bounded-systems/guest-room)** —
+the capability model in one readable library, with specs you can run. It is the
+shortest path from the idea on this page to code you can point an agent at.
 
 ## Start here
 
 ### [`guest-room`](https://github.com/bounded-systems/guest-room) — the flagship: the model in one library
 
-A guest-agnostic capability runtime built on **rooms and doors**. A *door* is a
-single unit of authority: you hold a socket to a brokered service, never the
-keys behind it. A *room* is a named bundle of doors, and authority can only ever
-be narrowed as it is handed onward, never widened. Its behavior specs execute
-against the engine, so the docs cannot drift from the code. Read this to see the
-capability model made physical.
+A guest-agnostic capability runtime. An agent holds a brokered reference to a
+service rather than the credentials behind it, and that authority can only be
+narrowed as it is passed onward, never widened. Its behavior specs execute
+against the engine, so the docs cannot drift from the code.
 
 ### [`prx`](https://github.com/bounded-systems/prx) — the model, at full scale
 
-The agent-run **work-unit CLI** — a work unit is one scoped task an agent owns
-end-to-end. Capability-scoped agents — git-writes signed and attributable to their owner —
-driving each work unit through one content-addressed, auditable pipeline to a
-merged PR. The `@bounded-systems/*` libraries below each live in their own repo
-and publish to JSR; `prx` consumes them as published dependencies.
+The agent-run **work-unit CLI**, where a work unit is one scoped task an agent
+owns end-to-end. Capability-scoped agents drive each work unit through one
+content-addressed, auditable pipeline to a merged PR, with git-writes signed and
+attributable to their owner. The `@bounded-systems/*` libraries below each live
+in their own repo and publish to JSR; `prx` consumes them as published
+dependencies.
 
 ## The `@bounded-systems/*` libraries
 
@@ -103,7 +109,7 @@ authority is exactly the door references it holds.
 
 | Repo | What it is |
 |---|---|
-| [`ocap-provenance`](https://github.com/bounded-systems/ocap-provenance) | Capability-use provenance — a schema + SLSA mapping binding each privileged effect to a signed owner and an auditable chain |
+| [`ocap-provenance`](https://github.com/bounded-systems/ocap-provenance) | Capability-use provenance — a schema + SLSA mapping that binds a privileged effect to a signed owner and an auditable chain (signed git-writes today) |
 | [`dev-registry`](https://github.com/bounded-systems/dev-registry) | Local-first, OCI-compatible registry + devcontainer build system, with build traceability |
 | [`facilities`](https://github.com/bounded-systems/facilities) | Nix facilities — shared flakes, devshells, and build substrate |
 
