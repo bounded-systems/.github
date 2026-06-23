@@ -1,0 +1,10 @@
+{
+  "name": {
+    "type": "name",
+    "value": "Github"
+  },
+  "description": {
+    "type": "meta",
+    "value": "Org-level defaults and the public profile README for bounded-systems."
+  }
+}
