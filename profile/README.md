@@ -28,9 +28,9 @@ for each kind of system authority.
 
 ## Get started
 
-New here? Start with **[`guest-room`](https://github.com/bounded-systems/guest-room)** —
-the capability model in one readable library, with specs you can run. It is the
-shortest path from the idea on this page to code you can point an agent at.
+New here? Start with **[`guest-room` → START-HERE](https://github.com/bounded-systems/guest-room/blob/main/START-HERE.md)** —
+the capability model in one readable library, with a runnable quickstart. It is
+the shortest path from the idea on this page to code you can point an agent at.
 
 ## Start here
 
