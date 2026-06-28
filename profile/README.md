@@ -113,6 +113,23 @@ authority is exactly the door references it holds.
 | [`dev-registry`](https://github.com/bounded-systems/dev-registry) | Local-first, OCI-compatible registry + devcontainer build system, with build traceability |
 | [`facilities`](https://github.com/bounded-systems/facilities) | Nix facilities — shared flakes, devshells, and build substrate |
 
+## Where this sits — the rung the field leaves empty
+
+The agent-safety toolchain has converged, but almost entirely on two rungs:
+**identity** (who built it) and **integrity** (is this input or tool untrusted).
+Provenance attests what a thing *is*; almost nothing governs what the running
+thing is *allowed to do*. That authority rung — and inter-contract enforcement
+above it — is where Bounded Systems works. Named foils, not abstractions:
+
+| Tool | Rung | Enforcement point | What it attests / enforces | What it can't |
+|---|---|---|---|---|
+| [Sigstore](https://www.sigstore.dev/) (Fulcio + Rekor) | Identity / origin | Build + verify time (`cosign verify`, Rekor log) | *Who* built the artifact and that the bytes are unmodified | Says nothing about runtime behavior — origin, not authority |
+| mcp-scan / Invariant Gateway (now Snyk Labs) | Integrity / scanning | Proxy intercepting MCP/LLM calls + pre-exec scan | Input/tool is (un)trusted — injection/secret filtering, tool-schema pinning, tool allow/deny | No capability attenuation; filters input, doesn't attribute authority |
+| ARM / FIDES (research) | Integrity / IFC | Language-runtime taint + denial-feedback (paper-stage) | Untrusted data can't trigger a privileged effect — under a deployment model | Not productized; leaks implicit flows; not authority-as-owner |
+| **prx / `@bounded-systems/*`** | **Authority** (+ inter-contract&nbsp;\*) | One narrow seam/door per ambient power; drift caught at CI | Every effect routes through a sanctioned seam: attenuate-only capability, deny set, egress-as-grant, permission drift = build failure | Doesn't scan for prompt-injection — a *complementary* axis; composes with mcp-scan, doesn't replace it |
+
+<sub>\* Inter-contract enforcement — keeping many agent-authored contracts honest against each other as they evolve — is the **bet**, graded *Aspirational*, not a shipped result. Signed-owner runtime enforcement is live in `guest-room`; in `prx` today it is *Partial*.</sub>
+
 ## Contracts beyond authority — design & semantics
 
 The same discipline — draw a boundary, verify at it, let typed proof flow across —
