@@ -19,18 +19,21 @@ import { join } from "node:path";
 import { UncheckedPackagesError, assertAllPackagesChecked } from "@bounded-systems/seam-check";
 
 /**
- * BASELINE (burn down — bead `prx-w2mf`). Repos to exclude from the check:
- *  - `seam-check` IS the harness; its self-test covers it (it imports `../index.ts`,
- *    not the marker, so the marker-based check would false-flag it).
- *  - the rest are capability packages that do not yet declare a seam claim.
- * The meta-test still FAILS on any *new* capability repo not listed here.
+ * Repos excluded from the check. The meta-test still FAILS on any *new* capability
+ * repo not listed here. Two kinds:
+ *  - PERMANENT: not extractable leaf packages a seam claim applies to.
+ *  - BASELINE (burn down — bead `prx-w2mf`): Deno-style flat-layout packages
+ *    (jsr.json, no `src/`) that need the seam test adapted to their layout, or a
+ *    confirmation they are compositions, not leaves. Remove each as it's resolved.
  */
 const EXEMPT = new Set<string>([
-  "seam-check", // the harness itself; self-tested via its own coverage/self-seam tests
-  "door-kit", // client — no seam check yet (prx-w2mf)
-  "schema-gen", // generator (leaf) — no seam check yet (prx-w2mf)
-  "guest-room", // runtime — may be legitimately non-leaf (prx-w2mf)
-  "ocap-provenance", // contract — no seam check yet (prx-w2mf)
+  // permanent:
+  "seam-check", // the harness itself; self-tested (imports ../index.ts, not the marker)
+  "guest-room", // runtime: composes capabilities (BDD specs), not an extractable leaf
+  // baseline (prx-w2mf) — Deno-style flat layout, adapt or confirm non-leaf:
+  "door-kit", // client (lib/ + flat layout, no src/)
+  "ocap-provenance", // contract (flat: attestation.ts / slsa.ts / types.ts)
+  // schema-gen: migrated (bounded-systems/schema-gen#3) — now enforced.
 ]);
 
 function gh(args: string[], quiet = false): string {
@@ -87,7 +90,7 @@ function main(): void {
     assertAllPackagesChecked({ packagesDir: workspace });
     console.log(`✓ seam coverage: all ${capability.length} capability packages declare a seam claim.`);
     console.log(`  checked: ${capability.join(", ")}`);
-    console.log(`  baseline exempt (prx-w2mf): ${[...EXEMPT].sort().join(", ")}`);
+    console.log(`  exempt: ${[...EXEMPT].sort().join(", ")} (permanent: seam-check/guest-room; baseline prx-w2mf: door-kit/ocap-provenance)`);
   } catch (err) {
     if (err instanceof UncheckedPackagesError) {
       console.error(
