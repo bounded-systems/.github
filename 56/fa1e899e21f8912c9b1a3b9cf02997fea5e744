@@ -1,0 +1,19 @@
+docs/positioning.md
+  s_8bfe0e8de6557c::t_108190157d1cef 57-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "56fa1e899e21f8912c9b1a3b9cf02997fea5e744",
+  "prompts": {},
+  "sessions": {
+    "s_8bfe0e8de6557c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "159cecef-b114-4932-b219-6b198cbf9abd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
