@@ -22,18 +22,16 @@ import { UncheckedPackagesError, assertAllPackagesChecked } from "@bounded-syste
  * Repos excluded from the check. The meta-test still FAILS on any *new* capability
  * repo not listed here. Two kinds:
  *  - PERMANENT: not extractable leaf packages a seam claim applies to.
- *  - BASELINE (burn down — bead `prx-w2mf`): Deno-style flat-layout packages
- *    (jsr.json, no `src/`) that need the seam test adapted to their layout, or a
- *    confirmation they are compositions, not leaves. Remove each as it's resolved.
+ *  - BASELINE (burn down — bead `prx-w2mf`): needs work or a maintainer decision.
+ * Migrated + now enforced (no longer here): schema-gen (#3), ocap-provenance (#9).
  */
 const EXEMPT = new Set<string>([
-  // permanent:
+  // permanent — not extractable leaves a seam claim applies to:
   "seam-check", // the harness itself; self-tested (imports ../index.ts, not the marker)
   "guest-room", // runtime: composes capabilities (BDD specs), not an extractable leaf
-  // baseline (prx-w2mf) — Deno-style flat layout, adapt or confirm non-leaf:
-  "door-kit", // client (lib/ + flat layout, no src/)
-  "ocap-provenance", // contract (flat: attestation.ts / slsa.ts / types.ts)
-  // schema-gen: migrated (bounded-systems/schema-gen#3) — now enforced.
+  // baseline (prx-w2mf) — maintainer judgment needed, NOT a clean recipe:
+  "door-kit", // client; reaches raw node:fs/crypto/buffer/process (no seams) + 0 tests —
+  //          decide: legit low-level door (custom claim) or a seam violation to fix?
 ]);
 
 function gh(args: string[], quiet = false): string {
@@ -90,7 +88,7 @@ function main(): void {
     assertAllPackagesChecked({ packagesDir: workspace });
     console.log(`✓ seam coverage: all ${capability.length} capability packages declare a seam claim.`);
     console.log(`  checked: ${capability.join(", ")}`);
-    console.log(`  exempt: ${[...EXEMPT].sort().join(", ")} (permanent: seam-check/guest-room; baseline prx-w2mf: door-kit/ocap-provenance)`);
+    console.log(`  exempt: ${[...EXEMPT].sort().join(", ")} (permanent: seam-check, guest-room; baseline prx-w2mf: door-kit)`);
   } catch (err) {
     if (err instanceof UncheckedPackagesError) {
       console.error(
