@@ -1,0 +1,19 @@
+profile/README.md
+  s_b5919f7afb1662::t_eabcc73c09ff14 116-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "b5e7a2f7e77e0521ad73b0eda7f32e0a84b27697",
+  "prompts": {},
+  "sessions": {
+    "s_b5919f7afb1662": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb4544af-9213-455e-a2ec-fde13b59b4f0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
