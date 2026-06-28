@@ -1,0 +1,33 @@
+scripts/check-seam-coverage.ts
+  s_8bfe0e8de6557c::t_5ea73543a78c95 1-4,6,13-21,27-28,30,32-34,42,55-56,68,74,76-79,81-87,91-93,98-106
+  s_8bfe0e8de6557c::t_b868aa62ad0219 61-65
+  s_8bfe0e8de6557c::t_f75eac2dfa9a97 36-40
+  s_8bfe0e8de6557c::t_124f5c829cdf38 5,7-12,22-26,29,31,35,41,43-54,57-60,66-67,69-73,75,80,88-90,94-97,107
+package.json
+  s_8bfe0e8de6557c::t_a09c7b276e56ae 1-14
+.github/workflows/seam-coverage.yml
+  s_8bfe0e8de6557c::t_29989efe15de6e 1-16,23-57
+  s_8bfe0e8de6557c::t_877207a5a977bc 17-22
+.gitignore
+  s_8bfe0e8de6557c::t_c16f8a61770305 1-2
+.npmrc
+  s_8bfe0e8de6557c::t_0f49238b8ae0a5 1
+bun.lock
+  s_8bfe0e8de6557c::t_ae72ad234fdc3c 1-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "22891ce6e0594795853efbdc8013e25dbdc0bb8f",
+  "prompts": {},
+  "sessions": {
+    "s_8bfe0e8de6557c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "159cecef-b114-4932-b219-6b198cbf9abd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
