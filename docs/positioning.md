@@ -54,9 +54,12 @@ instrument that graded the rest of the page.
 - **object-capability / ocap** — *Enforced (model).* guest-room's narrow-only
   attenuation *is* the ocap model (Miller/E lineage). Say it out loud; it is the
   biggest expertise signal currently left unsaid.
-- **sockets / fd-passing** — *Partial.* The mechanism under "a door is a
-  socket": an open file descriptor is an unforgeable capability. Name it at the
-  depth layer. Lives in `bellhop`.
+- **sockets / fd-passing** — *Enforced.* The mechanism under "a door is a
+  socket": an open file descriptor / mounted socket is an unforgeable capability.
+  Live in `claude-box` — per-door bind-mounts give a box only its granted door
+  sockets, so a non-granted door is physically absent, not merely denied
+  (`door-mounts.test.ts`, VM-verified #159/#161). The `bellhop` broker was a
+  speculative home; the mechanism didn't need it.
 - **provenance (anchored-chain)** — *Partial.* Real today (derivation chain +
   signing + lineage + content-addressing) but buried in the library table.
   Foreground it; it is a differentiator hiding in a footnote.
