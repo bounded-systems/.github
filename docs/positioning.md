@@ -63,10 +63,13 @@ instrument that graded the rest of the page.
 - **provenance (anchored-chain)** — *Partial.* Real today (derivation chain +
   signing + lineage + content-addressing) but buried in the library table.
   Foreground it; it is a differentiator hiding in a footnote.
-- **in-toto / SLSA** — *Aspirational.* Cite as **kinship, not badges**:
-  "in-toto-style attestations," "SLSA-style provenance as the goal." Do **not**
-  print a SLSA level or "in-toto compliant" unless the exact formats are emitted
-  and the exact levels met. This is the canonical over-claim trap.
+- **in-toto / SLSA** — *Format conformant; level: kinship.* The exact **formats**
+  are now emitted **and proven** — `ocap-provenance/slsa.ts` projects onto in-toto
+  Statement v1 + SLSA Provenance v1, validated against the published specs
+  (`slsa-conformance.test.ts`; trust 4.5). So say "conformant in-toto / SLSA
+  **format**." Still do **not** print a SLSA **level** or "in-toto compliant"
+  until that level's build-integrity requirements are met — kinship on levels.
+  That residue is the canonical over-claim trap; the format no longer is.
 - **quadlets / podman / systemd** — *Aspirational / unconfirmed.* Only claim if
   the brokers actually run this way. Mind the contradiction with the bio's "not
   the container": quadlets *are* containers. Resolution — authority is drawn at
