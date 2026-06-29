@@ -1,28 +1,19 @@
 # Fleet status board — synoptic Layer 2 (monitoring).
 #
 # Runs synoptic's `status` mode against the bounded-systems org and commits a
-# freshness-stamped STATUS.md + status.json. This is the NON-deterministic
-# monitoring view; it lives here (org infra) while the tool itself stays
-# bdelanghe/synoptic-github. See that repo's examples/fleet-status.yml.
+# freshness-stamped STATUS.md + status.json. The tool stays bdelanghe/synoptic-
+# github; only this deployment lives in the org. See that repo's examples/.
 #
-# AUTH = the same OIDC token-broker front-desk-add.yml already uses (prx-26bq):
-# the job proves identity with GitHub Actions OIDC and exchanges it at the broker
-# for a least-privilege App installation token — NO PAT, NO personal token, NO
-# App private key in the repo. The board reads + the push-back both use this one
-# minted token (the synoptic container commits the board itself).
+# AUTH = the OIDC token-broker (prx-26bq), same as front-desk-add.yml: OIDC ->
+# least-privilege App installation token. NO PAT, NO personal token, NO PEM.
+# The board reads (metadata/actions/PRs) + the push-back both use this one token.
 #
-# ONE REMAINING TOGGLE (yours): the minted App's installation permissions must
-# cover what the board does —
-#   metadata:read · actions:read · pull_requests:read   (read every repo's CI + PRs)
-#   contents:write on THIS repo                          (push STATUS.md back)
-# The known prx-forge bucket has {contents:write, issues:write, pull_requests:write,
-# checks:read, metadata:read}; likely just `actions:read` needs adding (and a
-# `front-desk` app may need contents:write here). Widen the app grant, or point
-# `app:` below at a dedicated fleet app provisioned in the broker.
+# Actions are SHA-pinned (org policy sha_pinning_required=true). The synoptic
+# action is allow-listed in this repo's selected-actions (it's bdelanghe's own
+# tool); broker-gh-token is same-org; checkout is github-owned.
 #
-# Until the org var FRONT_DESK_BROKER_URL is set, the mint is skipped and the job
-# no-ops (same fail-open posture as front-desk-add.yml). Schedule stays COMMENTED
-# until a manual dispatch confirms it's green.
+# Schedule stays COMMENTED until a manual dispatch confirms green, so a half-wired
+# board can't spam red scheduled runs.
 name: fleet-status
 on:
   # schedule:
@@ -30,12 +21,12 @@ on:
   workflow_dispatch: {}
 permissions:
   id-token: write   # OIDC -> cf-token-broker, to mint the App token
-  contents: read    # checkout; the board push uses the minted token, not this
+  contents: read    # checkout; the board push uses the minted token below
 jobs:
   status:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Mint a fleet token via the OIDC broker
         id: app-token
@@ -47,7 +38,7 @@ jobs:
 
       - name: Fleet status board
         if: ${{ steps.app-token.outputs.token != '' }}
-        uses: bdelanghe/synoptic-github@v2.2.6   # mode:status needs >= v2.2.6
+        uses: bdelanghe/synoptic-github@c4334ffa0b1dbb88f51e34d25ef115f0b47ce7df # v2.2.6
         with:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           mode: status
