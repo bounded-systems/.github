@@ -183,8 +183,16 @@ jobs:
           exit 1
 
       # RFC 9110 HTTP-correctness probe of the live edge.
+      # Opt-in: a site that ships a probe config gets the RFC 9110 check; one that doesn't is not
+      # forced to (a reusable workflow shouldn't mandate a per-site contract file). Add the config
+      # at `probe_config` to enable it.
       - name: HTTP correctness probe (RFC 9110)
         env:
           DOMAIN: ${{ inputs.domain }}
           PROBE_CONFIG: ${{ inputs.probe_config }}
-        run: PROBE_CONFIG="$PROBE_CONFIG" node vendor/conformance-kit/integrity/http-probe.mjs "$DOMAIN"
+        run: |
+          if [ ! -f "$PROBE_CONFIG" ]; then
+            echo "::notice::no probe config at $PROBE_CONFIG — skipping the RFC 9110 probe for this site"
+            exit 0
+          fi
+          PROBE_CONFIG="$PROBE_CONFIG" node vendor/conformance-kit/integrity/http-probe.mjs "$DOMAIN"
