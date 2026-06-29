@@ -6,10 +6,12 @@
 # bdelanghe/synoptic-github. See that repo's examples/fleet-status.yml.
 #
 # BLOCKED until two prerequisites exist (see beads prx-u0df / prx-ebmp):
-#   1. secret FLEET_READ_TOKEN — org-wide repo READ (the default GITHUB_TOKEN
-#      only reads this repo). PAT now, or the ghd GitHub-App token (prx-e1c).
-#   2. ghcr.io/bdelanghe/synoptic-github:latest republished to include status.ts
-#      (cut a tag on bdelanghe/synoptic-github after PR #23 merges).
+#   1. secret FLEET_READ_TOKEN — org-wide repo READ (to read every repo's CI +
+#      PRs) AND contents:write on THIS repo (the action's container pushes the
+#      board back here). The default GITHUB_TOKEN only reads this repo. PAT now,
+#      or the ghd GitHub-App token (prx-e1c).
+#   2. image >= v2.2.6 (ghcr.io/bdelanghe/synoptic-github) so `mode: status`
+#      resolves status.ts.
 #
 # Schedule is intentionally COMMENTED until a manual dispatch confirms it's green,
 # so a half-wired board can't spam red scheduled runs across org infra.
@@ -19,22 +21,17 @@ on:
   #   - cron: '0 */6 * * *'   # enable after the first successful dispatch
   workflow_dispatch: {}
 permissions:
-  contents: write
+  contents: write             # the action commits the board back to this repo
 jobs:
   status:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: bdelanghe/synoptic-github@v2   # pulls ghcr :latest; pin a SHA once stable
+      - uses: bdelanghe/synoptic-github@v2.2.6   # mode:status needs >= v2.2.6
         with:
           GITHUB_TOKEN: ${{ secrets.FLEET_READ_TOKEN }}
           mode: status
           gh-user: bounded-systems
           status-out: STATUS.md
-      - name: commit the board
-        run: |
-          git config user.name  'fleet-status[bot]'
-          git config user.email 'fleet-status@users.noreply.github.com'
-          git add STATUS.md status.json
-          git diff --cached --quiet || git commit -m "chore: fleet status $(date -u +%FT%TZ)"
-          git push
+      # No commit step: the action's container entrypoint already runs
+      # git add/commit/push when the board changes, using the GITHUB_TOKEN above.
