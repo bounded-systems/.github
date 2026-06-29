@@ -1,0 +1,55 @@
+# Fleet status board — synoptic Layer 2 (monitoring).
+#
+# Runs synoptic's `status` mode against the bounded-systems org and commits a
+# freshness-stamped STATUS.md + status.json. This is the NON-deterministic
+# monitoring view; it lives here (org infra) while the tool itself stays
+# bdelanghe/synoptic-github. See that repo's examples/fleet-status.yml.
+#
+# AUTH = the same OIDC token-broker front-desk-add.yml already uses (prx-26bq):
+# the job proves identity with GitHub Actions OIDC and exchanges it at the broker
+# for a least-privilege App installation token — NO PAT, NO personal token, NO
+# App private key in the repo. The board reads + the push-back both use this one
+# minted token (the synoptic container commits the board itself).
+#
+# ONE REMAINING TOGGLE (yours): the minted App's installation permissions must
+# cover what the board does —
+#   metadata:read · actions:read · pull_requests:read   (read every repo's CI + PRs)
+#   contents:write on THIS repo                          (push STATUS.md back)
+# The known prx-forge bucket has {contents:write, issues:write, pull_requests:write,
+# checks:read, metadata:read}; likely just `actions:read` needs adding (and a
+# `front-desk` app may need contents:write here). Widen the app grant, or point
+# `app:` below at a dedicated fleet app provisioned in the broker.
+#
+# Until the org var FRONT_DESK_BROKER_URL is set, the mint is skipped and the job
+# no-ops (same fail-open posture as front-desk-add.yml). Schedule stays COMMENTED
+# until a manual dispatch confirms it's green.
+name: fleet-status
+on:
+  # schedule:
+  #   - cron: '0 */6 * * *'   # enable after the first successful dispatch
+  workflow_dispatch: {}
+permissions:
+  id-token: write   # OIDC -> cf-token-broker, to mint the App token
+  contents: read    # checkout; the board push uses the minted token, not this
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint a fleet token via the OIDC broker
+        id: app-token
+        if: ${{ vars.FRONT_DESK_BROKER_URL != '' }}
+        uses: bounded-systems/.github/.github/actions/broker-gh-token@4a77867f40419ea5b38f3a3be7c481fa7e0eab84 # broker-gh-token (prx-26bq)
+        with:
+          app: front-desk   # swap for a dedicated fleet app if you provision one
+          broker-url: ${{ vars.FRONT_DESK_BROKER_URL }}
+
+      - name: Fleet status board
+        if: ${{ steps.app-token.outputs.token != '' }}
+        uses: bdelanghe/synoptic-github@v2.2.6   # mode:status needs >= v2.2.6
+        with:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          mode: status
+          gh-user: bounded-systems
+          status-out: STATUS.md
