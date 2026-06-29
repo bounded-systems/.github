@@ -1,0 +1,47 @@
+name: broker-gh-token
+description: >-
+  Get a short-lived GitHub App INSTALLATION token from the cf-token-broker via GitHub
+  Actions OIDC — no App private key in the repo (prx-26bq). The calling job must grant
+  `permissions: id-token: write`. Replaces per-repo `create-github-app-token` +
+  `secrets: inherit`: the App keys live only in the broker.
+inputs:
+  app:
+    description: App name registered in the broker's GH_APPS (e.g. "front-desk").
+    required: true
+  broker-url:
+    description: Broker base URL (e.g. https://cf-token-broker.<...>.workers.dev). Not a secret.
+    required: true
+  audience:
+    description: OIDC audience the broker pins for this app.
+    required: false
+    default: github-app-broker
+outputs:
+  token:
+    description: The installation access token (already masked in logs).
+    value: ${{ steps.broker.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - id: broker
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        BROKER_URL: ${{ inputs.broker-url }}
+        AUDIENCE: ${{ inputs.audience }}
+      run: |
+        set -euo pipefail
+        # 1. Mint the GitHub Actions OIDC JWT for the broker's audience. These two env vars are
+        #    injected ONLY when the job has `permissions: id-token: write`.
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error::no OIDC token available — add 'permissions: id-token: write' to the job"
+          exit 1
+        fi
+        jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
+        if [ -z "$jwt" ]; then echo "::error::failed to obtain an OIDC token"; exit 1; fi
+        # 2. Exchange it at the broker for a least-privilege installation token.
+        tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+          "${BROKER_URL%/}/github/${APP}" | jq -r '.token // empty')"
+        if [ -z "$tok" ]; then echo "::error::broker did not return a token for app '${APP}'"; exit 1; fi
+        echo "::add-mask::$tok"
+        echo "token=$tok" >> "$GITHUB_OUTPUT"
