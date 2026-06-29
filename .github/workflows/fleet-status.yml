@@ -26,7 +26,13 @@ jobs:
   status:
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials:false so checkout does NOT install the default
+      # GITHUB_TOKEN as a git auth header — otherwise it overrides the app-token
+      # URL the synoptic container sets, and the board push runs as the read-only
+      # github-actions[bot] (403). With it off, the push uses the minted app token.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Mint a fleet token via the OIDC broker
         id: app-token
