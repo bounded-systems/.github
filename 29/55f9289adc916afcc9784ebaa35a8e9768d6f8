@@ -1,0 +1,19 @@
+.github/workflows/site-deploy.yml
+  s_4ccf8ec3ddcbc8::t_6990bb275f07a8 186-188,193-198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "2955f9289adc916afcc9784ebaa35a8e9768d6f8",
+  "prompts": {},
+  "sessions": {
+    "s_4ccf8ec3ddcbc8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "684a1b39-b25c-4f45-ac97-97af68184b7a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
