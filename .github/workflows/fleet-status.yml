@@ -39,12 +39,16 @@ jobs:
         if: ${{ vars.FRONT_DESK_BROKER_URL != '' }}
         uses: bounded-systems/.github/.github/actions/broker-gh-token@4a77867f40419ea5b38f3a3be7c481fa7e0eab84 # broker-gh-token (prx-26bq)
         with:
-          app: front-desk   # swap for a dedicated fleet app if you provision one
+          # prx-forge bucket (the write bucket: contents/issues/PRs/checks + metadata,
+          # per docs/prx/github-apps-architecture.md) — reused, not a new app. The board
+          # reads CI via the Checks API (checks:read), so this bucket covers it without
+          # actions:read. Requires the broker's GH_APPS to carry a "forge" entry.
+          app: forge
           broker-url: ${{ vars.FRONT_DESK_BROKER_URL }}
 
       - name: Fleet status board
         if: ${{ steps.app-token.outputs.token != '' }}
-        uses: bdelanghe/synoptic-github@c4334ffa0b1dbb88f51e34d25ef115f0b47ce7df # v2.2.6
+        uses: bdelanghe/synoptic-github@4128373fbf7ee807ad9f080d210770072b7de3b6 # v2.2.8 (CI via Checks API)
         with:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           mode: status
