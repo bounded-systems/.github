@@ -1,0 +1,59 @@
+# required-baseline — the enforced security FLOOR for every repo. Unlike the opt-in
+# repo-standard caller (which a repo chooses to adopt), this is injected on every
+# repo's PRs by an org ruleset (the `workflows` rule) — so even un-adopted and
+# brand-new repos get OSV + dependency-review with no per-repo wiring.
+#
+# Must be a normal `on: pull_request` workflow (required workflows can't be reusable).
+# Report-only (continue-on-error): the floor guarantees the scan RUNS on every PR and
+# surfaces findings; promote to a hard gate later by dropping continue-on-error.
+# Actions SHA-pinned (org policy); invocations match prx + repo-standard.
+name: required-baseline
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  osv:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: OSV-Scanner (report-only)
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --format=sarif
+            --output=results.sarif
+            --recursive
+            .
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: osv-scanner-results
+          path: results.sarif
+          retention-days: 5
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # Report-only: degrades gracefully on repos without Dependency graph enabled.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        continue-on-error: true
+        with:
+          fail-on-severity: high
