@@ -1,0 +1,25 @@
+org-defaults.test.mjs
+  s_70508ca017cb29::t_51206a62dca82e 1-35
+org-defaults.mjs
+  s_70508ca017cb29::t_3796ea76052ad1 1-53
+.github/workflows/org-defaults.yml
+  s_70508ca017cb29::t_17ab735834eb5c 1-18
+package.json
+  s_70508ca017cb29::t_1831b348d75dde 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "0d6822e86e3be237b4b797252334f4d41d985e71",
+  "prompts": {},
+  "sessions": {
+    "s_70508ca017cb29": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d283f13f-34c8-429b-8cb1-b020e645c0e4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
