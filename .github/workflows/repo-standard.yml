@@ -5,6 +5,8 @@
 #
 # Behaviors (all opt-in):
 #   security  (default true)  — OSV-Scanner (report-only) + dependency-review (PR gate)
+#   quality   (default true)  — prose-proxy gates (claim-discipline + grammar-repetition)
+#                               from the pinned conformance-kit, over README + docs (report-only)
 #   test      (default false) — set up `runtime` and run `test-command`
 #
 # All actions SHA-pinned (org policy). Invocations copied from prx's proven
@@ -18,6 +20,14 @@ on:
         description: "Run OSV-Scanner + dependency-review."
         type: boolean
         default: true
+      quality:
+        description: "Run the prose-proxy quality gates over README + docs (report-only)."
+        type: boolean
+        default: true
+      conformance-kit-ref:
+        description: "conformance-kit tag to pin the quality gates to."
+        type: string
+        default: "v0.9.0"
       test:
         description: "Run the test job (set runtime + test-command)."
         type: boolean
@@ -86,6 +96,52 @@ jobs:
         continue-on-error: true
         with:
           fail-on-severity: high
+
+  # The org quality bar: the SAME prose-proxy gates on every repo, run from the
+  # pinned shared kit over the repo's README + docs. Report-only (WARN) — like the
+  # focus-budget cognitive gate, these surface candidates, they don't block. A repo
+  # opts out with `quality: false`, or promotes to a hard gate by pinning a ref and
+  # running the gates with --strict in its own CI.
+  quality:
+    if: ${{ inputs.quality }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: fetch the shared conformance-kit (pinned)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: bounded-systems/conformance-kit
+          ref: ${{ inputs.conformance-kit-ref }}
+          path: .conformance-kit
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: build a prose corpus (README + docs)
+        run: |
+          node -e '
+            const fs = require("fs");
+            const md = (s) => s.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ").replace(/[#>*_\[\]()!|-]/g, " ");
+            const files = ["README.md"];
+            if (fs.existsSync("docs")) for (const f of fs.readdirSync("docs")) if (f.endsWith(".md")) files.push("docs/" + f);
+            const corpus = {};
+            for (const f of files) { try { corpus[f] = md(fs.readFileSync(f, "utf8")); } catch {} }
+            fs.writeFileSync("corpus.json", JSON.stringify(corpus));
+            console.log("corpus:", Object.keys(corpus).join(", ") || "(none)");
+          '
+      - name: claim discipline (report-only)
+        continue-on-error: true
+        run: node .conformance-kit/gates/claim-discipline-gate.mjs corpus.json
+      - name: grammar repetition (report-only)
+        continue-on-error: true
+        run: node .conformance-kit/gates/grammar-repetition-gate.mjs corpus.json
 
   test:
     if: ${{ inputs.test }}
