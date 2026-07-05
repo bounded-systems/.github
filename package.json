@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Org-level checks for bounded-systems (seam-coverage meta-test, etc.)",
   "scripts": {
-    "seam-coverage": "bun scripts/check-seam-coverage.ts"
+    "seam-coverage": "bun scripts/check-seam-coverage.ts",
+    "test": "node --test"
   },
   "devDependencies": {
     "@bounded-systems/seam-check": "npm:@jsr/bounded-systems__seam-check@^0.1.0",
