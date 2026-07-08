@@ -1,0 +1,57 @@
+# repo-standard-selftest — the reference caller, and the guard #55 lacked.
+#
+# repo-standard.yml (and its siblings) are reusable workflows, but nothing in this repo
+# CALLED them — so #54 raised repo-standard's permission floor above contents: read and
+# passed this repo's CI, only failing once a downstream caller bumped its pin (#55, #56).
+#
+# This workflow calls each reusable workflow with exactly its intended authority ceiling.
+# GitHub validates the permission union at load time, before `if:`, so a future revision
+# that raises a floor fails HERE, pre-merge, instead of in every downstream repo. It is
+# also the copy-paste caller template each repo's .github/workflows/standard.yml follows.
+name: repo-standard-selftest
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/repo-standard.yml"
+      - ".github/workflows/repo-scorecard.yml"
+      - ".github/workflows/repo-release.yml"
+      - ".github/workflows/repo-standard-selftest.yml"
+  push:
+    branches: [main]
+
+# No ambient authority — every capability is granted per-job, scoped to the workflow it
+# invokes. This is the pattern callers copy.
+permissions: {}
+
+jobs:
+  # Contract: repo-standard.yml starts with ONLY contents: read (the #55 regression).
+  standard:
+    uses: ./.github/workflows/repo-standard.yml
+    permissions:
+      contents: read
+    with:
+      security: true
+      spell: false # this repo has no cspell.json
+      test: false
+      descriptor: false
+
+  # Contract: repo-scorecard.yml's ceiling is exactly contents: read + actions: read.
+  # Gated to non-PR so PR runs never instantiate the elevated grant.
+  scorecard:
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/repo-scorecard.yml
+    permissions:
+      contents: read
+      actions: read
+
+  # Contract: repo-release.yml's ceiling is exactly contents: write. upload-release-assets
+  # is false so the self-test exercises the permission contract without creating a release
+  # asset on this repo. Gated to non-PR (same as a real release caller).
+  release:
+    if: ${{ github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/repo-release.yml
+    permissions:
+      contents: write
+    with:
+      upload-release-assets: false
