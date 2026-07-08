@@ -1,0 +1,25 @@
+.github/workflows/repo-standard-selftest.yml
+  s_590a4cb0d433ca::t_6b2a57560e894f 1-57
+.github/workflows/repo-release.yml
+  s_590a4cb0d433ca::t_9400ffcc36ba41 1-41
+.github/workflows/repo-standard.yml
+  s_590a4cb0d433ca::t_768dff9e65cfcb 7-10,12-22
+.github/workflows/repo-scorecard.yml
+  s_590a4cb0d433ca::t_7f129173c96ad1 1-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "d10116069553ff93b7d75fa6c48ed3681895590f",
+  "prompts": {},
+  "sessions": {
+    "s_590a4cb0d433ca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b0655308-1b11-42b1-889b-668f5601293b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
