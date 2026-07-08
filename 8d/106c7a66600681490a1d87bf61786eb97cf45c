@@ -1,0 +1,21 @@
+.github/workflows/repo-standard.yml
+  s_0a07a894d9cc8f::t_655b8d57b1c7b4 162-182
+  s_0a07a894d9cc8f::t_da5c5110590990 34-37
+  s_0a07a894d9cc8f::t_9fc0883efa4537 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8d106c7a66600681490a1d87bf61786eb97cf45c",
+  "prompts": {},
+  "sessions": {
+    "s_0a07a894d9cc8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7263b900-7c6e-43dd-8d77-1c263d5b94b7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Robert DeLanghe <1240090+bdelanghe@users.noreply.github.com>"
+    }
+  }
+}
