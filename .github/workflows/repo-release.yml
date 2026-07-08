@@ -1,0 +1,41 @@
+# repo-release — release-side artifacts (SPDX SBOM → release assets).
+#
+# Split out of repo-standard.yml (#55): the SBOM upload needs `contents: write`, the
+# highest ceiling of the old monolith. Because a caller must grant the UNION of every
+# job's permissions at load time, leaving this in repo-standard forced even a read-only
+# spell run to grant contents: write — the escalation that made #54 fail to start.
+# One reusable workflow, one authority ceiling: a caller grants contents: write here and
+# nowhere else, on a dedicated job gated to release/publish (non-PR) events.
+name: repo-release
+
+on:
+  workflow_call:
+    inputs:
+      upload-release-assets:
+        description: "Attach the SBOM to the GitHub Release (needs contents: write). False = artifact only (e.g. self-test / no release)."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    # Release-side: runs on push/tags/release, not PR.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: ${{ inputs.upload-release-assets }}

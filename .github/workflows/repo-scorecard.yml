@@ -1,0 +1,50 @@
+# repo-scorecard — OSSF Scorecard supply-chain posture (report-only).
+#
+# Split out of repo-standard.yml (#55): Scorecard needs `actions: read`, one step above
+# the standard `contents: read` floor. Because a reusable workflow's caller must grant
+# the UNION of every job's permissions at load time, folding this into repo-standard
+# would force ~every repo (scorecard was default-on) to grant actions: read even for a
+# read-only spell/security run. Keeping it here — one reusable workflow, one authority
+# ceiling — lets a caller grant exactly this ceiling, on a dedicated job.
+#
+# A caller opts in by adding a job that `uses:` this workflow and grants
+# `contents: read` + `actions: read`, gated to non-PR events (Scorecard scores the
+# repo, not a diff). See repo-standard-selftest.yml for the reference caller.
+name: repo-scorecard
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  scorecard:
+    # Scorecard runs on push/schedule, not PR — it scores the repo, not a diff.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Report-only: publish_results=false and no SARIF upload (upload needs Advanced
+      # Security on private repos), so results are kept as an artifact. That keeps the
+      # perms minimal (contents+actions read) so callers don't need security-events.
+      - name: OSSF Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5

@@ -4,16 +4,22 @@
 # See bounded-systems/conformance for the caller template + rollout.
 #
 # Behaviors (all opt-in):
-#   security  (default true)  — OSV-Scanner (report-only) + dependency-review (PR gate)
-#   scorecard (default true)  — OSSF Scorecard supply-chain posture (report-only)
-#   sbom      (default false) — SPDX SBOM (uploads release assets; needs contents: write)
-#   spell     (default false) — cspell dictionary/allowlist gate (needs a cspell.json)
-#   test      (default false) — set up `runtime` and run `test-command`
+#   security   (default true)  — OSV-Scanner (report-only) + dependency-review (PR gate)
+#   spell      (default false) — cspell dictionary/allowlist gate (needs a cspell.json)
+#   test       (default false) — set up `runtime` and run `test-command`
+#   descriptor (default false) — README managed blocks must match trellis.json
 #
-# All actions SHA-pinned (org policy). Invocations copied from prx's proven
-# osv-scanner.yml / dependency-review.yml / scorecard.yml / sbom.yml, generalized
-# to be language-agnostic. scorecard/sbom raise the security floor org-wide — see
-# workflow-standardization: they previously ran on ~2 of 72 repos.
+# AUTHORITY FLOOR — this workflow is `contents: read` and every job stays within it,
+# so a caller only ever needs to grant `contents: read`. GitHub validates a called
+# reusable workflow's permission requests as the UNION of all its jobs, at load time,
+# before any `if:` — so a single job needing more would force every caller to over-grant
+# (that was #55). Jobs that need more authority therefore live in sibling reusable
+# workflows, one per ceiling, so a read-only caller is never forced above the floor:
+#   scorecard  → repo-scorecard.yml  (adds actions: read)
+#   sbom       → repo-release.yml    (adds contents: write)
+# Callers opt into those with a dedicated, event-gated job (see #55 / #56).
+#
+# All actions SHA-pinned (org policy).
 name: repo-standard
 
 on:
@@ -23,14 +29,6 @@ on:
         description: "Run OSV-Scanner + dependency-review."
         type: boolean
         default: true
-      scorecard:
-        description: "Run OSSF Scorecard (report-only supply-chain posture)."
-        type: boolean
-        default: true
-      sbom:
-        description: "Generate an SPDX SBOM (uploads to release assets; caller must grant contents: write)."
-        type: boolean
-        default: false
       spell:
         description: "Spell-gate: fail on tokens not in the dictionaries or the repo's cspell.json words allowlist (needs a cspell.json in the repo)."
         type: boolean
@@ -107,57 +105,6 @@ jobs:
         continue-on-error: true
         with:
           fail-on-severity: high
-
-  scorecard:
-    # OSSF Scorecard runs on push/schedule (not PR — it scores the repo, not a diff).
-    if: ${{ inputs.scorecard && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      # Report-only: publish_results=false and no SARIF upload (upload needs Advanced
-      # Security on private repos), so results are kept as an artifact. That keeps the
-      # perms minimal (contents+actions read) so callers don't need security-events.
-      - name: OSSF Scorecard
-        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
-        with:
-          results_file: results.sarif
-          results_format: sarif
-          publish_results: false
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: scorecard-results
-          path: results.sarif
-          retention-days: 5
-
-  sbom:
-    # Opt-in (default false): uploads to release assets, so the caller must grant
-    # contents: write. Meant for repos that publish releases.
-    if: ${{ inputs.sbom && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          format: spdx-json
-          artifact-name: sbom.spdx.json
-          output-file: sbom.spdx.json
-          upload-artifact: true
-          upload-release-assets: true
 
   spell:
     # Opt-in (default false): fails on any token not in the dictionaries or the
