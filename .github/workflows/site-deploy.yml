@@ -34,10 +34,32 @@ on:
         required: false
         type: string
         default: contract/http-probe.json
+      cf_broker_url:
+        description: >-
+          Base URL of the cf-oidc-token-broker. Set this (with cf_broker_path) and the
+          Cloudflare token is MINTED PER RUN over GitHub Actions OIDC instead of being
+          stored — the caller must then grant `id-token: write`. Leave empty to keep
+          using the CLOUDFLARE_API_TOKEN secret.
+        required: false
+        type: string
+        default: ""
+      cf_broker_path:
+        description: "Broker route that mints a Workers-deploy token, e.g. /cloudflare/<worker>."
+        required: false
+        type: string
+        default: ""
+      cf_broker_audience:
+        description: "OIDC audience the broker pins."
+        required: false
+        type: string
+        default: cf-oidc-token-broker
     secrets:
       CLOUDFLARE_API_TOKEN:
-        description: "Cloudflare API token scoped to deploy this worker."
-        required: true
+        description: >-
+          Cloudflare API token scoped to deploy this worker. NOT required when
+          cf_broker_url/cf_broker_path are set — that path stores no credential at all,
+          which is the point of the broker. Kept for callers that have not migrated.
+        required: false
 
 permissions:
   contents: read
@@ -55,6 +77,77 @@ jobs:
 
       # Pull the SIGNED artifact, verify its keyless signature against this repo's identity, unpack
       # exactly those bytes. Verify failure → no upload.
+      # ── the Cloudflare credential ──────────────────────────────────────────
+      # A STORED token is a standing capability: it sits in repo settings, is as
+      # long-lived as whoever last rotated it, and is valid whether or not any
+      # workflow is running. A broker-minted one is bounded by a single run and
+      # is only obtainable by a workflow that can present a GitHub-signed OIDC
+      # JWT matching the broker's pins. That difference is the whole reason
+      # cf-oidc-token-broker exists, and this workflow predates it.
+      #
+      # Additive, not a flag day: this is a REUSABLE workflow with callers I
+      # cannot enumerate, so the secret still works and the broker is opt-in per
+      # caller. `id-token: write` must come from the CALLER — a reusable workflow
+      # cannot grant itself more than it is given — so a caller that sets the
+      # broker inputs without that permission gets a clear failure rather than a
+      # silent fallback to the credential it was trying to stop using.
+      - name: Cloudflare credential
+        id: cfcred
+        env:
+          BROKER_URL: ${{ inputs.cf_broker_url }}
+          BROKER_PATH: ${{ inputs.cf_broker_path }}
+          AUDIENCE: ${{ inputs.cf_broker_audience }}
+          STORED: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -n "${BROKER_URL:-}" ] && [ -n "${BROKER_PATH:-}" ]; then
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+              echo "::error::broker inputs are set but no OIDC token is available."
+              echo "::error::Add `permissions: id-token: write` to the CALLING job. Falling back to"
+              echo "::error::the stored secret here would silently keep the credential you are"
+              echo "::error::trying to eliminate, so this fails instead."
+              exit 1
+            fi
+            jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
+            [ -n "${jwt:-}" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+            # NOT `curl -f`: it discards the response body on an HTTP error, and
+            # the broker's error body is the whole diagnosis. Observed against the
+            # live broker, a mint failure returns cf_errors + token_check, and the
+            # pair is what separates "my request was wrong" from "the broker's own
+            # credential cannot grant this". `-f` would leave only "502".
+            code="$(curl -sS -o /tmp/cfbroker.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${BROKER_PATH}" || echo 000)"
+            body="$(cat /tmp/cfbroker.json 2>/dev/null || true)"
+            tok="$(jq -r '.token // empty' <<<"$body" 2>/dev/null || true)"
+            if [ "$code" != "200" ] || [ -z "${tok:-}" ]; then
+              echo "::error::broker returned HTTP ${code} for ${BROKER_PATH}"
+              echo "::error::  response: ${body:0:900}"
+              if grep -q '"ok":true' <<<"$body" && grep -q '9109' <<<"$body"; then
+                echo "::error::  → token_check ok + cf_error 9109 means the broker's OWN token cannot"
+                echo "::error::    DELEGATE this scope. A token only mints permissions it holds, so"
+                echo "::error::    grant the parent Workers Scripts: Edit at ACCOUNT scope in infra."
+              else
+                echo "::error::  → check the job_workflow_ref is on the broker allowlist, the route is"
+                echo "::error::    right, and the policy has a Workers Scripts Edit tier."
+              fi
+              exit 1
+            fi
+            echo "::notice::minted a per-run Cloudflare token via the broker"
+          else
+            tok="${STORED:-}"
+            if [ -z "$tok" ]; then
+              echo "::error::no Cloudflare credential: pass CLOUDFLARE_API_TOKEN, or set"
+              echo "::error::cf_broker_url + cf_broker_path to mint one per run."
+              exit 1
+            fi
+            echo "::warning::using the STORED CLOUDFLARE_API_TOKEN. That is a standing"
+            echo "::warning::capability with no expiry tied to this run. Migrate to the broker:"
+            echo "::warning::set cf_broker_url + cf_broker_path and grant id-token: write."
+          fi
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
       - name: Pull + verify the signed OCI artifact
         env:
           OCI: ${{ inputs.oci }}
@@ -80,7 +173,7 @@ jobs:
       - name: Upload preview version
         id: upload
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ steps.cfcred.outputs.token }}
           GITHUB_SHA: ${{ github.sha }}
           NO_COLOR: "1"
           FORCE_COLOR: "0"
@@ -134,6 +227,77 @@ jobs:
 
       # Re-establish trust at promote time: pull + cosign-verify the signed artifact again, unpack
       # (needed by the prod-routes check below).
+      # ── the Cloudflare credential ──────────────────────────────────────────
+      # A STORED token is a standing capability: it sits in repo settings, is as
+      # long-lived as whoever last rotated it, and is valid whether or not any
+      # workflow is running. A broker-minted one is bounded by a single run and
+      # is only obtainable by a workflow that can present a GitHub-signed OIDC
+      # JWT matching the broker's pins. That difference is the whole reason
+      # cf-oidc-token-broker exists, and this workflow predates it.
+      #
+      # Additive, not a flag day: this is a REUSABLE workflow with callers I
+      # cannot enumerate, so the secret still works and the broker is opt-in per
+      # caller. `id-token: write` must come from the CALLER — a reusable workflow
+      # cannot grant itself more than it is given — so a caller that sets the
+      # broker inputs without that permission gets a clear failure rather than a
+      # silent fallback to the credential it was trying to stop using.
+      - name: Cloudflare credential
+        id: cfcred
+        env:
+          BROKER_URL: ${{ inputs.cf_broker_url }}
+          BROKER_PATH: ${{ inputs.cf_broker_path }}
+          AUDIENCE: ${{ inputs.cf_broker_audience }}
+          STORED: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [ -n "${BROKER_URL:-}" ] && [ -n "${BROKER_PATH:-}" ]; then
+            if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+              echo "::error::broker inputs are set but no OIDC token is available."
+              echo "::error::Add `permissions: id-token: write` to the CALLING job. Falling back to"
+              echo "::error::the stored secret here would silently keep the credential you are"
+              echo "::error::trying to eliminate, so this fails instead."
+              exit 1
+            fi
+            jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
+            [ -n "${jwt:-}" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+            # NOT `curl -f`: it discards the response body on an HTTP error, and
+            # the broker's error body is the whole diagnosis. Observed against the
+            # live broker, a mint failure returns cf_errors + token_check, and the
+            # pair is what separates "my request was wrong" from "the broker's own
+            # credential cannot grant this". `-f` would leave only "502".
+            code="$(curl -sS -o /tmp/cfbroker.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${BROKER_PATH}" || echo 000)"
+            body="$(cat /tmp/cfbroker.json 2>/dev/null || true)"
+            tok="$(jq -r '.token // empty' <<<"$body" 2>/dev/null || true)"
+            if [ "$code" != "200" ] || [ -z "${tok:-}" ]; then
+              echo "::error::broker returned HTTP ${code} for ${BROKER_PATH}"
+              echo "::error::  response: ${body:0:900}"
+              if grep -q '"ok":true' <<<"$body" && grep -q '9109' <<<"$body"; then
+                echo "::error::  → token_check ok + cf_error 9109 means the broker's OWN token cannot"
+                echo "::error::    DELEGATE this scope. A token only mints permissions it holds, so"
+                echo "::error::    grant the parent Workers Scripts: Edit at ACCOUNT scope in infra."
+              else
+                echo "::error::  → check the job_workflow_ref is on the broker allowlist, the route is"
+                echo "::error::    right, and the policy has a Workers Scripts Edit tier."
+              fi
+              exit 1
+            fi
+            echo "::notice::minted a per-run Cloudflare token via the broker"
+          else
+            tok="${STORED:-}"
+            if [ -z "$tok" ]; then
+              echo "::error::no Cloudflare credential: pass CLOUDFLARE_API_TOKEN, or set"
+              echo "::error::cf_broker_url + cf_broker_path to mint one per run."
+              exit 1
+            fi
+            echo "::warning::using the STORED CLOUDFLARE_API_TOKEN. That is a standing"
+            echo "::warning::capability with no expiry tied to this run. Migrate to the broker:"
+            echo "::warning::set cf_broker_url + cf_broker_path and grant id-token: write."
+          fi
+          echo "::add-mask::$tok"
+          echo "token=$tok" >> "$GITHUB_OUTPUT"
+
       - name: Pull + verify the signed OCI artifact
         env:
           OCI: ${{ inputs.oci }}
@@ -155,7 +319,7 @@ jobs:
       # percentage gets all traffic — avoids @100 vs @100% ambiguity.
       - name: Promote reviewed version to production
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ steps.cfcred.outputs.token }}
           VERSION_ID: ${{ needs.preview.outputs.version_id }}
           NO_COLOR: "1"
         run: nix develop .#deploy --command wrangler versions deploy "$VERSION_ID" --yes
