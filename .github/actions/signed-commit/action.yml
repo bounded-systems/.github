@@ -1,0 +1,203 @@
+name: signed-commit
+description: >-
+  Publish a generated file to a branch as a GitHub-SIGNED commit, VERIFY it was
+  actually signed, and optionally open a PR. Actions hands a job a token, not a
+  signing key, so `git commit` on a runner produces an unsigned commit that a
+  "Commits must have verified signatures" rule will block. A commit created
+  through the Contents API is constructed server-side, which is the precondition
+  for GitHub signing it. Use this wherever a bot writes a generated artifact —
+  schema projections, lockfiles, SBOMs, changelogs, docs.
+inputs:
+  path:
+    description: Repo-relative path to write (e.g. schema/mirror.live.sql).
+    required: true
+  content-file:
+    description: Local file whose bytes to publish. Defaults to `path` in the workspace.
+    required: false
+    default: ""
+  branch:
+    description: Branch to create (from `base`) or write onto if it already exists.
+    required: true
+  base:
+    description: Branch/ref to cut `branch` from when it does not exist.
+    required: false
+    default: ${{ github.ref_name }}
+  message:
+    description: Commit message.
+    required: true
+  token:
+    description: >-
+      Token to authenticate the write. Needs contents:write, plus
+      pull-requests:write if `pr-title` is set. NOTE — whether GitHub signs the
+      resulting commit depends on this IDENTITY, not on the endpoint; that is
+      precisely why this action verifies rather than assumes.
+    required: true
+  repository:
+    description: owner/repo to write to.
+    required: false
+    default: ${{ github.repository }}
+  fail-if-unsigned:
+    description: >-
+      "true" fails the step when the commit comes back unverified. Default
+      "false" warns loudly and continues — correct when the content has already
+      been produced by expensive upstream work and a human can still merge with a
+      bypass. Set "true" where an unsigned commit is worse than no commit.
+    required: false
+    default: "false"
+  pr-title:
+    description: Set to open a PR from `branch` into `base`. Omit to only write the commit.
+    required: false
+    default: ""
+  pr-body-file:
+    description: File containing the PR body.
+    required: false
+    default: ""
+  pr-draft:
+    description: Open the PR as a draft.
+    required: false
+    default: "true"
+outputs:
+  changed:
+    description: '"true" when a commit was made; "false" when content already matched.'
+    value: ${{ steps.publish.outputs.changed }}
+  commit:
+    description: SHA of the created commit (empty when nothing changed).
+    value: ${{ steps.publish.outputs.commit }}
+  verified:
+    description: '"true"/"false" — GitHub''s own verdict on the commit signature.'
+    value: ${{ steps.publish.outputs.verified }}
+  reason:
+    description: GitHub's verification reason (e.g. "valid", "unsigned").
+    value: ${{ steps.publish.outputs.reason }}
+  pr-url:
+    description: URL of the PR, when one was opened.
+    value: ${{ steps.publish.outputs.pr-url }}
+runs:
+  using: composite
+  steps:
+    - id: publish
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repository }}
+        TARGET_PATH: ${{ inputs.path }}
+        CONTENT_FILE: ${{ inputs.content-file }}
+        BRANCH: ${{ inputs.branch }}
+        BASE: ${{ inputs.base }}
+        MESSAGE: ${{ inputs.message }}
+        FAIL_IF_UNSIGNED: ${{ inputs.fail-if-unsigned }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        PR_BODY_FILE: ${{ inputs.pr-body-file }}
+        PR_DRAFT: ${{ inputs.pr-draft }}
+      run: |
+        set -euo pipefail
+        src="${CONTENT_FILE:-}"
+        [ -n "$src" ] || src="$TARGET_PATH"
+        [ -f "$src" ] || { echo "::error::no such file to publish: $src"; exit 1; }
+
+        # Unwritten outputs read as "" downstream, so only real values are emitted.
+        want="$(base64 -w0 "$src")"
+
+        # 1. The branch. Created from `base` when absent; written onto when present.
+        #    The base sha is resolved SEPARATELY: folding it into the POST's
+        #    argument would let a bad `base` fail the create and get reported as
+        #    "branch already exists", which is the opposite diagnosis.
+        base_sha="$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq .object.sha)" \
+          || { echo "::error::cannot resolve base branch '$BASE' in $REPO"; exit 1; }
+        if gh api -X POST "repos/$REPO/git/refs" \
+             -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null 2>&1; then
+          echo "::notice::created branch $BRANCH from $BASE"
+        else
+          echo "::notice::branch $BRANCH already exists — writing onto it"
+        fi
+
+        # 2. The blob currently at that path ON THE BRANCH (not on base — they
+        #    diverge as soon as the branch exists). A 404 means a new file, which
+        #    is legitimate: the Contents API takes no `sha` when creating one.
+        blob=""; have=""
+        if meta="$(gh api "repos/$REPO/contents/$TARGET_PATH?ref=$BRANCH" 2>/dev/null)"; then
+          blob="$(jq -r '.sha // empty' <<<"$meta")"
+          # base64 comes back line-wrapped; normalise before comparing.
+          have="$(jq -r '.content // empty' <<<"$meta" | tr -d '\n')"
+        fi
+
+        # 3. Skip an unchanged write EXPLICITLY rather than relying on the API to
+        #    no-op. Whether a PUT with identical content creates an empty commit
+        #    is not behaviour worth assuming — and an unexplained empty commit on
+        #    a branch is exactly the kind of thing nobody investigates.
+        if [ -n "$have" ] && [ "$have" = "$want" ]; then
+          echo "::notice::$TARGET_PATH on $BRANCH already matches — nothing to commit"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # 4. The write. GitHub assembles the commit object, so GitHub can sign it.
+        args=(-X PUT "repos/$REPO/contents/$TARGET_PATH"
+              -f message="$MESSAGE" -f branch="$BRANCH" -f content="$want")
+        # `if`, not `[ … ] && …`: under `set -e` a bare `&&` list whose test is
+        # FALSE exits the script, so creating a NEW file (no blob) would abort
+        # here — the one case this branch exists to support.
+        if [ -n "$blob" ]; then args+=(-f sha="$blob"); fi
+        commit="$(gh api "${args[@]}" --jq .commit.sha)"
+        # A 2xx carrying no sha would mean "wrote nothing" while looking like
+        # success. Fail rather than report a commit that does not exist.
+        [ -n "$commit" ] || { echo "::error::Contents API returned no commit sha"; exit 1; }
+        echo "::notice::wrote $TARGET_PATH as $commit on $BRANCH"
+        {
+          echo "changed=true"
+          echo "commit=$commit"
+        } >> "$GITHUB_OUTPUT"
+
+        # 5. VERIFY. The whole reason this action exists is that "written through
+        #    the API" does NOT by itself imply "signed" — signing depends on the
+        #    authenticating identity. Observed 2026-07-28: a Contents API write
+        #    came back with no signature at all while GitHub's own squash-merges
+        #    on the same repo were signed. Never assume this; read it back.
+        v="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.verified')"
+        why="$(gh api "repos/$REPO/commits/$commit" --jq '.commit.verification.reason')"
+        {
+          echo "verified=$v"
+          echo "reason=$why"
+        } >> "$GITHUB_OUTPUT"
+        if [ "$v" = "true" ]; then
+          echo "::notice::$commit is signed and verified ($why)"
+        else
+          echo "::warning::$commit is NOT verified (reason: ${why:-unknown})."
+          echo "::warning::A 'Commits must have verified signatures' rule will block a PR containing it."
+          echo "::warning::Signing depends on the identity behind \`token\`, not on the endpoint."
+          {
+            echo "### ⚠ commit is unsigned"
+            echo "\`$commit\` on \`$BRANCH\` came back \`verified: false\` (\`${why:-unknown}\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FAIL_IF_UNSIGNED" = "true" ]; then
+            echo "::error::fail-if-unsigned is true and the commit is unsigned"
+            exit 1
+          fi
+        fi
+
+        # 6. The PR, opt-in. --head/--base are explicit: gh infers them from the
+        #    checked-out branch, and nothing here ever checks `$BRANCH` out.
+        if [ -n "$PR_TITLE" ]; then
+          pr_args=(pr create --repo "$REPO" --head "$BRANCH" --base "$BASE" --title "$PR_TITLE")
+          # Same `set -e` trap as above: pr-draft="false" would abort the step.
+          if [ "$PR_DRAFT" = "true" ]; then pr_args+=(--draft); fi
+          if [ -n "$PR_BODY_FILE" ] && [ -f "$PR_BODY_FILE" ]; then
+            pr_args+=(--body-file "$PR_BODY_FILE")
+          else
+            pr_args+=(--body "")
+          fi
+          if url="$(gh "${pr_args[@]}")"; then
+            echo "pr-url=$url" >> "$GITHUB_OUTPUT"
+            echo "::notice::opened $url"
+          else
+            # The commit is already on the branch, so a human can still open the
+            # PR. Two failures need OPPOSITE fixes and the message says which:
+            echo "::warning::could not open the PR — the commit IS pushed to $BRANCH."
+            echo "::warning::  'Resource not accessible by integration' → the App installation"
+            echo "::warning::     lacks 'Pull requests: write'. The org Actions checkbox will NOT help."
+            echo "::warning::  'GitHub Actions is not permitted to create or approve pull requests'"
+            echo "::warning::     → the org/repo setting. Prefer fixing the App: that checkbox bundles"
+            echo "::warning::     'approve' with 'create' and would let workflows self-approve."
+            echo "::warning::Open it here: ${GITHUB_SERVER_URL}/${REPO}/compare/${BRANCH}?expand=1"
+          fi
+        fi
