@@ -104,11 +104,23 @@ runs:
         #    "branch already exists", which is the opposite diagnosis.
         base_sha="$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq .object.sha)" \
           || { echo "::error::cannot resolve base branch '$BASE' in $REPO"; exit 1; }
-        if gh api -X POST "repos/$REPO/git/refs" \
-             -f ref="refs/heads/$BRANCH" -f sha="$base_sha" >/dev/null 2>&1; then
+        #    ONLY "Reference already exists" is benign. Treating every failure as
+        #    "already exists" is how front-desk-scheduler run 30379222054 printed
+        #    "branch already exists — writing onto it" and then 404'd reading a
+        #    branch that had never been created: the real error (a token without
+        #    contents:write) was replaced by a reassuring one. A misdiagnosis is
+        #    worse than a failure, because it sends the reader somewhere else.
+        if create_out="$(gh api -X POST "repos/$REPO/git/refs" \
+                           -f ref="refs/heads/$BRANCH" -f sha="$base_sha" 2>&1)"; then
           echo "::notice::created branch $BRANCH from $BASE"
-        else
+        elif grep -qi 'Reference already exists' <<<"$create_out"; then
           echo "::notice::branch $BRANCH already exists — writing onto it"
+        else
+          echo "::error::could not create branch $BRANCH: ${create_out//$'\n'/ }"
+          echo "::error::usually a token without contents:write. If it is a broker-minted"
+          echo "::error::App token, the broker scopes it DOWN to its own permissions map —"
+          echo "::error::fix it there, not on the App settings page."
+          exit 1
         fi
 
         # 2. The blob currently at that path ON THE BRANCH (not on base — they
