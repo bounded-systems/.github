@@ -3,10 +3,10 @@ description: >-
   Publish a generated file to a branch as a GitHub-SIGNED commit, VERIFY it was
   actually signed, and optionally open a PR. Actions hands a job a token, not a
   signing key, so `git commit` on a runner produces an unsigned commit that a
-  "Commits must have verified signatures" rule will block. A commit created
-  through the Contents API is constructed server-side, which is the precondition
-  for GitHub signing it. Use this wherever a bot writes a generated artifact —
-  schema projections, lockfiles, SBOMs, changelogs, docs.
+  "Commits must have verified signatures" rule will block. This writes via GraphQL
+  createCommitOnBranch — the mutation GitHub documents as producing SIGNED commits
+  — then reads the signature back rather than trusting it. Use wherever a bot
+  writes a generated artifact: schema projections, lockfiles, SBOMs, changelogs.
 inputs:
   path:
     description: Repo-relative path to write (e.g. schema/mirror.live.sql).
@@ -29,8 +29,9 @@ inputs:
     description: >-
       Token to authenticate the write. Needs contents:write, plus
       pull-requests:write if `pr-title` is set. NOTE — whether GitHub signs the
-      resulting commit depends on this IDENTITY, not on the endpoint; that is
-      precisely why this action verifies rather than assumes.
+      resulting commit is signed should follow from the endpoint, but the
+      Contents API taught us it can depend on the IDENTITY — which is why this
+      action verifies rather than assumes.
     required: true
   repository:
     description: owner/repo to write to.
@@ -96,6 +97,14 @@ runs:
         [ -f "$src" ] || { echo "::error::no such file to publish: $src"; exit 1; }
 
         # Unwritten outputs read as "" downstream, so only real values are emitted.
+
+        # Report truthfully and stop. A caller that must not fail the JOB — e.g.
+        # one whose migration has already applied by the time it publishes —
+        # sets `continue-on-error: true` on this step. Swallowing failures here
+        # instead would put that policy in the wrong place, and is how the
+        # ancestor of this action reported a green run that published nothing.
+        fail() { echo "::error::$*"; exit 1; }
+
         want="$(base64 -w0 "$src")"
 
         # 1. The branch. Created from `base` when absent; written onto when present.
@@ -123,37 +132,66 @@ runs:
           exit 1
         fi
 
-        # 2. The blob currently at that path ON THE BRANCH (not on base — they
-        #    diverge as soon as the branch exists). A 404 means a new file, which
-        #    is legitimate: the Contents API takes no `sha` when creating one.
-        blob=""; have=""
+        # 2. The content currently at that path ON THE BRANCH (not on base — they
+        #    diverge as soon as the branch exists). A 404 means a new file.
+        have=""
         if meta="$(gh api "repos/$REPO/contents/$TARGET_PATH?ref=$BRANCH" 2>/dev/null)"; then
-          blob="$(jq -r '.sha // empty' <<<"$meta")"
           # base64 comes back line-wrapped; normalise before comparing.
           have="$(jq -r '.content // empty' <<<"$meta" | tr -d '\n')"
         fi
 
         # 3. Skip an unchanged write EXPLICITLY rather than relying on the API to
-        #    no-op. Whether a PUT with identical content creates an empty commit
-        #    is not behaviour worth assuming — and an unexplained empty commit on
-        #    a branch is exactly the kind of thing nobody investigates.
+        #    no-op. Whether an identical write creates an empty commit is not
+        #    behaviour worth assuming — and an unexplained empty commit on a
+        #    branch is exactly the kind of thing nobody investigates.
         if [ -n "$have" ] && [ "$have" = "$want" ]; then
           echo "::notice::$TARGET_PATH on $BRANCH already matches — nothing to commit"
           echo "changed=false" >> "$GITHUB_OUTPUT"
           exit 0
         fi
 
-        # 4. The write. GitHub assembles the commit object, so GitHub can sign it.
-        args=(-X PUT "repos/$REPO/contents/$TARGET_PATH"
-              -f message="$MESSAGE" -f branch="$BRANCH" -f content="$want")
-        # `if`, not `[ … ] && …`: under `set -e` a bare `&&` list whose test is
-        # FALSE exits the script, so creating a NEW file (no blob) would abort
-        # here — the one case this branch exists to support.
-        if [ -n "$blob" ]; then args+=(-f sha="$blob"); fi
-        commit="$(gh api "${args[@]}" --jq .commit.sha)"
-        # A 2xx carrying no sha would mean "wrote nothing" while looking like
-        # success. Fail rather than report a commit that does not exist.
-        [ -n "$commit" ] || { echo "::error::Contents API returned no commit sha"; exit 1; }
+        # 4. The write, via GraphQL createCommitOnBranch.
+        #
+        #    WHY NOT `PUT /repos/{repo}/contents/{path}` (what this used to do).
+        #    Both are server-side, but only one PROMISES a signature.
+        #    createCommitOnBranch is the mutation GitHub documents as producing
+        #    signed commits; the Contents API's behaviour depends on the
+        #    authenticating identity, which is how front-desk-scheduler#27 ended
+        #    up with an unsigned commit blocked by a signature rule. Choosing the
+        #    endpoint with the guarantee is the difference between ensuring a
+        #    signature and discovering afterwards whether you got one.
+        #
+        #    `expectedHeadOid` makes this a compare-and-swap: if anything else
+        #    moved the branch between the read above and this write, the mutation
+        #    is REJECTED rather than silently clobbering. The Contents API had no
+        #    such guard.
+        head_oid="$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha)" \
+          || fail "could not read head of $BRANCH"
+        [ -n "${head_oid:-}" ] || fail "empty head oid for $BRANCH"
+
+        headline="$(head -1 <<<"$MESSAGE")"
+        body="$(tail -n +2 <<<"$MESSAGE" | sed '1{/^$/d}')"
+
+        resp="$(jq -n \
+          --arg repo "$REPO" --arg branch "$BRANCH" --arg oid "$head_oid" \
+          --arg headline "$headline" --arg body "$body" \
+          --arg path "$TARGET_PATH" --arg contents "$want" \
+          '{query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+            variables: {input: {
+              branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+              expectedHeadOid: $oid,
+              message: {headline: $headline, body: $body},
+              fileChanges: {additions: [{path: $path, contents: $contents}]}
+            }}}' | gh api graphql --input -)" \
+          || fail "createCommitOnBranch failed"
+
+        # GraphQL reports errors in a 200 body, so a non-zero exit is NOT the
+        # only failure mode — check the payload before trusting it.
+        if err="$(jq -r '.errors[0].message // empty' <<<"$resp")" && [ -n "$err" ]; then
+          fail "createCommitOnBranch returned an error: $err"
+        fi
+        commit="$(jq -r '.data.createCommitOnBranch.commit.oid // empty' <<<"$resp")"
+        [ -n "$commit" ] || fail "createCommitOnBranch returned no commit oid"
         echo "::notice::wrote $TARGET_PATH as $commit on $BRANCH"
         {
           echo "changed=true"
