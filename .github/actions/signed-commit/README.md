@@ -19,22 +19,28 @@ produces an **unsigned** commit. The moment a repo turns on
 and can only be merged with a rule bypass. That is how this action came about —
 see bounded-systems/front-desk-scheduler#27.
 
-A commit created through the **Contents API** is constructed *server-side*, which
-is the precondition for GitHub signing it. Same content, same branch, same PR;
-the difference is who assembles the commit object.
+This writes via GraphQL **`createCommitOnBranch`** — the mutation GitHub
+documents as producing **signed** commits. Same content, same branch, same PR;
+the difference is that the commit object is assembled server-side by an endpoint
+that promises a signature.
 
-## The part that is easy to get wrong
+## Why not the Contents API, and why it still verifies
 
-**"Written through the API" does not by itself imply "signed."**
+The first version of this action used `PUT /repos/{repo}/contents/{path}`. That
+is also server-side, but it makes no promise: observed 2026-07-28, a Contents API
+write came back with `%G? = N` — no signature at all — while GitHub's own
+squash-merges on the *same repo* were signed as `GitHub <noreply@github.com>`.
+Signing there depends on the **identity that authenticated**, not on the endpoint.
 
-Observed 2026-07-28: a Contents API write came back with `%G? = N` — no
-signature at all — while GitHub's own squash-merges on the *same repo* were
-signed as `GitHub <noreply@github.com>`. Signing depends on the **identity that
-authenticated**, not on the endpoint you called.
+`createCommitOnBranch` is the endpoint with the guarantee, which is the
+difference between *ensuring* a signature and *discovering* whether you got one.
+The verification stays regardless, because a documented guarantee is still a
+claim about someone else's system. If you take one thing from this README: check
+`verified`, don't trust the mechanism — including this one.
 
-So this action reads `.commit.verification.verified` back and reports it, rather
-than assuming the write did it. If you take one thing from this README: check
-`verified`, don't trust the mechanism.
+`expectedHeadOid` also makes the write a compare-and-swap: if anything moved the
+branch between the read and the write, the mutation is rejected instead of
+silently clobbering. The Contents API had no such guard.
 
 ## Usage
 
@@ -87,8 +93,8 @@ steps:
   bytes against the blob already on the branch rather than relying on the API to
   no-op. An unexplained empty commit is exactly the kind of thing nobody
   investigates later.
-- **New files work.** A 404 on the existing blob means "create", and the
-  Contents API takes no `sha` in that case.
+- **New files work.** `fileChanges.additions` creates or replaces, so no
+  separate create/update path is needed.
 - **`--head`/`--base` are explicit on the PR.** `gh` infers them from the
   checked-out branch, and this action never checks `branch` out — without them
   `gh` would target whatever the job has checked out.
@@ -102,9 +108,13 @@ steps:
   misreport work that succeeded, and a human can still merge with a bypass. Set
   it to `true` where an unsigned commit is worse than no commit.
 
+- **Failures fail the step.** A caller that must not fail the whole JOB — one
+  whose expensive upstream work has already succeeded by the time it publishes —
+  sets `continue-on-error: true`. Putting that policy in the action instead is
+  how its ancestor reported a green run that had published nothing.
+
 ## Status
 
-Not yet exercised by a GitHub App installation token — the first real consumer
-(`front-desk-scheduler`'s `mirror-migrate`) is the proving ground. Since signing
-depends on the authenticating identity, treat `verified` from the first real run
-as the fact, not this README.
+The write path has not yet run under a GitHub App installation token.
+`front-desk-scheduler`'s `mirror-migrate` is the proving ground. Treat
+`verified` from the first real run as the fact, not this README.
