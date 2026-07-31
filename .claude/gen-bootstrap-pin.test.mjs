@@ -12,10 +12,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { digestsAt, inspect, parseBootstrap, renderBootstrap, sha256 } from "./gen-bootstrap-pin.mjs";
+import { digestsAt, inspect, parseBootstrap, planBump, renderBootstrap, sha256 } from "./gen-bootstrap-pin.mjs";
 
 const A = "a".repeat(40);
 const B = "b".repeat(40);
+// The commit a merged bump lands as: a NEW commit id, but byte-identical fetched
+// files, because the bump only edits README.md and README.md is not fetched.
+const C = "c".repeat(40);
 const SUM_A = sha256("dispatcher@A");
 const SUM_B = sha256("dispatcher@B");
 const SUM_R = sha256("register@A");
@@ -47,6 +50,7 @@ done
 const world = {
   [A]: { "session-start-dispatch.mjs": "dispatcher@A", "register-mcp.mjs": "register@A" },
   [B]: { "session-start-dispatch.mjs": "dispatcher@B", "register-mcp.mjs": "register@A" },
+  [C]: { "session-start-dispatch.mjs": "dispatcher@B", "register-mcp.mjs": "register@A" },
 };
 const read = (commit, file) => {
   const at = world[commit]?.[file];
@@ -151,6 +155,58 @@ test("the two properties are reported independently, not collapsed", () => {
   const got = inspect(fixture({ dispatch: SUM_B }), { commit: B, read });
   assert.deepEqual(got.integrity, ["session-start-dispatch.mjs"]);
   assert.deepEqual(got.stale, ["session-start-dispatch.mjs"]);
+});
+
+// ── Termination of the auto-bump loop ────────────────────────────────────────
+//
+// org-defaults.yml regenerates on every push to main and opens a PR if that
+// wrote anything. So "wrote nothing" is not a nicety here — it is the only
+// thing standing between a merged bump and the next bump PR. These tests walk
+// the loop the way the live e2e did, since reasoning about it missed the bug.
+
+test("a fetched file changing on main writes a bump", () => {
+  const got = planBump(fixture(), { commit: B, read });
+  assert.equal(got.write, true);
+  assert.match(got.next, new RegExp(`^PIN=${B}$`, "m"));
+  assert.match(got.next, new RegExp(`^SUM_session_start_dispatch_mjs=${SUM_B}$`, "m"));
+});
+
+test("the commit that bump lands as does NOT write another bump", () => {
+  // The regression. Merging the bump above puts C on main and triggers a push
+  // run. C is a different commit id from the pin B, but serves identical bytes,
+  // so there is nothing to say — and saying it would open a PR whose merge
+  // triggers the same run again, forever.
+  const bumped = planBump(fixture(), { commit: B, read }).next;
+  const got = planBump(bumped, { commit: C, read });
+  assert.equal(got.write, false, "the bump's own merge commit re-triggered a bump");
+  assert.match(got.reason, /already serves this content/);
+});
+
+test("an older pin serving identical bytes is correct, not stale", () => {
+  // The same property stated directly: freshness is a claim about CONTENT, and
+  // the pin trailing HEAD by any number of commits is not by itself a defect.
+  assert.equal(planBump(fixture({ pin: A }), { commit: A, read }).write, false);
+  assert.deepEqual(inspect(fixture({ pin: A }), { commit: A, read }).stale, []);
+});
+
+test("rendering alone would never converge — which is why planBump gates it", () => {
+  // Pins the reason the first version looped. renderBootstrap is honest about
+  // its job and rewrites what it is told to; at C it produces a document that
+  // differs from its input purely because PIN is a commit id. `next !== source`
+  // is therefore not a usable "something changed" signal across commits.
+  const bumped = planBump(fixture(), { commit: B, read }).next;
+  const rendered = renderBootstrap(bumped, { pin: C, digests: digestsAt(C, parseBootstrap(bumped).fetches, { read }) });
+  assert.notEqual(rendered, bumped, "if this ever matches, the loop bug was structural rather than a missing gate");
+  const differing = rendered.split("\n").filter((l, i) => l !== bumped.split("\n")[i]);
+  assert.deepEqual(differing, [`PIN=${C}`], "only the commit id differs — no digest moved");
+});
+
+test("a broken digest is repaired even when no fetched file changed", () => {
+  // The skip must key on BOTH properties. Integrity alone is broken here, and
+  // it is the case where the bootstrap is refusing a file right now.
+  const got = planBump(fixture({ dispatch: SUM_B }), { commit: A, read });
+  assert.equal(got.write, true);
+  assert.match(got.next, new RegExp(`^SUM_session_start_dispatch_mjs=${SUM_A}$`, "m"));
 });
 
 test("a document with no pin is an error, not a silent pass", () => {

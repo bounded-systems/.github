@@ -37,8 +37,11 @@ jobs:
   # own pin. Mirrors registry-graph.yml — regenerate, and if that changed
   # anything, open a PR rather than pushing to a protected branch.
   #
-  # Terminates because the bump only edits .claude/README.md, which is not itself
-  # in the fetch set, so it cannot invalidate the pin it just wrote.
+  # Terminates because the generator writes only when the pin is WRONG, not when
+  # it is merely older — so this run, on the commit the last bump landed as, has
+  # nothing to say and opens nothing. That gate is the whole argument; see "Why
+  # this terminates" in gen-bootstrap-pin.mjs for the version that looped, and
+  # the tests that now hold it.
   pin:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

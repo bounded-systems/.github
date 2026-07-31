@@ -32,11 +32,23 @@
  * main, opening the bump PR automatically.
  *
  * ── Why this terminates ──────────────────────────────────────────────────────
- * The bump only edits README.md, and README.md is deliberately NOT in the fetch
- * set — the digests live in the one file that is never fetched, since fetching
- * the digests would verify nothing. So writing the bump cannot invalidate the
- * pin it just wrote, and the follow-up run is clean. If README.md ever became a
- * fetched file, this design would oscillate forever.
+ * Because a bump is written only when the pin is WRONG, never when it is merely
+ * older. That distinction IS the termination argument, and the first version of
+ * this file did not make it: it rewrote whenever the rendered document differed
+ * from the current one, and it always differs, because PIN names a commit. Each
+ * bump landed on main as a new commit, the next push found PIN naming that
+ * commit's parent, and opened another bump — indefinitely, with no fetched file
+ * ever having changed.
+ *
+ * The argument this shipped with — "the bump only edits README.md, which is
+ * deliberately not in the fetch set, so it cannot invalidate the pin it just
+ * wrote" — is true, and was not sufficient. It establishes that the CONTENT
+ * stays consistent across a bump; it says nothing about the commit id, and the
+ * commit id was what the rewrite keyed on. Running the loop found that in two
+ * commits; reasoning about it had already missed it once.
+ *
+ * So freshness is judged as a claim about content (`planBump`): an older pin
+ * that still serves byte-identical files is correct, and correct is a no-op.
  *
  * ── Usage ────────────────────────────────────────────────────────────────────
  *   node .claude/gen-bootstrap-pin.mjs --check     # verify; exit 1 on drift
@@ -147,6 +159,32 @@ export function inspect(source, { commit = "HEAD", read = fileAtCommit } = {}) {
   };
 }
 
+/**
+ * What a bump should write at `commit`, if anything.
+ *
+ * Split out of main() because this is the termination argument in code, and the
+ * termination argument is the part that was wrong — it belongs somewhere a test
+ * can reach without a git repository to push around.
+ *
+ * Two independent reasons to write nothing, kept separate because they mean
+ * different things: the pin is already CORRECT (older, still serving these
+ * bytes — the steady state after a bump lands), or the pin is already THIS
+ * commit (a re-run of the same bump).
+ */
+export function planBump(source, { commit, read = fileAtCommit } = {}) {
+  const { pin, fetches } = parseBootstrap(source);
+  const { integrity, stale } = inspect(source, { commit, read });
+
+  if (!integrity.length && !stale.length) {
+    return { write: false, next: source, reason: `${pin.slice(0, 12)} already serves this content` };
+  }
+
+  const next = renderBootstrap(source, { pin: commit, digests: digestsAt(commit, fetches, { read }) });
+  if (next === source) return { write: false, next, reason: `already at ${commit.slice(0, 12)}` };
+
+  return { write: true, next, reason: `pinned ${commit.slice(0, 12)} (${fetches.length} digest(s) re-recorded)` };
+}
+
 function main(argv) {
   const source = readFileSync(README, "utf8");
   const check = argv.includes("--check");
@@ -170,15 +208,15 @@ function main(argv) {
     return 0;
   }
 
-  const { fetches } = parseBootstrap(source);
   const resolved = execFileSync("git", ["rev-parse", commit], { cwd: HERE, encoding: "utf8" }).trim();
-  const next = renderBootstrap(source, { pin: resolved, digests: digestsAt(resolved, fetches) });
-  if (next === source) {
-    console.log(`bootstrap-pin: already at ${resolved.slice(0, 12)} — nothing to write`);
+  const { write, next, reason } = planBump(source, { commit: resolved });
+
+  if (!write) {
+    console.log(`bootstrap-pin: ${reason} — nothing to write`);
     return 0;
   }
   writeFileSync(README, next);
-  console.log(`bootstrap-pin: pinned ${resolved.slice(0, 12)} (${fetches.length} digest(s) re-recorded)`);
+  console.log(`bootstrap-pin: ${reason}`);
   return 0;
 }
 
