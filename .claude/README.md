@@ -59,7 +59,7 @@ this file is what the field should be returned to.
 set -uo pipefail
 
 ROOT=/home/user                                    # where the repo checkouts land
-PIN=c8bdd067b159ea4ceee4583e1920504c38eb4110       # bump when .github/.claude changes
+PIN=dc00a2e0ca4ba3fb698231bc905ddf94adeb5c1b       # bump when .github/.claude changes
 BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
 
 # Fall back to pinned raw copies when .github is not attached to the session.
