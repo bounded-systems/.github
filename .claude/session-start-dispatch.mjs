@@ -56,6 +56,13 @@
  * pointer: logic added there is unreviewable and ungateable (the failure mode
  * infra#122 was filed about — a second copy with no drift gate).
  *
+ * The snippet above is the MINIMUM that works, and it assumes `.github` is
+ * attached to the session. README.md carries the full script, which additionally
+ * falls back to copies fetched from a pinned commit when it is not — and verifies
+ * those against recorded SHA-256 digests before executing them, refusing to wire
+ * anything up on a mismatch. Prefer that one; this is here so the file explains
+ * its own installation without sending the reader elsewhere to understand it.
+ *
  * ── Contract ─────────────────────────────────────────────────────────────────
  * Every child hook is best-effort. A hook that fails, hangs or prints garbage
  * degrades its own repo and nothing else: a session that starts slightly wrong

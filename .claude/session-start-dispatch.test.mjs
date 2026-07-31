@@ -42,7 +42,36 @@ const DOCS = ["session-start-dispatch.mjs", "README.md"];
  * would make the warning unwritable.
  */
 function installCommands(source) {
-  return [...source.matchAll(/"command":\s*"node ([^"]*session-start-dispatch\.mjs)"/g)].map((m) => m[1]);
+  // Allow leading `VAR=value ` assignments before `node`: the documented command
+  // sets CLAUDE_SESSION_ROOT inline, which is load-bearing when the dispatcher was
+  // fetched to a cache dir instead of read from an attached checkout (its
+  // self-location resolves to `/` there). Matching only a bare `node …` would make
+  // the correct command invisible to this gate rather than wrong.
+  return [...source.matchAll(/"command":\s*"(?:\w+=\S+\s+)*node ([^"]*session-start-dispatch\.mjs)"/g)]
+    .map((m) => resolveShellVars(m[1], source));
+}
+
+/**
+ * Expand `$VAR` / `${VAR}` using the `VAR=value` assignments in the same document.
+ *
+ * The snippet is a shell script, so its path is assembled from variables rather
+ * than written literally — asserting on the raw string would only pin the spelling.
+ * Resolving first pins what the reader's shell actually produces, which is the
+ * thing that has to equal the session root.
+ *
+ * FIRST assignment wins: the fallback branch reassigns BOOT to a cache directory,
+ * and the install path being checked is the preferred one.
+ */
+function resolveShellVars(value, source) {
+  const vars = {};
+  for (const [, k, v] of source.matchAll(/^\s*(\w+)=["']?([^"'\s#]+)["']?\s*(?:#.*)?$/gm)) {
+    if (!(k in vars)) vars[k] = v;
+  }
+  let out = value;
+  for (let i = 0; i < 5 && /\$/.test(out); i++) {
+    out = out.replace(/\$\{(\w+)\}|\$(\w+)/g, (m, a, b) => vars[a ?? b] ?? m);
+  }
+  return out;
 }
 
 test("every documented install command points at the session root, not $HOME", () => {
