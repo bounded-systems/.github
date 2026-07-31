@@ -31,4 +31,15 @@ jobs:
           b="registry-graph/$(date -u +%Y%m%d%H%M%S)"
           git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$b"; git commit -am "chore(profile): sync knowledge-graph from the registry"; git push origin "$b"
-          gh pr create --base main --head "$b" --title "chore(profile): sync knowledge-graph from the registry" --body "Automated by registry-graph.yml — the registry changed."
+          # Same failure mode as org-defaults.yml's `pin` job, found there on its
+          # first real run and fixed here before this one ever fires: Actions is
+          # not permitted to create pull requests in this org, so the branch lands
+          # and `gh pr create` refuses. This job has apparently never opened a PR.
+          if gh pr create --base main --head "$b" --title "chore(profile): sync knowledge-graph from the registry" --body "Automated by registry-graph.yml — the registry changed."; then
+            exit 0
+          fi
+          echo "::error title=registry-graph: branch pushed, PR not opened::Pushed $b," \
+               "but could not open its PR. If the cause above is \"GitHub Actions is not" \
+               "permitted to create or approve pull requests\", that is a settings fix for" \
+               "the repo or org. Until then, open a PR from $b by hand."
+          exit 1

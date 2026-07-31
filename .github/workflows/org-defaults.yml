@@ -76,6 +76,22 @@ jobs:
           # of those has to stay indented: a non-empty line at column 0 ENDS the
           # scalar, and `---` there starts a new YAML document. Written inline,
           # this made the whole workflow unparseable — see workflows.test.mjs.
-          gh pr create --base main --head "$b" \
-            --title "chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests" \
-            --body-file .github/bootstrap-pin-bump.md
+          # The branch is pushed and correct by this point; only OPENING the PR
+          # can still fail, and on 2026-07-31 it did, on the job's first real run:
+          #   GraphQL: GitHub Actions is not permitted to create or approve
+          #   pull requests (createPullRequest)
+          # That is an org/repo setting, not something this file can fix, and a
+          # bare GraphQL error in a log nobody is watching is how it stayed
+          # invisible. Still exits 1 — main really is serving stale files to any
+          # session without `.github` attached — but says what to do about it.
+          if gh pr create --base main --head "$b" \
+               --title "chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests" \
+               --body-file .github/bootstrap-pin-bump.md; then
+            exit 0
+          fi
+          echo "::error title=pin: branch pushed, PR not opened::Pushed $b with the" \
+               "correct pin, but could not open its PR. If the cause above is \"GitHub" \
+               "Actions is not permitted to create or approve pull requests\", enable" \
+               "that setting for this repo or org — it is a settings fix, not a code" \
+               "fix. Until then, open a PR from $b by hand to get main green."
+          exit 1
