@@ -28,9 +28,16 @@ each repo keeps owning its own provisioning.
 
 ## Install
 
-The session root's `.claude/` is **ephemeral** — the container is reclaimed between
-sessions — so the environment's setup script has to recreate it on every boot. Add
-this to the Claude Code environment's setup script:
+Two directories are involved and they are **not** the same one:
+
+| | path (verified 2026-07-31) | what it holds |
+|---|---|---|
+| user settings | `$HOME/.claude` → `/root/.claude` | hook wiring; the session runs as root |
+| session root | `/home/user` | the attached repo checkouts |
+
+The dispatcher is wired from the first and scans the second. Both are ephemeral —
+the container is reclaimed — so the environment's setup script recreates the wiring
+on every boot:
 
 ```sh
 mkdir -p "$HOME/.claude"
@@ -46,9 +53,21 @@ cat > "$HOME/.claude/settings.json" <<'JSON'
 JSON
 ```
 
-Adjust the path if the session root is not `/home/user`. The dispatcher locates the
-repos itself (it resolves the root from its own location), so the path above only
-has to point at the file.
+The dispatcher locates the repos itself — it resolves the session root from its own
+path — so the command above only has to point at the file. Adjust it if the repos
+are checked out somewhere other than `/home/user`.
+
+### Do not edit `launcher-settings.json`
+
+`$HOME/.claude/launcher-settings.json` already exists and already declares a
+`SessionStart` hook (`session-start-git-identity.sh`) plus a `Stop` hook. It is
+platform-managed and gets rewritten, so changes there do not survive.
+
+`settings.json` is the standard user-settings file and is read alongside it; hook
+arrays from the two sources combine, so the snippet above **adds** the dispatcher
+without displacing the git-identity hook. If a session ever shows the dispatcher
+not running while `session-start-git-identity.sh` does, that merge is the thing to
+check first.
 
 **Keep that pointer a pointer.** It is the one piece of this machinery living outside
 version control, where no reviewer and no drift gate can see it. Logic added there is
