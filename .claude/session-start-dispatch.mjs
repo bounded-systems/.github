@@ -27,8 +27,8 @@
  * repo in this file, the logic belongs in that repo's own hook.
  *
  * ── Install ──────────────────────────────────────────────────────────────────
- * The session root's `.claude/` is ephemeral — the container is reclaimed — so
- * the environment's setup script must recreate it on every boot:
+ * The user settings directory is ephemeral — the container is reclaimed — so the
+ * environment's setup script must recreate the pointer on every boot:
  *
  *   mkdir -p "$HOME/.claude"
  *   cat > "$HOME/.claude/settings.json" <<'JSON'
@@ -36,11 +36,21 @@
  *     "hooks": {
  *       "SessionStart": [
  *         { "matcher": "", "hooks": [ { "type": "command",
- *           "command": "node $HOME/.github/.claude/session-start-dispatch.mjs" } ] }
+ *           "command": "node /home/user/.github/.claude/session-start-dispatch.mjs" } ] }
  *       ]
  *     }
  *   }
  *   JSON
+ *
+ * NOTE the two directories above are NOT the same one, and `$HOME` names only the
+ * first. The session runs as root, so `$HOME/.claude` is `/root/.claude` — correct
+ * for the settings file. The repos are checked out under `/home/user`, so the
+ * dispatcher path must be spelled literally; `$HOME/.github` would be
+ * `/root/.github`, which does not exist. That is the same `$HOME` ≠ session-root
+ * confusion recorded against `sessionRootFrom` below, and it fails the same silent
+ * way: node cannot find the file, the hook errors, and the session starts
+ * unprovisioned — presenting as a broken checkout. Use `$CLAUDE_SESSION_ROOT` (see
+ * below) if the repos live somewhere else.
  *
  * That pointer is the only thing living outside version control. Keep it a
  * pointer: logic added there is unreviewable and ungateable (the failure mode

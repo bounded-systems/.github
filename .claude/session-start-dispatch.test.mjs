@@ -7,8 +7,65 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { extractContext, findRepos, sessionRootFrom, sessionStartCommands } from "./session-start-dispatch.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const read = (name) => readFileSync(join(HERE, name), "utf8");
+
+// ── The install snippet, which is documentation and therefore untested by ─────
+// ── everything else in this file ──────────────────────────────────────────────
+//
+// The pointer in $HOME/.claude/settings.json is the one piece of this machinery
+// outside version control: nobody reviews it, no drift gate sees it, and it is
+// retyped from a snippet on every container boot. A wrong snippet is therefore a
+// permanently wrong pointer, and it fails silently — node cannot find the file,
+// the hook errors, and the session starts unprovisioned, presenting as a broken
+// checkout. That is precisely the misreading this dispatcher exists to prevent.
+//
+// It shipped wrong once (#69 merged with `$HOME/.github/...` in the docstring
+// while README.md had `/home/user/.github/...`), so it is pinned here.
+
+const SNIPPET_PATH = "/home/user/.github/.claude/session-start-dispatch.mjs";
+const DOCS = ["session-start-dispatch.mjs", "README.md"];
+
+/**
+ * Every `"command": "node …session-start-dispatch.mjs"` a doc actually tells the
+ * reader to install.
+ *
+ * Scoped to the command line rather than grepping the whole file, because both
+ * documents legitimately DISCUSS the wrong path in prose in order to warn about
+ * it. A blanket ban cannot tell an instruction from a cautionary example, and
+ * would make the warning unwritable.
+ */
+function installCommands(source) {
+  return [...source.matchAll(/"command":\s*"node ([^"]*session-start-dispatch\.mjs)"/g)].map((m) => m[1]);
+}
+
+test("every documented install command points at the session root, not $HOME", () => {
+  // $HOME is /root — the session runs as root — while the repos are checked out
+  // under /home/user. `$HOME/.claude` is right for the settings file and
+  // `$HOME/.github` is wrong for the dispatcher, one line apart in the snippet.
+  // Same variable, two different roles; that adjacency is what made the mistake
+  // easy, and it shipped in #69.
+  for (const name of DOCS) {
+    const commands = installCommands(read(name));
+    assert.ok(commands.length > 0, `${name} no longer carries an install command to check`);
+    for (const cmd of commands) {
+      assert.equal(cmd, SNIPPET_PATH, `${name} installs the dispatcher from ${cmd}`);
+    }
+  }
+});
+
+test("the docstring and the README do not drift apart", () => {
+  // Two copies of one pointer, and the pointer lives outside version control —
+  // so a stale copy is retyped into a real session on the next boot.
+  const [fromCode, fromReadme] = DOCS.map((n) => installCommands(read(n)));
+  assert.deepEqual(fromCode, fromReadme);
+});
 
 // ── Locating the session root ────────────────────────────────────────────────
 
