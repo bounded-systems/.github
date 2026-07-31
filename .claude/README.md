@@ -44,23 +44,74 @@ The dispatcher is wired from the first and scans the second. Both are ephemeral 
 the container is reclaimed — so the environment's setup script recreates the wiring
 on every boot:
 
+This is the canonical text of that field. It is recorded here — the same way
+`cloud-environment.json` records what the network dialog should say — because the
+field itself lives where no reviewer and no gate can see it. If the two drift,
+this file is what the field should be returned to.
+
 ```sh
+#!/usr/bin/env bash
+# bounded-systems session bootstrap.
+#
+# This stays a POINTER. All logic lives in bounded-systems/.github/.claude,
+# where it is reviewed, tested and gated. Anything added here is unreviewable
+# and ungateable — infra#122's failure mode.
+set -uo pipefail
+
+ROOT=/home/user                                    # where the repo checkouts land
+PIN=c8bdd067b159ea4ceee4583e1920504c38eb4110       # bump when .github/.claude changes
+BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
+
+# Fall back to pinned raw copies when .github is not attached to the session.
+# The URL is pinned to a COMMIT SHA, which is content-addressed — as pinned as a
+# SHA-pinned action. Never put a branch name here: that is unpinned execution,
+# which this org rejects everywhere else (deno install --frozen, SHA-pinned
+# actions, the CANONICAL_SHA256 drift gate).
+if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
+  echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
+  BOOT=/opt/bounded-boot
+  mkdir -p "$BOOT"
+  for f in session-start-dispatch.mjs register-mcp.mjs; do
+    curl -fsSL --retry 2 \
+      "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
+      -o "$BOOT/$f" || echo "bootstrap: WARN could not fetch $f"
+  done
+fi
+
+# Both scripts self-locate from their own path, which is correct in the attached
+# checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
+# the first case and load-bearing in the second.
 mkdir -p "$HOME/.claude"
-cat > "$HOME/.claude/settings.json" <<'JSON'
+cat > "$HOME/.claude/settings.json" <<JSON
 {
   "hooks": {
     "SessionStart": [
       { "matcher": "", "hooks": [ { "type": "command",
-        "command": "node /home/user/.github/.claude/session-start-dispatch.mjs" } ] }
+        "command": "CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" } ] }
     ]
   }
 }
 JSON
 
-# MCP servers are resolved when Claude Code LAUNCHES, before any SessionStart
-# hook runs — so this cannot live in the dispatcher and must run here.
-node /home/user/.github/.claude/register-mcp.mjs
+# MCP servers resolve when Claude Code LAUNCHES, before any SessionStart hook
+# runs — so this must happen here, not in the dispatcher.
+if [ -f "$BOOT/register-mcp.mjs" ]; then
+  CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
+else
+  echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
+fi
+
+echo "bootstrap: ready — dispatcher at $BOOT"
 ```
+
+**The heredoc is deliberately unquoted** (`<<JSON`, not `<<'JSON'`) because `$ROOT`
+and `$BOOT` must interpolate. There is nothing else `$`-shaped in that JSON. If you
+add a field containing a literal `$`, escape it.
+
+**Bump `PIN` whenever `.claude/` changes here.** A stale pin only affects the
+fallback path — an attached `.github` always wins — so the symptom is subtle: it
+works for you and not for a session without `.github`. Fetching a missing file
+warns rather than failing.
 
 The dispatcher locates the repos itself — it resolves the session root from its own
 path — so the command above only has to point at the file. Adjust it if the repos
