@@ -59,30 +59,63 @@ this file is what the field should be returned to.
 set -uo pipefail
 
 ROOT=/home/user                                    # where the repo checkouts land
-PIN=dc00a2e0ca4ba3fb698231bc905ddf94adeb5c1b       # bump when .github/.claude changes
 BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
 
-# Fall back to pinned raw copies when .github is not attached to the session.
-# The URL is pinned to a COMMIT SHA, which is content-addressed — as pinned as a
-# SHA-pinned action. Never put a branch name here: that is unpinned execution,
-# which this org rejects everywhere else (deno install --frozen, SHA-pinned
-# actions, the CANONICAL_SHA256 drift gate).
+# --- the trust anchor -------------------------------------------------------
+# PIN is a COMMIT SHA (content-addressed, so the URL is immutable). The SHA-256s
+# are the second, independent check: pinning the URL only guarantees immutability
+# IF the endpoint is honest, because the SHA in the URL is a path component the
+# client never verifies. These digests are checked locally, so a wrong-bytes
+# response is refused whatever served it.
+#
+# They live HERE, in the one file that is not fetched. Putting them in the repo
+# would mean fetching the digests too, which verifies nothing.
+#
+# Bump all three together. Regenerate with:
+#   for f in session-start-dispatch.mjs register-mcp.mjs; do
+#     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
+#   done
+PIN=dc00a2e0ca4ba3fb698231bc905ddf94adeb5c1b
+SUM_session_start_dispatch_mjs=d54d7a2e261e25b2a50565379a8639dda126b507d580386188bda57b5f6ee56d
+SUM_register_mcp_mjs=bbdd6d07f2cd27bc02c8945d6eef62b104dadaad3d3fac52a826201d7221f3d0
+
+# Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
+# to a temp name and only moves it into place after the check, so an unverified
+# file never sits at a path something might execute.
+fetch_verified() {
+  local f="$1" want="$2" got
+  curl -fsSL --retry 2 \
+    "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
+    -o "$BOOT/$f.unverified" || { echo "bootstrap: WARN could not fetch $f"; return 1; }
+  got="$(sha256sum "$BOOT/$f.unverified" | cut -d' ' -f1)"
+  if [ "$got" != "$want" ]; then
+    echo "bootstrap: REFUSING $f — sha256 mismatch, not executing it"
+    echo "bootstrap:   expected $want"
+    echo "bootstrap:   got      $got"
+    rm -f "$BOOT/$f.unverified"
+    return 1
+  fi
+  mv "$BOOT/$f.unverified" "$BOOT/$f"
+}
+
+# The attached checkout is NOT digest-checked: it arrives over the session's git
+# proxy with git's own integrity, and it may legitimately be NEWER than PIN — so
+# comparing it against these digests would fail on every merge. Only the fetched
+# copy is verified, because only it is fetched.
 if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
   BOOT=/opt/bounded-boot
   mkdir -p "$BOOT"
-  for f in session-start-dispatch.mjs register-mcp.mjs; do
-    curl -fsSL --retry 2 \
-      "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
-      -o "$BOOT/$f" || echo "bootstrap: WARN could not fetch $f"
-  done
+  fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
+  fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
 fi
 
 # Both scripts self-locate from their own path, which is correct in the attached
 # checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
 # the first case and load-bearing in the second.
 mkdir -p "$HOME/.claude"
-cat > "$HOME/.claude/settings.json" <<JSON
+if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
+  cat > "$HOME/.claude/settings.json" <<JSON
 {
   "hooks": {
     "SessionStart": [
@@ -92,6 +125,9 @@ cat > "$HOME/.claude/settings.json" <<JSON
   }
 }
 JSON
+else
+  echo "bootstrap: WARN no dispatcher — repo SessionStart hooks will not run"
+fi
 
 # MCP servers resolve when Claude Code LAUNCHES, before any SessionStart hook
 # runs — so this must happen here, not in the dispatcher.
@@ -108,10 +144,53 @@ echo "bootstrap: ready — dispatcher at $BOOT"
 and `$BOOT` must interpolate. There is nothing else `$`-shaped in that JSON. If you
 add a field containing a literal `$`, escape it.
 
-**Bump `PIN` whenever `.claude/` changes here.** A stale pin only affects the
-fallback path — an attached `.github` always wins — so the symptom is subtle: it
-works for you and not for a session without `.github`. Fetching a missing file
-warns rather than failing.
+**Bump `PIN` and both digests together whenever `.claude/` changes here.** A stale
+pin only affects the fallback path — an attached `.github` always wins — so the
+symptom is subtle: it works for you and not for a session without `.github`. This
+already bit once: #71 recorded the pin it branched from, which predated the file
+that PR exists to install, so the fallback fetched a 404 the moment it merged.
+
+### Why two independent checks
+
+Pinning the URL to a commit SHA makes it immutable **if the endpoint is honest** —
+the SHA is a path component the client never verifies, so a compromised or
+misconfigured host can serve anything under it. The SHA-256s are the check that
+does not require trusting the transport: they are compared locally, and a
+mismatch is refused whatever served the bytes.
+
+The digests live in the setup script, not in this repo, because the setup script
+is the one thing that is not fetched. Digests fetched alongside the files they
+describe verify nothing.
+
+Verification **fails closed**. A file that does not match is deleted rather than
+left at a path something might execute, and if the dispatcher fails to verify, no
+`settings.json` is written at all — a session with no hooks beats a session
+running unverified code. Verified by tampering with a digest:
+
+```
+bootstrap: REFUSING session-start-dispatch.mjs — sha256 mismatch, not executing it
+bootstrap:   expected deadbeef000000…
+bootstrap:   got      d54d7a2e261e25…
+bootstrap: WARN no dispatcher — repo SessionStart hooks will not run
+```
+
+The attached checkout is deliberately **not** digest-checked: it arrives over the
+session's git proxy with git's own integrity, and it may legitimately be newer
+than `PIN`, so checking it would fail on every merge.
+
+To confirm a pin and its digests agree with the repo, from a clone:
+
+```sh
+PIN=<the pin>
+for f in session-start-dispatch.mjs register-mcp.mjs; do
+  a=$(git show "$PIN:.claude/$f" | sha256sum | cut -d' ' -f1)
+  b=$(curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum | cut -d' ' -f1)
+  [ "$a" = "$b" ] && echo "$f OK $a" || echo "$f MISMATCH — endpoint disagrees with the git object"
+done
+```
+
+That compares the raw endpoint against git's own hash chain, which is the check
+that would catch a host serving something the commit does not contain.
 
 The dispatcher locates the repos itself — it resolves the session root from its own
 path — so the command above only has to point at the file. Adjust it if the repos
