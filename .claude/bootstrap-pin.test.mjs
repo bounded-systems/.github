@@ -1,10 +1,10 @@
 // Drift gate for the bootstrap pin and its digests.
 //
 // ── Why this exists ──────────────────────────────────────────────────────────
-// The setup script in README.md fetches two files from a pinned commit and
-// executes them, refusing anything whose SHA-256 does not match a recorded
-// digest. Both the pin and the digests are hand-maintained, and BOTH went wrong
-// within one afternoon (2026-07-31):
+// The setup script in README.md fetches files from a pinned commit and executes
+// them, refusing anything whose SHA-256 does not match a recorded digest. Both
+// the pin and the digests were hand-maintained, and BOTH went wrong within one
+// afternoon (2026-07-31):
 //
 //   1. #71 recorded the pin it branched from, which predated register-mcp.mjs —
 //      so the moment it merged, the fallback fetched a 404 for the file that PR
@@ -18,15 +18,24 @@
 // session without .github". That is the same argument infra#122 makes about a
 // vendored script with no drift gate, one layer down.
 //
-// Two independent properties, and they fail for different reasons:
+// ── Why the checks live in gen-bootstrap-pin.mjs ─────────────────────────────
+// This file used to reimplement the parse and the hashing. A gate that decides
+// "correct" separately from the tool that PRODUCES correct is one refactor away
+// from disagreeing with it — which is the same class of bug as #71 and #72, just
+// relocated. The generator owns both, and this file asserts on it.
 //
-//   INTEGRITY — the recorded digest matches the file AT THE PIN. A mismatch means
-//     the setup script would refuse a legitimate file (bootstrap dead) or, worse,
-//     that a digest was copied from somewhere other than the commit it names.
+// ── Why FRESHNESS is not asserted on a pull request ──────────────────────────
+// `SUM_*` is content-addressed; `PIN` is a commit. They must agree with each
+// other, and PIN cannot name the merge commit before it exists — so on a PR that
+// touches a fetched file the pair is inconsistent no matter what the author
+// does. Recording the new digests early only moves the red from FRESHNESS to
+// INTEGRITY. Asserting it there produced an expected-red on every such PR, which
+// is how a gate teaches people to ignore it.
 //
-//   FRESHNESS — the file at the pin matches the file on this branch. A mismatch
-//     means the fallback still works but installs stale code, silently diverging
-//     from what reviewers see here.
+// It is still checked and still reported (see the diagnostic below); it is
+// asserted on push, where main is the thing making the claim and org-defaults.yml
+// opens the bump PR automatically. INTEGRITY stays hard everywhere, because a
+// wrong digest is a live bug on any branch.
 //
 // Checked against GIT OBJECTS, not the network: hermetic, and it attests to the
 // commit rather than to whatever an endpoint happened to return — which is the
@@ -34,55 +43,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { inspect, parseBootstrap } from "./gen-bootstrap-pin.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const README = readFileSync(join(HERE, "README.md"), "utf8");
 
-const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
-
-/**
- * What the setup script says it will fetch and what it will accept.
- *
- * Derived from the `fetch_verified <file> "$SUM_<var>"` calls rather than from the
- * SUM_ variable names, because the name mangling is lossy — both `-` and `.`
- * become `_`, so `SUM_session_start_dispatch_mjs` cannot be turned back into a
- * filename unambiguously. The call site states both halves explicitly.
- */
-export function parseBootstrap(source) {
-  const pin = source.match(/^PIN=([0-9a-f]{40})\s*$/m)?.[1] ?? null;
-
-  const digests = {};
-  for (const [, name, value] of source.matchAll(/^(SUM_\w+)=([0-9a-f]{64})\s*$/gm)) {
-    digests[name] = value;
-  }
-
-  const fetches = [...source.matchAll(/^\s*fetch_verified\s+(\S+)\s+"\$(SUM_\w+)"/gm)]
-    .map(([, file, sumVar]) => ({ file, sumVar }));
-
-  return { pin, digests, fetches };
-}
-
 const { pin, digests, fetches } = parseBootstrap(README);
 
-/** Read a path at a commit. Throws a legible error on a shallow clone. */
-function fileAtPin(file) {
-  try {
-    return execFileSync("git", ["show", `${pin}:.claude/${file}`], {
-      cwd: HERE,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-  } catch (e) {
-    throw new Error(
-      `cannot read ${file} at ${pin?.slice(0, 12)} — if this is CI, the checkout needs ` +
-        `fetch-depth: 0, since the pin is usually not the tip commit.\n${e.message}`,
-    );
-  }
-}
+/** True when this run is judging a merged state rather than a proposed one. */
+const JUDGING_MAIN = process.env.GITHUB_EVENT_NAME !== "pull_request";
 
 // ── The script says what it does ─────────────────────────────────────────────
 
@@ -118,38 +91,57 @@ test("the setup script fetches nothing without a digest", () => {
   }
 });
 
-// ── INTEGRITY: the digests describe the pin ──────────────────────────────────
-
-test("every recorded digest matches the file at the pin", () => {
-  for (const { file, sumVar } of fetches) {
-    const actual = sha256(fileAtPin(file));
-    assert.equal(
-      actual,
-      digests[sumVar],
-      `${sumVar} does not match ${file} at ${pin.slice(0, 12)}.\n` +
-        `  recorded ${digests[sumVar]}\n  actual   ${actual}\n` +
-        `  The bootstrap would REFUSE this file and start without it.`,
-    );
+test("the documented regenerate and confirm loops cover every fetched file", () => {
+  // Both snippets enumerate the fetch set by hand, one line away from the
+  // `fetch_verified` calls that define it. A file missing from a loop is a file
+  // whose digest a maintainer following the docs would never recompute — exactly
+  // how #72 shipped a stale digest. Cheap to state, so it is stated.
+  for (const [, body] of README.matchAll(/^for f in ([^;]+); do$/gm)) {
+    const listed = new Set(body.trim().split(/\s+/));
+    for (const { file } of fetches) {
+      assert.ok(listed.has(file), `a documented loop over "${body.trim()}" omits ${file}`);
+    }
   }
 });
 
-// ── FRESHNESS: the pin describes this branch ─────────────────────────────────
+// ── INTEGRITY: the digests describe the pin ──────────────────────────────────
 
-test("the pin is not stale — it serves what this branch contains", () => {
-  const stale = [];
-  for (const { file } of fetches) {
-    const atPin = sha256(fileAtPin(file));
-    const here = sha256(readFileSync(join(HERE, file)));
-    if (atPin !== here) stale.push(file);
+test("every recorded digest matches the file at the pin", () => {
+  // Hard on every branch: a digest that does not describe the pin means the
+  // bootstrap refuses a legitimate file TODAY, and the author can fix it here.
+  const { integrity } = inspect(README);
+  assert.deepEqual(
+    integrity,
+    [],
+    `recorded digests do not match ${integrity.join(", ")} at ${pin?.slice(0, 12)}.\n` +
+      `  The bootstrap would REFUSE these files and start without them.\n` +
+      `  Fix: node .claude/gen-bootstrap-pin.mjs ${pin}`,
+  );
+});
+
+// ── FRESHNESS: the pin describes what is here ────────────────────────────────
+
+test("the pin is not stale — it serves what this branch contains", (t) => {
+  const { stale } = inspect(README);
+
+  if (stale.length && !JUDGING_MAIN) {
+    // Reported, not asserted. See the header: no PR touching a fetched file can
+    // satisfy this, so failing here would be an expected-red on every such PR.
+    t.diagnostic(
+      `pin ${pin.slice(0, 12)} predates ${stale.join(", ")} — expected on this PR. ` +
+        `org-defaults.yml will open the bump PR when this merges.`,
+    );
+    return;
   }
+
   assert.deepEqual(
     stale,
     [],
     `the recorded PIN (${pin?.slice(0, 12)}) predates changes to: ${stale.join(", ")}.\n` +
       `  A session WITHOUT .github attached would install the older copy, and nothing\n` +
       `  else would report it — the attached checkout always wins locally.\n` +
-      `  Fix: merge this, then bump PIN to the resulting commit and re-record the\n` +
-      `  digests. This test is expected to fail on the PR that changes these files\n` +
-      `  and to pass once the follow-up pin bump lands.`,
+      `  On main this should self-heal: org-defaults.yml regenerates the pin on push\n` +
+      `  and opens the bump PR. Seeing it here means that job did not run or did not\n` +
+      `  land. Fix by hand with: node .claude/gen-bootstrap-pin.mjs <this commit>`,
   );
 });

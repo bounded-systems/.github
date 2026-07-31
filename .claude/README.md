@@ -71,7 +71,14 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 # They live HERE, in the one file that is not fetched. Putting them in the repo
 # would mean fetching the digests too, which verifies nothing.
 #
-# Bump all three together. Regenerate with:
+# PIN and the digests are ONE PAIR — bump them together or the bootstrap refuses
+# a legitimate file. Do not hand-edit them; regenerate:
+#
+#   node .claude/gen-bootstrap-pin.mjs <commit>
+#
+# On main this is automatic: org-defaults.yml regenerates on push and opens the
+# bump PR, because the pin can only name a merge commit once that commit exists.
+# The equivalent by hand, against the endpoint rather than the git objects:
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
@@ -196,7 +203,7 @@ To confirm a pin and its digests agree with the repo, from a clone:
 
 ```sh
 PIN=<the pin>
-for f in session-start-dispatch.mjs register-mcp.mjs; do
+for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
   a=$(git show "$PIN:.claude/$f" | sha256sum | cut -d' ' -f1)
   b=$(curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum | cut -d' ' -f1)
   [ "$a" = "$b" ] && echo "$f OK $a" || echo "$f MISMATCH — endpoint disagrees with the git object"
