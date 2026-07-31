@@ -17,9 +17,21 @@
 // It runs from the `schema` job, i.e. from inside org-defaults.yml. So it fully
 // covers the other eleven workflows, and covers org-defaults.yml itself only
 // before a push — locally, or on a PR where org-defaults.yml still parses. If
-// org-defaults.yml is ALREADY broken on a branch, this cannot run to say so;
-// what catches that is `schema` being a required check, since a required check
-// that never reports blocks the merge. Both halves are needed.
+// org-defaults.yml is ALREADY broken on a branch, this cannot run to say so.
+//
+// The half that WOULD catch that is `schema` being a required status check: one
+// that never reports blocks the merge. IT IS NOT ONE TODAY. Measured 2026-07-31,
+// the same day this was written: `.github` is absent from the `ci-green` ruleset
+// (which names `front-desk-scheduler` only), and this repo's default branch
+// carries `pull_request`, `required_signatures`, `required_linear_history` and
+// `non_fast_forward` — none of which look at CI at all. So the gap is open.
+//
+// Stating it as closed, which an earlier draft of this comment did, would be the
+// exact mistake the file exists to catch: a mechanism asserted from how it ought
+// to be wired rather than from how it is. `.github` does meet the documented
+// prerequisite for joining `ci-green` — one always-run job with a stable name,
+// which `schema` is — and that is a change to org/rulesets/ci-green.json in
+// `.github-private`, not to this repo.
 //
 // A real YAML parser would be a better check and would need a dependency. This
 // asserts the one structural property that broke, which is cheap and exact.
