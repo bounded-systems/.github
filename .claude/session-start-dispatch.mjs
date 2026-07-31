@@ -143,6 +143,42 @@ export function sessionStartCommands(settings) {
     .map((h) => h.command);
 }
 
+/**
+ * Merge hook contexts into the one string SessionStart accepts, dropping exact
+ * duplicates.
+ *
+ * Two attached repos legitimately emit the SAME org context. `.github`'s hook
+ * resolves `<session root>/.github-private/claude/context.md` when that repo is
+ * attached, and `.github-private`'s own hook reads the identical file from its
+ * own checkout. Observed live 2026-07-31 in a four-repo session: "2 injected
+ * context", 2289 bytes twice, byte-identical, on a file whose own header reads
+ * "Keep this LEAN — it counts against the context window every session".
+ *
+ * Deleting either hook is the wrong fix, because neither is redundant in
+ * general: without `.github-private` attached, `.github`'s hook is the only one
+ * that can reach the context at all (it falls back to the network); without
+ * `.github` attached, `.github-private`'s hook is. They collide only when BOTH
+ * are attached — which is exactly the session that verifies the chain. So the
+ * duplication is a property of merging, and it is fixed where the merge happens.
+ *
+ * Compared on the TRIMMED text while the first spelling is what gets kept: the
+ * two producers differ in trailing newline (`jq --arg` on `$(cat …)` strips it,
+ * a direct read does not), and a newline is not a second copy of the org map.
+ * Order is preserved, so dispatch order still determines what the model reads
+ * first.
+ */
+export function mergeContexts(contexts) {
+  const seen = new Set();
+  const kept = [];
+  for (const ctx of contexts) {
+    const key = String(ctx ?? "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(ctx);
+  }
+  return { text: kept.join("\n\n---\n\n"), kept: kept.length, dropped: contexts.length - kept.length };
+}
+
 /** Does this stdout carry a SessionStart context envelope? */
 export function extractContext(stdout) {
   const text = String(stdout ?? "").trim();
@@ -213,18 +249,23 @@ async function main() {
   }
 
   const failed = ran.filter((r) => !r.ok).map((r) => r.label);
+  const merged = mergeContexts(contexts);
   log(
     `ran ${ran.length} hook(s) across ${repos.length} repo(s); ` +
-      `${contexts.length} injected context` +
+      `${merged.kept} injected context` +
+      // Reported rather than silently absorbed: a duplicate means two repos are
+      // serving the same file, which is worth seeing in the session log even
+      // though it is now harmless.
+      (merged.dropped ? ` (${merged.dropped} duplicate dropped)` : "") +
       (failed.length ? `; FAILED: ${failed.join(", ")}` : ""),
   );
 
-  if (contexts.length > 0) {
+  if (merged.kept > 0) {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "SessionStart",
-          additionalContext: contexts.join("\n\n---\n\n"),
+          additionalContext: merged.text,
         },
       }),
     );

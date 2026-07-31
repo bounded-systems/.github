@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { extractContext, findRepos, sessionRootFrom, sessionStartCommands } from "./session-start-dispatch.mjs";
+import { extractContext, findRepos, mergeContexts, sessionRootFrom, sessionStartCommands } from "./session-start-dispatch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (name) => readFileSync(join(HERE, name), "utf8");
@@ -199,4 +199,39 @@ test("malformed or foreign JSON is not context", () => {
 test("an empty additionalContext is dropped rather than merged as a blank section", () => {
   const blank = JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "   " } });
   assert.equal(extractContext(blank), null);
+});
+
+// ── Merging without paying for the same context twice ────────────────────────
+
+test("the same org context from two repos is injected once", () => {
+  // The live case, 2026-07-31: a session with BOTH .github and .github-private
+  // attached ran 4 hooks and logged "2 injected context" — the identical 2289-byte
+  // context.md, because .github's hook resolves the .github-private checkout next
+  // door and .github-private's own hook reads the very same path.
+  const org = "# bounded-systems — Claude context\n\nThe door is the unit of bounded authority.";
+  const merged = mergeContexts([org, org]);
+  assert.equal(merged.kept, 1);
+  assert.equal(merged.dropped, 1);
+  assert.equal(merged.text, org);
+});
+
+test("a trailing-newline difference is the same context, not a second one", () => {
+  // `jq -n --arg c "$(cat f)"` strips the trailing newline; reading the file
+  // directly keeps it. Comparing raw strings would let one byte double the cost.
+  const merged = mergeContexts(["org context\n", "org context"]);
+  assert.equal(merged.kept, 1);
+  assert.equal(merged.text, "org context\n", "the first spelling is the one kept");
+});
+
+test("genuinely different contexts are all kept, in dispatch order", () => {
+  // Dedup must not become "one repo may contribute context". Order is preserved
+  // because it decides what the model reads first.
+  const merged = mergeContexts(["alpha", "beta", "gamma"]);
+  assert.equal(merged.kept, 3);
+  assert.equal(merged.dropped, 0);
+  assert.equal(merged.text, "alpha\n\n---\n\nbeta\n\n---\n\ngamma");
+});
+
+test("merging nothing yields nothing, so no empty envelope is written", () => {
+  assert.deepEqual(mergeContexts([]), { text: "", kept: 0, dropped: 0 });
 });
