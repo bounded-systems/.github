@@ -72,8 +72,8 @@ jobs:
       version_id: ${{ steps.upload.outputs.version_id }}
       preview_url: ${{ steps.upload.outputs.preview_url }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: DeterminateSystems/nix-installer-action@90bb610b90bf290cad97484ba341453bd1cbefea # v19
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       # Pull the SIGNED artifact, verify its keyless signature against this repo's identity, unpack
       # exactly those bytes. Verify failure → no upload.
@@ -222,8 +222,8 @@ jobs:
       name: site-promote
       url: ${{ inputs.domain }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: DeterminateSystems/nix-installer-action@90bb610b90bf290cad97484ba341453bd1cbefea # v19
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
       # Re-establish trust at promote time: pull + cosign-verify the signed artifact again, unpack
       # (needed by the prod-routes check below).
