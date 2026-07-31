@@ -1,11 +1,16 @@
 # Session-start machinery
 
-Two files here, with different jobs:
+Three files here, with different jobs:
 
 | file | scope | fires when |
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
+| `register-mcp.mjs` | **every attached repo** | run from the environment setup script (see below) |
+
+The last two exist for the same reason: both `.claude/settings.json` and `.mcp.json`
+are **project-scoped**, discovered from the project directory — and a multi-repo
+session has no project directory.
 
 ## The problem the dispatcher solves
 
@@ -51,6 +56,10 @@ cat > "$HOME/.claude/settings.json" <<'JSON'
   }
 }
 JSON
+
+# MCP servers are resolved when Claude Code LAUNCHES, before any SessionStart
+# hook runs — so this cannot live in the dispatcher and must run here.
+node /home/user/.github/.claude/register-mcp.mjs
 ```
 
 The dispatcher locates the repos itself — it resolves the session root from its own
@@ -97,6 +106,51 @@ only arrive by being attached at launch. Unverified — the one attempt returned
 - **No per-repo knowledge.** Adding a repo to a session, or a hook to a repo, needs no
   edit here. If you are special-casing a repo in the dispatcher, the logic belongs in
   that repo's hook.
+
+## MCP: why user scope, not `.mcp.json`
+
+`.mcp.json` is project-scoped, so in a multi-repo session it is never discovered —
+the same wall the hooks hit. Two further reasons user scope is the right target
+rather than a workaround:
+
+1. **Project `.mcp.json` servers require an approval prompt** before first use, and
+   that prompt currently fails with `-32003` (#65 — observed four times on
+   2026-07-31). Even a *discovered* project server may be unusable. User-scope
+   servers carry no such prompt.
+2. **A project `.mcp.json` records a relative command** (`node scripts/mcp.ts`),
+   which only resolves with `cwd` set to that repo. User scope forces an absolute
+   path, which is also what makes it work from anywhere.
+
+Measured 2026-07-31: a session that had read front-desk-scheduler's `CLAUDE.md` —
+which says *"the verbs are registered as MCP tools, so ask the `next` tool"* —
+shelled out to `node scripts/fds.ts next` instead. `~/.claude.json` had
+`mcpServers: {}` and `projects: {}`. The instruction was right; the tool was not
+there.
+
+`register-mcp.mjs` reads whatever `.mcp.json` each attached repo declares, makes
+path-shaped args absolute (leaving flags and bare interpreters alone), sets `cwd`
+to the repo, and **merges** into `~/.claude.json` — that file is Claude Code's own
+state and holds much more than MCP config, so it is read-modify-write via a temp
+file and rename, never a replacement. It never removes a server it did not add,
+and re-running is a no-op.
+
+### Ordering caveat
+
+It registers whatever exists **at the moment it runs**. If the setup script runs
+before the repos are cloned, it will find nothing and say so:
+
+```
+register-mcp: no attached repo under /home/user declares .mcp.json — nothing to register.
+```
+
+If you see that line while the repos are plainly present later in the session, the
+setup script is running too early — move the call to the end of the setup script,
+or after whatever step materialises the checkouts. The success line names what it
+registered:
+
+```
+register-mcp: registered at user scope: front-desk (from 1 repo(s))
+```
 
 ## Known gap: org context does not reach a cloud session
 
