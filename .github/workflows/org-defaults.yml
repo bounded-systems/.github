@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # bootstrap-pin.test.mjs reads the two fetched scripts AT THE RECORDED
+          # PIN via `git show`. That pin is usually not the tip, so the default
+          # depth-1 checkout cannot resolve it and the test fails on a missing
+          # object rather than on drift.
+          fetch-depth: 0
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: "22"
@@ -20,3 +26,4 @@ jobs:
       # itself rather than reading as an org-defaults contract break.
       - run: node --test .claude/session-start-dispatch.test.mjs
       - run: node --test .claude/register-mcp.test.mjs
+      - run: node --test .claude/bootstrap-pin.test.mjs

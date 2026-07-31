@@ -75,8 +75,8 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
-PIN=dc00a2e0ca4ba3fb698231bc905ddf94adeb5c1b
-SUM_session_start_dispatch_mjs=d54d7a2e261e25b2a50565379a8639dda126b507d580386188bda57b5f6ee56d
+PIN=6b63ba49c5a2417f88cb2b92eed2061a2d56a626
+SUM_session_start_dispatch_mjs=604e40283fc6ff947b29dff324d3f59d443c4b1247fee74292f3943d05693f2e
 SUM_register_mcp_mjs=bbdd6d07f2cd27bc02c8945d6eef62b104dadaad3d3fac52a826201d7221f3d0
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
