@@ -19,3 +19,4 @@ jobs:
       # The multi-repo SessionStart dispatcher. Separate step so a failure names
       # itself rather than reading as an org-defaults contract break.
       - run: node --test .claude/session-start-dispatch.test.mjs
+      - run: node --test .claude/register-mcp.test.mjs

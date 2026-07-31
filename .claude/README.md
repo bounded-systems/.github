@@ -1,11 +1,16 @@
 # Session-start machinery
 
-Two files here, with different jobs:
+Three files here, with different jobs:
 
 | file | scope | fires when |
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
+| `register-mcp.mjs` | **every attached repo** | run from the environment setup script (see below) |
+
+The last two exist for the same reason: both `.claude/settings.json` and `.mcp.json`
+are **project-scoped**, discovered from the project directory — and a multi-repo
+session has no project directory.
 
 ## The problem the dispatcher solves
 
@@ -39,19 +44,74 @@ The dispatcher is wired from the first and scans the second. Both are ephemeral 
 the container is reclaimed — so the environment's setup script recreates the wiring
 on every boot:
 
+This is the canonical text of that field. It is recorded here — the same way
+`cloud-environment.json` records what the network dialog should say — because the
+field itself lives where no reviewer and no gate can see it. If the two drift,
+this file is what the field should be returned to.
+
 ```sh
+#!/usr/bin/env bash
+# bounded-systems session bootstrap.
+#
+# This stays a POINTER. All logic lives in bounded-systems/.github/.claude,
+# where it is reviewed, tested and gated. Anything added here is unreviewable
+# and ungateable — infra#122's failure mode.
+set -uo pipefail
+
+ROOT=/home/user                                    # where the repo checkouts land
+PIN=c8bdd067b159ea4ceee4583e1920504c38eb4110       # bump when .github/.claude changes
+BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
+
+# Fall back to pinned raw copies when .github is not attached to the session.
+# The URL is pinned to a COMMIT SHA, which is content-addressed — as pinned as a
+# SHA-pinned action. Never put a branch name here: that is unpinned execution,
+# which this org rejects everywhere else (deno install --frozen, SHA-pinned
+# actions, the CANONICAL_SHA256 drift gate).
+if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
+  echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
+  BOOT=/opt/bounded-boot
+  mkdir -p "$BOOT"
+  for f in session-start-dispatch.mjs register-mcp.mjs; do
+    curl -fsSL --retry 2 \
+      "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
+      -o "$BOOT/$f" || echo "bootstrap: WARN could not fetch $f"
+  done
+fi
+
+# Both scripts self-locate from their own path, which is correct in the attached
+# checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
+# the first case and load-bearing in the second.
 mkdir -p "$HOME/.claude"
-cat > "$HOME/.claude/settings.json" <<'JSON'
+cat > "$HOME/.claude/settings.json" <<JSON
 {
   "hooks": {
     "SessionStart": [
       { "matcher": "", "hooks": [ { "type": "command",
-        "command": "node /home/user/.github/.claude/session-start-dispatch.mjs" } ] }
+        "command": "CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" } ] }
     ]
   }
 }
 JSON
+
+# MCP servers resolve when Claude Code LAUNCHES, before any SessionStart hook
+# runs — so this must happen here, not in the dispatcher.
+if [ -f "$BOOT/register-mcp.mjs" ]; then
+  CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
+else
+  echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
+fi
+
+echo "bootstrap: ready — dispatcher at $BOOT"
 ```
+
+**The heredoc is deliberately unquoted** (`<<JSON`, not `<<'JSON'`) because `$ROOT`
+and `$BOOT` must interpolate. There is nothing else `$`-shaped in that JSON. If you
+add a field containing a literal `$`, escape it.
+
+**Bump `PIN` whenever `.claude/` changes here.** A stale pin only affects the
+fallback path — an attached `.github` always wins — so the symptom is subtle: it
+works for you and not for a session without `.github`. Fetching a missing file
+warns rather than failing.
 
 The dispatcher locates the repos itself — it resolves the session root from its own
 path — so the command above only has to point at the file. Adjust it if the repos
@@ -97,6 +157,51 @@ only arrive by being attached at launch. Unverified — the one attempt returned
 - **No per-repo knowledge.** Adding a repo to a session, or a hook to a repo, needs no
   edit here. If you are special-casing a repo in the dispatcher, the logic belongs in
   that repo's hook.
+
+## MCP: why user scope, not `.mcp.json`
+
+`.mcp.json` is project-scoped, so in a multi-repo session it is never discovered —
+the same wall the hooks hit. Two further reasons user scope is the right target
+rather than a workaround:
+
+1. **Project `.mcp.json` servers require an approval prompt** before first use, and
+   that prompt currently fails with `-32003` (#65 — observed four times on
+   2026-07-31). Even a *discovered* project server may be unusable. User-scope
+   servers carry no such prompt.
+2. **A project `.mcp.json` records a relative command** (`node scripts/mcp.ts`),
+   which only resolves with `cwd` set to that repo. User scope forces an absolute
+   path, which is also what makes it work from anywhere.
+
+Measured 2026-07-31: a session that had read front-desk-scheduler's `CLAUDE.md` —
+which says *"the verbs are registered as MCP tools, so ask the `next` tool"* —
+shelled out to `node scripts/fds.ts next` instead. `~/.claude.json` had
+`mcpServers: {}` and `projects: {}`. The instruction was right; the tool was not
+there.
+
+`register-mcp.mjs` reads whatever `.mcp.json` each attached repo declares, makes
+path-shaped args absolute (leaving flags and bare interpreters alone), sets `cwd`
+to the repo, and **merges** into `~/.claude.json` — that file is Claude Code's own
+state and holds much more than MCP config, so it is read-modify-write via a temp
+file and rename, never a replacement. It never removes a server it did not add,
+and re-running is a no-op.
+
+### Ordering caveat
+
+It registers whatever exists **at the moment it runs**. If the setup script runs
+before the repos are cloned, it will find nothing and say so:
+
+```
+register-mcp: no attached repo under /home/user declares .mcp.json — nothing to register.
+```
+
+If you see that line while the repos are plainly present later in the session, the
+setup script is running too early — move the call to the end of the setup script,
+or after whatever step materialises the checkouts. The success line names what it
+registered:
+
+```
+register-mcp: registered at user scope: front-desk (from 1 repo(s))
+```
 
 ## Known gap: org context does not reach a cloud session
 
