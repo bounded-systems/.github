@@ -8,8 +8,27 @@ command -v jq >/dev/null 2>&1 || exit 0
 path='repos/bounded-systems/.github-private/contents/claude/context.md'
 ctx=""
 
+# 0) An ATTACHED checkout, if the session has one. Free: no network, no
+#    credential, no clone. This is first because it is the only source that works
+#    in a cloud session at all — sources 1-3 were all measured failing there on
+#    2026-07-31 (gh absent; the clone unauthenticated, "could not read Password
+#    for http://local_proxy@127.0.0.1"; the curl fallback presenting the
+#    proxy-local GH_TOKEN to api.github.com, which rejects it). The hook failed
+#    open every time, so the org context has silently never loaded in the cloud.
+#
+#    Attaching .github-private to the session is what makes this reachable, and
+#    without this block attaching it changes nothing — the hook would still go
+#    to the network for a file already sitting next door.
+#
+#    Resolved from this script's own path (<root>/.github/.claude/…), so it does
+#    not depend on cwd, and overridable for a checkout that lives elsewhere.
+local_ctx="${ORG_CONTEXT_FILE:-$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)/.github-private/claude/context.md}"
+if [ -r "$local_ctx" ]; then
+  ctx="$(cat "$local_ctx" 2>/dev/null || true)"
+fi
+
 # 1) gh API — local dev, or cloud only if gh is installed AND a token is present.
-if command -v gh >/dev/null 2>&1; then
+if [ -z "$ctx" ] && command -v gh >/dev/null 2>&1; then
   ctx="$(gh api "$path" -H 'Accept: application/vnd.github.raw' 2>/dev/null || true)"
 fi
 
