@@ -72,12 +72,13 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 # would mean fetching the digests too, which verifies nothing.
 #
 # Bump all three together. Regenerate with:
-#   for f in session-start-dispatch.mjs register-mcp.mjs; do
+#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
-PIN=6b63ba49c5a2417f88cb2b92eed2061a2d56a626
+PIN=4a624f0970466220137038d731478f372802421c
 SUM_session_start_dispatch_mjs=604e40283fc6ff947b29dff324d3f59d443c4b1247fee74292f3943d05693f2e
 SUM_register_mcp_mjs=bbdd6d07f2cd27bc02c8945d6eef62b104dadaad3d3fac52a826201d7221f3d0
+SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
@@ -108,6 +109,7 @@ if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   mkdir -p "$BOOT"
   fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
   fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
+  fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh"
 fi
 
 # Both scripts self-locate from their own path, which is correct in the attached
@@ -140,8 +142,9 @@ fi
 # Replace the platform's Stop hook with the infra#112 fix. The stock one scopes
 # its check to `origin/<branch>..HEAD`, which after a squash merge includes
 # GitHub's own merge commit — so it warned "Unverified" after EVERY merge and
-# advised an --amend that would rewrite already-merged history. Not digest-checked
-# because it is not fetched: it is only ever copied from the attached checkout.
+# advised an --amend that would rewrite already-merged history. Copied rather than
+# executed here, but still digest-verified above when fetched, so the fallback
+# path installs the same bytes the attached checkout would.
 if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$HOME/.claude" ]; then
   cp "$BOOT/stop-hook-git-check.sh" "$HOME/.claude/stop-hook-git-check.sh"
   chmod +x "$HOME/.claude/stop-hook-git-check.sh"
