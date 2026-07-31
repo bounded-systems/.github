@@ -26,7 +26,7 @@ jobs:
         id: token
         with:
           app: front-desk                       # an app in the broker's GH_APPS
-          broker-url: ${{ vars.FRONT_DESK_BROKER_URL }}   # an org VAR, not a secret
+          broker-url: ${{ vars.CF_BROKER_URL }}   # an org VAR, not a secret
       - uses: actions/add-to-project@v1.0.2
         with:
           project-url: https://github.com/orgs/bounded-systems/projects/2
@@ -54,7 +54,7 @@ cannot guard the *action reference itself* behind a var with `if:`. Two safe
 patterns:
 
 - **Always-resolvable** (this action is in a public repo, so referencing it is
-  always fine): gate it with `if: ${{ vars.FRONT_DESK_BROKER_URL != '' }}` and let
+  always fine): gate it with `if: ${{ vars.CF_BROKER_URL != '' }}` and let
   it no-op when unset — the reference still resolves, the step just doesn't run.
 - **Inline the two curls** instead of `uses:` when you want a hard fail-open with
   zero external reference (see `gh-project-room/front-desk-sync.yml`, which inlines
@@ -67,7 +67,7 @@ This action is inert until the broker is live for the app. Order:
 1. **Deploy the broker** for the app: `wrangler secret put GH_APP_FRONT_DESK_PRIVATE_KEY`,
    set the `GH_APPS` var (incl. `appId`, `installationId`, `audience`, `allowedOwner`,
    `permissions`), `wrangler deploy` (`infra/cloudflare/broker`).
-2. **Set `vars.FRONT_DESK_BROKER_URL`** (org variable) to the broker URL.
+2. **Set `vars.CF_BROKER_URL`** (org variable) to the broker URL.
 3. **Repoint the front-desk workflows** onto this action (or the inline equivalent):
    - `gh-project-room/.github/workflows/front-desk-sync.yml` (the sweep) — already
      inlines the broker exchange with a legacy fallback; drop the fallback + the

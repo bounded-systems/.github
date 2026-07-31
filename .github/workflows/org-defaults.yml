@@ -49,7 +49,7 @@ jobs:
   pin:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    permissions: { contents: write, pull-requests: write }
+    permissions: { contents: write, pull-requests: write, id-token: write }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,7 +58,33 @@ jobs:
         with:
           node-version: "22"
       - run: node .claude/gen-bootstrap-pin.mjs "${{ github.sha }}"
-      - env: { GH_TOKEN: "${{ github.token }}" }
+      # `github.token` CANNOT open this PR, and the fix is not the org setting the
+      # error below used to name. Two independent reasons:
+      #   1. Actions is not permitted to create PRs in this org — and the toggle
+      #      that would allow it (`can_approve_pull_request_reviews`) grants
+      #      create AND approve org-wide, which org-baseline.sh A4 deliberately
+      #      asserts false.
+      #   2. Even with it on, a GITHUB_TOKEN-created PR triggers no workflow runs
+      #      (GitHub's recursion guard). `schema` is a REQUIRED check on this repo
+      #      (ci-green-dot-github), and a required check that never reports plus
+      #      `bypass_actors: []` is a PR that opens and can never merge.
+      # An App installation token has neither problem: not governed by that toggle,
+      # and PRs it creates do trigger `pull_request`, so `schema` runs.
+      # CF_BROKER_URL, not FRONT_DESK_BROKER_URL: one name for one broker
+      # (infra#41). Fail-open on it — if it does not resolve, this mints nothing
+      # and the step below falls back to github.token, which still pushes the
+      # branch correctly and reports why the PR did not open.
+      - name: Mint a PR-opening identity via the OIDC broker
+        id: app-token
+        if: ${{ vars.CF_BROKER_URL != '' }}
+        continue-on-error: true
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk
+          broker-url: ${{ vars.CF_BROKER_URL }}
+      - env:
+          GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
+          BROKERED: "${{ steps.app-token.outputs.token != '' }}"
         run: |
           [ -z "$(git status --porcelain)" ] && { echo "pin is current"; exit 0; }
           # A FIXED branch, unlike registry-graph's timestamped one: consecutive
@@ -69,6 +95,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$b"
           git commit -am "chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests"
+          # Push AS the same identity that will open the PR. Attribution is not
+          # cosmetic here: a branch pushed by github.token and a PR opened by the
+          # App would leave the PR's head commit authored by Actions, and the
+          # recursion guard keys on the identity behind the event.
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push -f origin "$b"
           gh pr view "$b" --json state --jq .state 2>/dev/null | grep -q OPEN && { echo "bump PR already open — updated it"; exit 0; }
           # --body-file, never an inline --body. Prose wants blank lines, a `---`
@@ -80,8 +112,7 @@ jobs:
           # can still fail, and on 2026-07-31 it did, on the job's first real run:
           #   GraphQL: GitHub Actions is not permitted to create or approve
           #   pull requests (createPullRequest)
-          # That is an org/repo setting, not something this file can fix, and a
-          # bare GraphQL error in a log nobody is watching is how it stayed
+          # A bare GraphQL error in a log nobody is watching is how that stayed
           # invisible. Still exits 1 — main really is serving stale files to any
           # session without `.github` attached — but says what to do about it.
           if gh pr create --base main --head "$b" \
@@ -89,9 +120,18 @@ jobs:
                --body-file .github/bootstrap-pin-bump.md; then
             exit 0
           fi
-          echo "::error title=pin: branch pushed, PR not opened::Pushed $b with the" \
-               "correct pin, but could not open its PR. If the cause above is \"GitHub" \
-               "Actions is not permitted to create or approve pull requests\", enable" \
-               "that setting for this repo or org — it is a settings fix, not a code" \
-               "fix. Until then, open a PR from $b by hand to get main green."
+          if [ "${BROKERED}" = "true" ]; then
+            echo "::error title=pin: branch pushed, PR not opened::Pushed $b with the" \
+                 "correct pin. The App token minted, so this is NOT the Actions-cannot-" \
+                 "create-PRs case: check that the front-desk App is installed on this" \
+                 "repo with pull_requests:write. Open a PR from $b by hand meanwhile."
+          else
+            echo "::error title=pin: branch pushed, PR not opened::Pushed $b with the" \
+                 "correct pin, but no App token was minted, so this fell back to" \
+                 "github.token — which this org does not permit to create PRs. Fix is" \
+                 "the org variable CF_BROKER_URL resolving here (infra#41), NOT the" \
+                 "Actions create-and-approve setting: a github.token PR triggers no" \
+                 "workflow runs, and \`schema\` is required on this repo, so such a PR" \
+                 "would open and then never be mergeable. Open a PR from $b by hand."
+          fi
           exit 1
