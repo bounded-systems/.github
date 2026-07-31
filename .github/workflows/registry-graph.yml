@@ -24,6 +24,11 @@ jobs:
     permissions: { contents: write, pull-requests: write, id-token: write }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See org-defaults.yml's `pin`: checkout's persisted extraheader beats
+          # userinfo in a remote URL, so leaving it on would push as Actions
+          # regardless of the token we set below.
+          persist-credentials: false
       - run: node scripts/gen-registry-graph.mjs
       # Same brokered identity as org-defaults.yml's `pin`, for the same two
       # reasons: github.token may not create PRs in this org, and a PR it did
