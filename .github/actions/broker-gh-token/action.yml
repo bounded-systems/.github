@@ -19,6 +19,16 @@ outputs:
   token:
     description: The installation access token (already masked in logs).
     value: ${{ steps.broker.outputs.token }}
+  permissions:
+    description: >-
+      The permissions GitHub actually GRANTED this token, as a JSON object (or
+      "full-grant" for a registry entry with no permissions map). NOT what the
+      broker asked for — the two differ, and the difference is invisible until
+      the call you wanted to make 403s with "Resource not accessible by
+      integration". The broker echoes this precisely so a caller can assert its
+      required scope BEFORE doing any work; consume it rather than finding out
+      late. Non-secret: these are the App's own configured scopes.
+    value: ${{ steps.broker.outputs.permissions }}
 runs:
   using: composite
   steps:
@@ -40,8 +50,19 @@ runs:
           "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
         if [ -z "$jwt" ]; then echo "::error::failed to obtain an OIDC token"; exit 1; fi
         # 2. Exchange it at the broker for a least-privilege installation token.
-        tok="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
-          "${BROKER_URL%/}/github/${APP}" | jq -r '.token // empty')"
+        #    Capture the WHOLE response once: it carries the granted permissions
+        #    alongside the token, and a second POST would mint a second credential
+        #    just to read them.
+        res="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
+          "${BROKER_URL%/}/github/${APP}")"
+        tok="$(printf '%s' "$res" | jq -r '.token // empty')"
         if [ -z "$tok" ]; then echo "::error::broker did not return a token for app '${APP}'"; exit 1; fi
         echo "::add-mask::$tok"
         echo "token=$tok" >> "$GITHUB_OUTPUT"
+        # An entry with no permissions map mints FULL-GRANT and the broker returns
+        # no `permissions` key. Report that as "full-grant" rather than {} — the
+        # two mean opposite things (everything the installation holds vs nothing),
+        # and mintInstallationToken deliberately never substitutes one for the other.
+        perms="$(printf '%s' "$res" | jq -c 'if has("permissions") then .permissions else "full-grant" end')"
+        echo "permissions=$perms" >> "$GITHUB_OUTPUT"
+        echo "granted: $perms"

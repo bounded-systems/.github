@@ -21,16 +21,36 @@ jobs:
   sync:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    permissions: { contents: write, pull-requests: write }
+    permissions: { contents: write, pull-requests: write, id-token: write }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # See org-defaults.yml's `pin`: checkout's persisted extraheader beats
+          # userinfo in a remote URL, so leaving it on would push as Actions
+          # regardless of the token we set below.
+          persist-credentials: false
       - run: node scripts/gen-registry-graph.mjs
-      - env: { GH_TOKEN: "${{ github.token }}" }
+      # Same brokered identity as org-defaults.yml's `pin`, for the same two
+      # reasons: github.token may not create PRs in this org, and a PR it did
+      # create would trigger no workflow runs. Fail-open on CF_BROKER_URL.
+      - name: Mint a PR-opening identity via the OIDC broker
+        id: app-token
+        if: ${{ vars.CF_BROKER_URL != '' }}
+        continue-on-error: true
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk
+          broker-url: ${{ vars.CF_BROKER_URL }}
+      - env:
+          GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
         run: |
           [ -z "$(git status --porcelain)" ] && { echo "in sync"; exit 0; }
           b="registry-graph/$(date -u +%Y%m%d%H%M%S)"
           git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$b"; git commit -am "chore(profile): sync knowledge-graph from the registry"; git push origin "$b"
+          git checkout -b "$b"; git commit -am "chore(profile): sync knowledge-graph from the registry"
+          git remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin "$b"
           # Same failure mode as org-defaults.yml's `pin` job, found there on its
           # first real run and fixed here before this one ever fires: Actions is
           # not permitted to create pull requests in this org, so the branch lands

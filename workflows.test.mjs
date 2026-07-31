@@ -68,3 +68,32 @@ for (const file of files) {
     );
   });
 }
+
+// One name for one broker (infra#41). CF_BROKER_URL replaced
+// FRONT_DESK_BROKER_URL org-wide, and front-desk-scheduler's `broker-vars` job
+// asserts the retirement on every run — but it asserts it from THAT repo, and
+// its comment claims "no workflow reads it any more" while two workflows here
+// still did. The rename simply never reached this repo, so front-desk-add sat
+// gated on a variable that no longer resolves and printed "broker not
+// configured — skipping" on every run it ever made. Dormant, green, and silent.
+//
+// broker-vars cannot see this repo; this test is that assertion's other half.
+for (const file of files) {
+  test(`${file}: reads CF_BROKER_URL, not the retired FRONT_DESK_BROKER_URL`, () => {
+    const offenders = readFileSync(join(DIR, file), "utf8")
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      // A comment may name the old variable to explain the retirement; an
+      // expression that READS it is the bug — it silently never resolves.
+      .filter(({ line }) => !line.trim().startsWith("#"))
+      .filter(({ line }) => line.includes("FRONT_DESK_BROKER_URL"));
+
+    assert.deepEqual(
+      offenders.map(({ n, line }) => `${n}: ${line.trim().slice(0, 70)}`),
+      [],
+      `${file} reads FRONT_DESK_BROKER_URL, which infra#41 retired in favour of ` +
+        `CF_BROKER_URL. An unset variable fails open, so this does not go red — ` +
+        `the step just skips forever. Use vars.CF_BROKER_URL.`,
+    );
+  });
+}
