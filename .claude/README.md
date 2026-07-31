@@ -137,6 +137,17 @@ else
   echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
 fi
 
+# Replace the platform's Stop hook with the infra#112 fix. The stock one scopes
+# its check to `origin/<branch>..HEAD`, which after a squash merge includes
+# GitHub's own merge commit — so it warned "Unverified" after EVERY merge and
+# advised an --amend that would rewrite already-merged history. Not digest-checked
+# because it is not fetched: it is only ever copied from the attached checkout.
+if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$HOME/.claude" ]; then
+  cp "$BOOT/stop-hook-git-check.sh" "$HOME/.claude/stop-hook-git-check.sh"
+  chmod +x "$HOME/.claude/stop-hook-git-check.sh"
+  echo "bootstrap: stop-hook patched (infra#112)"
+fi
+
 echo "bootstrap: ready — dispatcher at $BOOT"
 ```
 
