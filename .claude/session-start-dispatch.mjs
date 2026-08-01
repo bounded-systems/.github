@@ -77,7 +77,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -106,6 +107,10 @@ export function sessionRootFrom(fileUrl) {
 }
 
 const SESSION_ROOT = process.env.CLAUDE_SESSION_ROOT || sessionRootFrom(import.meta.url);
+
+/** Where this file and its siblings actually live — the attached checkout, or the
+ *  bootstrap's fetch cache. Both hold the same three files. */
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const log = (msg) => process.stderr.write(`session-start-dispatch: ${msg}\n`);
 
@@ -238,6 +243,75 @@ export function mcpDriftContext(missing) {
   ].join("\n");
 }
 
+/** What syncing the Stop hook should do, given the two files' bytes (`null` = absent). */
+export function stopHookAction(source, installed) {
+  if (source == null) return "absent";
+  if (installed != null && source.equals(installed)) return "current";
+  return "copy";
+}
+
+/**
+ * Replace the platform's Stop hook with this repo's copy (infra#112).
+ *
+ * The same move as the MCP registration below, prompted by the same failure. The
+ * copy is one line of the environment's setup script — the part of the chain no
+ * reviewer and no gate can read — and on 2026-08-01 it had gone missing along
+ * with the `register-mcp.mjs` call (#85). Nothing reported either.
+ *
+ * This one fails quietly rather than loudly, which is why it went unnoticed
+ * longer: the stock hook scopes its check to `origin/<branch>..HEAD`, which after
+ * a squash merge includes GitHub's own merge commit. So it warns "Unverified"
+ * after EVERY merge and advises an `--amend` that would rewrite already-merged
+ * history. A hook that cries wolf on every successful merge is worse than no
+ * hook, because it trains you to ignore the one time it is right.
+ *
+ * Only the SCRIPT is replaced. `launcher-settings.json` declares the Stop hook
+ * and is platform-managed and rewritten, so it is left alone — we swap the file
+ * it already points at. The hook is invoked per Stop event, so a copy written
+ * during SessionStart is in force from the first Stop of the session onward,
+ * which is what makes doing it here worth anything.
+ *
+ * NOTE `homedir()` is right here and wrong for the session root. The session runs
+ * as root, so this resolves `/root/.claude` — which IS where the user settings
+ * live — while the repos are under `/home/user`. That asymmetry is exactly what
+ * `sessionRootFrom` above exists for. Do not "fix" one to match the other.
+ *
+ * Returns the action taken, and never throws: a session that starts with the
+ * stock Stop hook beats one that fails to start.
+ */
+export function syncStopHook({ sourceDir = HERE, targetDir = join(homedir(), ".claude") } = {}) {
+  const name = "stop-hook-git-check.sh";
+  const read = (p) => {
+    try {
+      return readFileSync(p);
+    } catch {
+      return null;
+    }
+  };
+
+  const source = read(join(sourceDir, name));
+  const action = stopHookAction(source, read(join(targetDir, name)));
+  // "absent" is a real case, not a bug: the bootstrap verifies each fetched file
+  // independently, so a refused digest leaves the dispatcher present and this one
+  // not. Nothing to install from — say so rather than guessing.
+  if (action === "absent") {
+    log(`WARN no ${name} beside this file — leaving the platform's Stop hook in place`);
+    return action;
+  }
+  if (action === "current") return action;
+
+  try {
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, name), source);
+    chmodSync(join(targetDir, name), 0o755);
+    log(`WARN installed the Stop hook the setup script did not (infra#112) — see .claude/README.md`);
+  } catch (e) {
+    log(`WARN could not install ${name} — ${e?.message ?? e}`);
+    return "failed";
+  }
+  return action;
+}
+
 async function runHook(repoDir, command) {
   const label = `${command.split("/").pop()} (${repoDir.split("/").pop()})`;
   // CLAUDE_PROJECT_DIR is what each repo's hook expects to point at ITSELF. The
@@ -319,6 +393,7 @@ async function ensureMcpRegistered() {
 
 async function main() {
   const missingMcp = await ensureMcpRegistered();
+  syncStopHook();
 
   const repos = findRepos(SESSION_ROOT);
   if (repos.length === 0) {

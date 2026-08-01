@@ -1,16 +1,22 @@
 # Session-start machinery
 
-Three files here, with different jobs:
+Four files here, with different jobs:
 
 | file | scope | fires when |
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
 | `register-mcp.mjs` | **every attached repo** | run from the environment setup script; re-run by the dispatcher as a fallback (see below) |
+| `stop-hook-git-check.sh` | the session | copied over the platform's Stop hook by the setup script; re-copied by the dispatcher as a fallback (infra#112) |
 
-The last two exist for the same reason: both `.claude/settings.json` and `.mcp.json`
-are **project-scoped**, discovered from the project directory — and a multi-repo
-session has no project directory.
+The middle two exist for the same reason: both `.claude/settings.json` and
+`.mcp.json` are **project-scoped**, discovered from the project directory — and a
+multi-repo session has no project directory.
+
+The last is a different problem sharing one property with them: it has to be
+installed by something outside the repo, and on 2026-08-01 that something silently
+stopped doing it (#85). All three are now re-done by the dispatcher when the setup
+script has not done them.
 
 ## The problem the dispatcher solves
 
@@ -324,6 +330,42 @@ session-start-dispatch: WARN registered MCP server(s) the setup script did not: 
 Treat that line as a bug report against the setup-script field, not as a healthy
 session. A field that has stopped calling `register-mcp.mjs` has probably stopped
 doing the rest of its job too — compare it against the canonical text above.
+
+That prediction was correct, which is why the Stop hook below now works the same
+way.
+
+### The Stop hook, for the same reason
+
+The setup script's `cp` of `stop-hook-git-check.sh` had gone missing too, and the
+dispatcher now re-copies it. Measured on 2026-08-01: `$HOME/.claude` held the
+platform's stock hook at 3262 bytes against this repo's 5458.
+
+This one is worth flagging because it fails **quietly**, which is how it outlasted
+the MCP break. The stock hook scopes its check to `origin/<branch>..HEAD`, which
+after a squash merge includes GitHub's own merge commit — so it warns "Unverified"
+after every successful merge and advises an `--amend` that would rewrite
+already-merged history. A hook that cries wolf on every merge is worse than no
+hook: it teaches you to ignore the one time it is right. Nothing looks broken, so
+nothing gets investigated.
+
+The comparison is on **bytes**, not on presence, because the failure is a *wrong*
+file rather than a missing one. Only the script is replaced —
+`launcher-settings.json` declares the Stop hook and is platform-managed and
+rewritten, so the dispatcher swaps the file it already points at. Hooks are
+invoked per event, so a copy written at SessionStart is in force from that
+session's first Stop.
+
+```
+session-start-dispatch: WARN installed the Stop hook the setup script did not (infra#112) — see .claude/README.md
+```
+
+A refused digest can leave the dispatcher present and this file absent. That case
+is reported and the platform's hook is left alone, rather than overwritten with
+nothing:
+
+```
+session-start-dispatch: WARN no stop-hook-git-check.sh beside this file — leaving the platform's Stop hook in place
+```
 
 ### Ordering caveat
 
