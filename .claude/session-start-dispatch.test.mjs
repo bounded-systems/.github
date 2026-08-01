@@ -7,7 +7,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,8 @@ import {
   mergeContexts,
   sessionRootFrom,
   sessionStartCommands,
+  stopHookAction,
+  syncStopHook,
 } from "./session-start-dispatch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -300,4 +303,94 @@ test("the warning survives the merge and comes first", () => {
   const merged = mergeContexts([drift, "org context"]);
   assert.equal(merged.kept, 2);
   assert.ok(merged.text.startsWith(drift));
+});
+
+// ── Replacing the platform's Stop hook (infra#112) ───────────────────────────
+//
+// The second of the setup script's four steps to move in here (#85). Its absence
+// is quieter than the MCP one: the stock hook scopes its check to
+// `origin/<branch>..HEAD`, so after a squash merge it includes GitHub's own merge
+// commit and warns "Unverified" on every successful merge, advising an `--amend`
+// that would rewrite already-merged history. Confirmed live on 2026-08-01 — the
+// installed hook was 3262 bytes against this repo's 5458, i.e. the stock one.
+
+test("bytes decide, not presence — an identical hook is left alone", () => {
+  const same = Buffer.from("#!/bin/bash\necho fixed\n");
+  assert.equal(stopHookAction(same, Buffer.from(same)), "current");
+});
+
+test("a differing hook is replaced, and a missing one installed", () => {
+  assert.equal(stopHookAction(Buffer.from("new"), Buffer.from("stock")), "copy");
+  assert.equal(stopHookAction(Buffer.from("new"), null), "copy");
+});
+
+test("no source means leave the platform's hook alone, not install nothing", () => {
+  // A refused digest leaves the dispatcher fetched and this file not. Overwriting
+  // with an empty file would be strictly worse than the stock hook.
+  assert.equal(stopHookAction(null, Buffer.from("stock")), "absent");
+  assert.equal(stopHookAction(null, null), "absent");
+});
+
+/** A source dir holding the hook, and a target dir standing in for `$HOME/.claude`. */
+function hookFixture(installed) {
+  const dir = mkdtempSync(join(tmpdir(), "stop-hook-"));
+  const sourceDir = join(dir, "src");
+  const targetDir = join(dir, "home", ".claude");
+  mkdirSync(sourceDir, { recursive: true });
+  writeFileSync(join(sourceDir, "stop-hook-git-check.sh"), "#!/bin/bash\n# infra#112 fix\n");
+  if (installed !== undefined) {
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, "stop-hook-git-check.sh"), installed);
+  }
+  return { dir, sourceDir, targetDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("the observed failure self-heals: the stock hook is replaced", () => {
+  const fx = hookFixture("#!/bin/bash\n# the stock one\n");
+  assert.equal(syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir }), "copy");
+  assert.equal(
+    readFileSync(join(fx.targetDir, "stop-hook-git-check.sh"), "utf8"),
+    "#!/bin/bash\n# infra#112 fix\n",
+  );
+  fx.cleanup();
+});
+
+test("the installed hook is executable — a copied-but-unrunnable hook is silently no hook", () => {
+  const fx = hookFixture("stale");
+  syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir });
+  assert.ok(statSync(join(fx.targetDir, "stop-hook-git-check.sh")).mode & 0o111);
+  fx.cleanup();
+});
+
+test("a target directory that does not exist yet is created", () => {
+  const fx = hookFixture(undefined); // no targetDir at all
+  assert.equal(syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir }), "copy");
+  assert.ok(existsSync(join(fx.targetDir, "stop-hook-git-check.sh")));
+  fx.cleanup();
+});
+
+test("re-running is a no-op — it does not rewrite an already-correct hook", () => {
+  const fx = hookFixture(undefined);
+  syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir });
+  assert.equal(syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir }), "current");
+  fx.cleanup();
+});
+
+test("a missing source never throws and never truncates what is installed", () => {
+  const fx = hookFixture("#!/bin/bash\n# the stock one\n");
+  rmSync(join(fx.sourceDir, "stop-hook-git-check.sh"));
+  assert.equal(syncStopHook({ sourceDir: fx.sourceDir, targetDir: fx.targetDir }), "absent");
+  assert.equal(
+    readFileSync(join(fx.targetDir, "stop-hook-git-check.sh"), "utf8"),
+    "#!/bin/bash\n# the stock one\n",
+    "the platform's hook is left intact rather than replaced with nothing",
+  );
+  fx.cleanup();
+});
+
+test("this repo's own hook is what would be installed, byte for byte", () => {
+  // Guards the wiring, not the logic: if the file were renamed or moved, every
+  // test above would still pass against its fixture while the real sync found
+  // nothing. That is precisely how the setup script's copy failed.
+  assert.equal(stopHookAction(readFileSync(join(HERE, "stop-hook-git-check.sh")), null), "copy");
 });
