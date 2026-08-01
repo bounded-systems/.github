@@ -11,7 +11,14 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { extractContext, findRepos, mergeContexts, sessionRootFrom, sessionStartCommands } from "./session-start-dispatch.mjs";
+import {
+  extractContext,
+  findRepos,
+  mcpDriftContext,
+  mergeContexts,
+  sessionRootFrom,
+  sessionStartCommands,
+} from "./session-start-dispatch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (name) => readFileSync(join(HERE, name), "utf8");
@@ -234,4 +241,63 @@ test("genuinely different contexts are all kept, in dispatch order", () => {
 
 test("merging nothing yields nothing, so no empty envelope is written", () => {
   assert.deepEqual(mergeContexts([]), { text: "", kept: 0, dropped: 0 });
+});
+
+// ── The MCP capability warning ───────────────────────────────────────────────
+//
+// Observed 2026-08-01: the environment setup script had stopped calling
+// `register-mcp.mjs`. `~/.claude.json` read `mcpServers: null`, so a session that
+// had read front-desk-scheduler's CLAUDE.md — whose opening paragraph says to ask
+// the `next` tool and NOT to hand-rank issues from the GitHub API — found no such
+// tool and hand-ranked issues from the GitHub API. Nothing said the tool was
+// absent, and the answer was indistinguishable from one Front Desk had produced.
+//
+// The dispatcher now registers the missing server itself, so that case leaves no
+// trace in context. These tests hold the residue: when registration does NOT take,
+// the session is told, and told what to do instead of improvising.
+
+test("nothing missing emits no context, so a healthy session pays nothing", () => {
+  // The org context file's own header says it counts against the window every
+  // session. A block that fires when nothing is wrong teaches the reader to skim.
+  assert.equal(mcpDriftContext([]), null);
+  assert.equal(mcpDriftContext(undefined), null);
+});
+
+test("a missing server is named, so the reader knows which tools are absent", () => {
+  const ctx = mcpDriftContext(["front-desk"]);
+  assert.match(ctx, /front-desk/);
+  assert.match(ctx, /NOT registered/);
+});
+
+test("the warning says what to do instead, not merely that a tool is gone", () => {
+  // This is the whole point. "The tool is missing" on its own is an invitation to
+  // reconstruct the answer by hand, which is the failure that prompted the file.
+  const ctx = mcpDriftContext(["front-desk"]);
+  assert.match(ctx, /Do not substitute your own reasoning/);
+  assert.match(ctx, /CLI/);
+  assert.match(ctx, /say the tool was unavailable/);
+});
+
+test("the warning names no repo, so adding one needs no edit here", () => {
+  // Which CLI stands in for which server is the declaring repo's knowledge. The
+  // dispatcher's contract is that it holds none.
+  const ctx = mcpDriftContext(["some-server"]);
+  assert.doesNotMatch(ctx, /front-desk-scheduler|fds\.ts|infra|dolt/);
+});
+
+test("the warning is a context block, not an envelope", () => {
+  // It is merged with the hooks' contexts and wrapped once by main(). Returning a
+  // hookSpecificOutput envelope here would nest two of them.
+  const ctx = mcpDriftContext(["front-desk"]);
+  assert.doesNotMatch(ctx, /hookSpecificOutput/);
+  assert.equal(extractContext(ctx), null);
+});
+
+test("the warning survives the merge and comes first", () => {
+  // It is a statement about what this session CAN do, and it is worth nothing if
+  // the model reads it after the instructions telling it to use the missing tool.
+  const drift = mcpDriftContext(["front-desk"]);
+  const merged = mergeContexts([drift, "org context"]);
+  assert.equal(merged.kept, 2);
+  assert.ok(merged.text.startsWith(drift));
 });
