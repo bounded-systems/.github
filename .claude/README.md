@@ -82,9 +82,9 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
-PIN=e7126e4c274d0424f5073d296400e67aa00f0bf0
-SUM_session_start_dispatch_mjs=34704ffc09fddebaa1c4efa0eb93d4bbbfb76a7e02fb6a876f721ee7bec4927a
-SUM_register_mcp_mjs=bbdd6d07f2cd27bc02c8945d6eef62b104dadaad3d3fac52a826201d7221f3d0
+PIN=a7cb962f89203920f94d8d8ffad697830f1324e2
+SUM_session_start_dispatch_mjs=48ab3886d26c8b66d4ea0ef6dac4c9f740f8d4637b1f6441330dea89fd79e128
+SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
 SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
@@ -138,8 +138,8 @@ else
   echo "bootstrap: WARN no dispatcher — repo SessionStart hooks will not run"
 fi
 
-# MCP servers resolve when Claude Code LAUNCHES, before any SessionStart hook
-# runs — so this must happen here, not in the dispatcher.
+# Keep this call. The dispatcher re-runs register-mcp.mjs as a fallback (#84), but
+# only THIS one is ordered before Claude Code launches and reads the tool list.
 if [ -f "$BOOT/register-mcp.mjs" ]; then
   CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
 else
