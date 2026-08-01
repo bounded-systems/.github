@@ -1,0 +1,17 @@
+# Code owners for bounded-systems/.github.
+#
+# This routes review requests. It does NOT gate merges: the active `~ALL`
+# ruleset carries `require_code_owner_review: false`, and turning that on would
+# not help — the team below has one member, who authors nearly every PR here,
+# and GitHub does not permit approving your own. CONTRIBUTING.md states the
+# same thing outward; the reasoning is in .github-private docs/merge-gate.md.
+#
+# What DOES gate merges here is the required `schema` check (ci-green-dot-github).
+# The gate is the check, not the approval.
+#
+# Validity is not self-evident: a team is only a valid owner if it has write
+# access to this repo. Check https://github.com/bounded-systems/.github/codeowners
+# after any change — an invalid entry is silently ignored, which looks exactly
+# like a file that works.
+
+* @bounded-systems/maintainers
