@@ -8,13 +8,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   absolutize,
   collectServers,
   findMcpRepos,
   mergeConfig,
+  register,
+  registrationStatus,
   sessionRootFrom,
+  unregistered,
 } from "./register-mcp.mjs";
 
 const dirent = (name) => ({ name, isDirectory: () => true });
@@ -141,4 +147,186 @@ test("an unreadable .mcp.json is skipped, not fatal", () => {
 test("a .mcp.json with no mcpServers block yields nothing", () => {
   const got = collectServers(["/root/x"], { read: () => "{}", exists: () => false });
   assert.deepEqual(got, {});
+});
+
+// ── Reporting drift ──────────────────────────────────────────────────────────
+//
+// The registration step is invoked from the environment's setup script, which
+// lives outside version control — so nothing here can gate whether it RAN. What
+// can be gated is that a session notices when it did not, which is the property
+// these tests hold. 2026-08-01: it had not run, `~/.claude.json` read
+// `mcpServers: null`, and the session went on hand-ranking the board from the
+// GitHub API with no indication the `next` tool was absent.
+
+test("missing is exactly what the merge would write", () => {
+  // One definition of "not registered". If these two ever disagree, a session can
+  // report a clean bill of health for a server the writer still considers stale.
+  const servers = { a: { command: "x" }, b: { command: "y" } };
+  const existing = { mcpServers: { a: { command: "x" } } };
+  const [, changed] = mergeConfig(existing, servers);
+  assert.deepEqual(unregistered(servers, existing), ["b"]);
+  assert.equal(changed, true);
+});
+
+test("nothing declared, nothing missing — an identical config is not drift", () => {
+  const servers = { a: { command: "x" } };
+  assert.deepEqual(unregistered(servers, { mcpServers: { a: { command: "x" } } }), []);
+  assert.deepEqual(unregistered({}, {}), []);
+});
+
+/** A session root with one repo declaring `front-desk`, and a config we choose. */
+const fixture = (configText, { configExists = true } = {}) => ({
+  root: "/home/user",
+  configPath: "/root/.claude.json",
+  readdir: () => [{ name: "front-desk-scheduler", isDirectory: () => true }],
+  exists: (p) => (p === "/root/.claude.json" ? configExists : p === "/home/user/front-desk-scheduler/.mcp.json"),
+  read: (p) =>
+    p === "/root/.claude.json"
+      ? configText
+      : JSON.stringify({ mcpServers: { "front-desk": { command: "node", args: ["scripts/mcp.ts"] } } }),
+});
+
+test("the observed failure is reported: declared, and the config carries nothing", () => {
+  const status = registrationStatus(fixture(JSON.stringify({ userID: "u1" })));
+  assert.deepEqual(status.declared, ["front-desk"]);
+  assert.deepEqual(status.missing, ["front-desk"]);
+});
+
+test("a registered server is not reported missing", () => {
+  const registered = {
+    mcpServers: {
+      "front-desk": { command: "node", args: ["scripts/mcp.ts"], cwd: "/home/user/front-desk-scheduler" },
+    },
+  };
+  assert.deepEqual(registrationStatus(fixture(JSON.stringify(registered))).missing, []);
+});
+
+test("a config registering an OLD path still counts as missing", () => {
+  // Silently accepting a stale entry would leave the session pointing at a server
+  // that no longer starts — indistinguishable, from the model's side, from one
+  // that was never registered.
+  const stale = { mcpServers: { "front-desk": { command: "node", args: ["/gone/mcp.ts"] } } };
+  assert.deepEqual(registrationStatus(fixture(JSON.stringify(stale))).missing, ["front-desk"]);
+});
+
+test("an absent config means everything declared is missing", () => {
+  assert.deepEqual(registrationStatus(fixture("", { configExists: false })).missing, ["front-desk"]);
+});
+
+test("an unreadable config reports missing rather than a clean bill of health", () => {
+  assert.deepEqual(registrationStatus(fixture("{{{")).missing, ["front-desk"]);
+});
+
+test("no repo declaring .mcp.json is not a fault", () => {
+  const status = registrationStatus({
+    root: "/home/user",
+    configPath: "/root/.claude.json",
+    readdir: () => [{ name: "infra", isDirectory: () => true }],
+    exists: (p) => p === "/root/.claude.json",
+    read: () => "{}",
+  });
+  assert.deepEqual(status.declared, []);
+  assert.deepEqual(status.missing, []);
+});
+
+// ── Registering, against real fs ─────────────────────────────────────────────
+//
+// `register` is now called from two places — the setup script at boot and the
+// SessionStart dispatcher as a fallback — so its outcome is a value the caller
+// branches on, not just a log line. These run against real fs because the
+// property that matters is what ends up in the file.
+
+/** A session root with one repo declaring `front-desk`, plus a config path. */
+function realFixture(configText) {
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-"));
+  const root = join(dir, "root");
+  const repoDir = join(root, "front-desk-scheduler");
+  mkdirSync(join(repoDir, "scripts"), { recursive: true });
+  writeFileSync(join(repoDir, "scripts", "mcp.ts"), "");
+  writeFileSync(
+    join(repoDir, ".mcp.json"),
+    JSON.stringify({ mcpServers: { "front-desk": { command: "node", args: ["scripts/mcp.ts"] } } }),
+  );
+  const configPath = join(dir, "claude.json");
+  if (configText !== undefined) writeFileSync(configPath, configText);
+  return { dir, root, repoDir, configPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+test("the observed failure self-heals: mcpServers absent, and one call fixes it", () => {
+  const fx = realFixture(JSON.stringify({ userID: "u1", projects: { "/a": { trust: true } } }));
+  const res = register({ root: fx.root, configPath: fx.configPath });
+  assert.equal(res.outcome, "wrote");
+  assert.deepEqual(res.wrote, ["front-desk"]);
+
+  const written = JSON.parse(readFileSync(fx.configPath, "utf8"));
+  assert.equal(written.userID, "u1", "Claude Code's own state survives");
+  assert.deepEqual(written.projects, { "/a": { trust: true } });
+  // The whole point of user scope: the path no longer depends on cwd.
+  assert.deepEqual(written.mcpServers["front-desk"].args, [join(fx.repoDir, "scripts", "mcp.ts")]);
+  assert.equal(written.mcpServers["front-desk"].cwd, fx.repoDir);
+
+  // And the report now agrees with the write — the two must not drift apart.
+  assert.deepEqual(registrationStatus({ root: fx.root, configPath: fx.configPath }).missing, []);
+  fx.cleanup();
+});
+
+test("a second call is a no-op that reports 'already'", () => {
+  const fx = realFixture("{}");
+  register({ root: fx.root, configPath: fx.configPath });
+  const before = readFileSync(fx.configPath, "utf8");
+  const res = register({ root: fx.root, configPath: fx.configPath });
+  assert.equal(res.outcome, "already");
+  assert.deepEqual(res.wrote, []);
+  assert.equal(readFileSync(fx.configPath, "utf8"), before);
+  fx.cleanup();
+});
+
+test("an unreadable config is refused, not overwritten", () => {
+  // It holds far more than MCP config; replacing it with a fresh object would
+  // cost a user their session state to gain a tool.
+  const fx = realFixture("{{{ not json");
+  const res = register({ root: fx.root, configPath: fx.configPath });
+  assert.equal(res.outcome, "refused");
+  assert.deepEqual(res.wrote, []);
+  assert.equal(readFileSync(fx.configPath, "utf8"), "{{{ not json");
+  fx.cleanup();
+});
+
+test("no config yet is not an error — it is created with only mcpServers", () => {
+  const fx = realFixture(undefined);
+  assert.equal(register({ root: fx.root, configPath: fx.configPath }).outcome, "wrote");
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(fx.configPath, "utf8"))), ["mcpServers"]);
+  fx.cleanup();
+});
+
+test("nothing declared writes nothing at all", () => {
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-"));
+  const root = join(dir, "root");
+  mkdirSync(join(root, "infra"), { recursive: true });
+  const configPath = join(dir, "claude.json");
+  const res = register({ root, configPath });
+  assert.equal(res.outcome, "none");
+  assert.equal(existsSync(configPath), false, "a config is not conjured for a session with no servers");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("reporting leaves the config byte-identical", () => {
+  // Registering from a SessionStart hook cannot help the session doing the
+  // checking — servers resolve before hooks run — and `~/.claude.json` is Claude
+  // Code's own live state, which it may rewrite from memory after we touched it.
+  // Against real fs, so this holds against the actual write path and not a stub.
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-"));
+  const root = join(dir, "root");
+  const repoDir = join(root, "front-desk-scheduler");
+  mkdirSync(repoDir, { recursive: true });
+  writeFileSync(join(repoDir, ".mcp.json"), JSON.stringify({ mcpServers: { "front-desk": { command: "node" } } }));
+
+  const configPath = join(dir, "claude.json");
+  const before = JSON.stringify({ userID: "u1", projects: { "/a": { trust: true } } });
+  writeFileSync(configPath, before);
+
+  assert.deepEqual(registrationStatus({ root, configPath }).missing, ["front-desk"]);
+  assert.equal(readFileSync(configPath, "utf8"), before);
+  assert.deepEqual(readdirSync(dir).sort(), ["claude.json", "root"]);
+  rmSync(dir, { recursive: true, force: true });
 });

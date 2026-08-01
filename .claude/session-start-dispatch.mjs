@@ -194,6 +194,50 @@ export function extractContext(stdout) {
   }
 }
 
+/**
+ * The context block emitted when a declared MCP server is STILL absent after
+ * `ensureMcpRegistered` has tried to register it.
+ *
+ * Reached only when the write was refused or did not take — an unreadable
+ * `~/.claude.json`, or a config that disagrees with the declaration for a reason
+ * re-writing it did not resolve. The ordinary drift case self-heals and produces
+ * no context at all, which is deliberate: the org context file's own header says
+ * it counts against the window every session, and a block that fires when nothing
+ * is wrong is how a warning gets skimmed past.
+ *
+ * The wording is aimed at the failure that actually follows, not at the missing
+ * tool in the abstract. A model told by a repo's CLAUDE.md to ask a tool, finding
+ * no such tool, does not stop — it reconstructs the answer by hand from whatever
+ * it can reach and reports that reconstruction with the same confidence. So the
+ * block says what is unavailable AND what to do instead, because "the tool is
+ * missing" on its own is an invitation to improvise.
+ *
+ * Kept repo-agnostic: which CLI stands in for which server is the declaring
+ * repo's knowledge and belongs in its CLAUDE.md, not here.
+ */
+export function mcpDriftContext(missing) {
+  if (!missing?.length) return null;
+  return [
+    `## Session capability warning: MCP servers declared but NOT registered — ${missing.join(", ")}`,
+    "",
+    "An attached repo declares these in its `.mcp.json` and `~/.claude.json` does not",
+    "carry them, so **their tools may be absent from this session**. Registering them",
+    "was attempted at session start and did not take — most likely `~/.claude.json` is",
+    "not readable JSON, which is refused rather than overwritten because it is Claude",
+    "Code's own state.",
+    "",
+    "**Do not substitute your own reasoning for a missing tool.** Check whether the",
+    "tools are present before relying on them. Where the declaring repo offers the same",
+    "verbs on its CLI, use those; where it does not, say the tool was unavailable rather",
+    "than answering as though you had consulted it. An answer reconstructed by hand is",
+    "not the answer the tool would have given, and nothing downstream can tell the two",
+    "apart unless you say which one this is.",
+    "",
+    "`bounded-systems/.github` → `.claude/README.md` documents the registration path and",
+    "the setup-script text it is driven from.",
+  ].join("\n");
+}
+
 async function runHook(repoDir, command) {
   const label = `${command.split("/").pop()} (${repoDir.split("/").pop()})`;
   // CLAUDE_PROJECT_DIR is what each repo's hook expects to point at ITSELF. The
@@ -222,11 +266,63 @@ async function runHook(repoDir, command) {
   }
 }
 
+/**
+ * Register any declared MCP server the config is missing, and report what is
+ * STILL missing afterwards — `[]` if nothing is, or if it could not be checked.
+ *
+ * The primary call site for registration is the environment's setup script,
+ * before Claude Code launches. This is the fallback for when that call is not
+ * made — which is not hypothetical: that script is the one link in the chain
+ * living outside version control, where no reviewer and no gate can see it, and
+ * on 2026-08-01 it had silently stopped making the call. A session ran with
+ * `mcpServers: null` while every repo's CLAUDE.md went on telling the model to
+ * ask for tools that were not there, and the model did the predictable thing —
+ * it reconstructed the answer by hand from the GitHub API, which is the one move
+ * front-desk-scheduler's CLAUDE.md forbids in its opening paragraph.
+ *
+ * Registering this late does work: verified live on Claude Code 2.1.42, a session
+ * that started with nothing registered gained the server's tools seconds after
+ * the write, with no relaunch. It is a fallback rather than the fix because it
+ * cannot be ordered before whatever already read the tool list, and because a
+ * setup script that has stopped calling `register-mcp.mjs` has probably stopped
+ * doing the rest of its job too — hence the warning below even on success.
+ *
+ * Dynamic import, not a top-level one: the two files sit beside each other in the
+ * attached checkout AND in the fetch cache, but the bootstrap verifies each
+ * fetched file independently, so a refused digest can leave one present and the
+ * other not. A missing register-mcp.mjs must degrade this dispatcher to what it
+ * did before, never take the hooks down with it.
+ */
+async function ensureMcpRegistered() {
+  let mod;
+  try {
+    mod = await import("./register-mcp.mjs");
+  } catch (e) {
+    // "Could not check" is a different claim from "nothing is missing", and the
+    // log is the only place that distinction can be made.
+    log(`WARN could not check MCP registration — ${e?.message ?? e}`);
+    return [];
+  }
+  try {
+    const { wrote, outcome } = mod.register({ root: SESSION_ROOT });
+    if (outcome === "wrote") {
+      log(`WARN registered MCP server(s) the setup script did not: ${wrote.join(", ")} — see .claude/README.md`);
+    }
+    const { missing } = mod.registrationStatus({ root: SESSION_ROOT });
+    if (missing.length) log(`WARN MCP servers declared but NOT registered: ${missing.join(", ")}`);
+    return missing;
+  } catch (e) {
+    log(`WARN MCP registration failed — ${e?.message ?? e}`);
+    return [];
+  }
+}
+
 async function main() {
+  const missingMcp = await ensureMcpRegistered();
+
   const repos = findRepos(SESSION_ROOT);
   if (repos.length === 0) {
     log(`no attached repo under ${SESSION_ROOT} declares SessionStart hooks — nothing to do.`);
-    return;
   }
 
   const contexts = [];
@@ -249,7 +345,11 @@ async function main() {
   }
 
   const failed = ran.filter((r) => !r.ok).map((r) => r.label);
-  const merged = mergeContexts(contexts);
+  // First, deliberately: it is a statement about what this session CAN do, and it
+  // is worth nothing if the model reads it after the instructions telling it to
+  // use the tool that is missing.
+  const drift = mcpDriftContext(missingMcp);
+  const merged = mergeContexts(drift ? [drift, ...contexts] : contexts);
   log(
     `ran ${ran.length} hook(s) across ${repos.length} repo(s); ` +
       `${merged.kept} injected context` +

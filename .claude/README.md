@@ -6,7 +6,7 @@ Three files here, with different jobs:
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
-| `register-mcp.mjs` | **every attached repo** | run from the environment setup script (see below) |
+| `register-mcp.mjs` | **every attached repo** | run from the environment setup script; re-run by the dispatcher as a fallback (see below) |
 
 The last two exist for the same reason: both `.claude/settings.json` and `.mcp.json`
 are **project-scoped**, discovered from the project directory — and a multi-repo
@@ -285,13 +285,53 @@ state and holds much more than MCP config, so it is read-modify-write via a temp
 file and rename, never a replacement. It never removes a server it did not add,
 and re-running is a no-op.
 
+### The setup script is not the only call site any more
+
+It happened again on **2026-08-01**, one layer up: the setup-script field had been
+reduced to just the `settings.json` heredoc — 264 bytes, per the environment log —
+so the `register-mcp.mjs` call was simply gone. `~/.claude.json` read
+`mcpServers: null`; a session asked *"what should we work on next?"*, found no
+`next` tool, and ranked the org's work by hand from `list_issues` and
+`list_pull_requests`. That answer is not Front Desk's answer, and nothing in the
+session distinguished the two.
+
+Note what was and was not broken. The dispatcher ran, every repo's hook ran, `deno`
+and `dolt` and `node_modules` were all there, and the MCP server itself started
+cleanly when invoked by hand. One line was missing from a field that no reviewer
+and no gate can see — which is exactly the `infra#122` failure mode this directory
+keeps being written against.
+
+So the dispatcher now **calls `register-mcp.mjs` itself** before fanning out, and
+reports in the session context anything still missing afterwards. This is a
+fallback, not a relocation: the setup script remains the right primary call site
+because it is ordered before anything reads the tool list. Keep the call in the
+field.
+
+It works because the earlier claim in this file — that registering after launch
+cannot help, since servers resolve at launch — was only half right, and the wrong
+half was load-bearing. Verified live on Claude Code 2.1.42, 2026-08-01: a session
+that started with `mcpServers: null` gained `front-desk`'s five tools **within the
+same session**, seconds after `register-mcp.mjs` ran, with no relaunch. The config
+is watched. Launch-time resolution is still real and still the ordering you want;
+it is just not the only door.
+
+The dispatcher says so on stderr when it has to step in:
+
+```
+session-start-dispatch: WARN registered MCP server(s) the setup script did not: front-desk — see .claude/README.md
+```
+
+Treat that line as a bug report against the setup-script field, not as a healthy
+session. A field that has stopped calling `register-mcp.mjs` has probably stopped
+doing the rest of its job too — compare it against the canonical text above.
+
 ### Ordering caveat
 
 It registers whatever exists **at the moment it runs**. If the setup script runs
 before the repos are cloned, it will find nothing and say so:
 
 ```
-register-mcp: no attached repo under /home/user declares .mcp.json — nothing to register.
+register-mcp: no attached repo under /home/user declares a usable MCP server — nothing to do.
 ```
 
 If you see that line while the repos are plainly present later in the session, the
@@ -300,7 +340,13 @@ or after whatever step materialises the checkouts. The success line names what i
 registered:
 
 ```
-register-mcp: registered at user scope: front-desk (from 1 repo(s))
+register-mcp: registered at user scope: front-desk
+```
+
+and a re-run, including the dispatcher's, reports the no-op rather than rewriting:
+
+```
+register-mcp: already registered: front-desk
 ```
 
 ## Known gap: org context does not reach a cloud session

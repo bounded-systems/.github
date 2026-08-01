@@ -122,55 +122,127 @@ export function collectServers(repoDirs, { read = (p) => readFileSync(p, "utf8")
   return servers;
 }
 
+/**
+ * Declared servers the live config does not already carry identically.
+ *
+ * ONE definition, used twice: `mergeConfig` writes exactly these, and
+ * `registrationStatus` reports exactly these. A drift report that decided
+ * "missing" separately from what the writer decides is "changed" would be one
+ * refactor away from disagreeing with it — the same argument
+ * `bootstrap-pin.test.mjs` makes about a gate that reimplements its generator.
+ */
+export function unregistered(servers, existing) {
+  const live = existing?.mcpServers ?? {};
+  return Object.keys(servers).filter((name) => JSON.stringify(live[name]) !== JSON.stringify(servers[name]));
+}
+
 /** Merge into the existing config, preserving everything else. Returns [next, changed]. */
 export function mergeConfig(existing, servers) {
   const next = { ...existing, mcpServers: { ...(existing.mcpServers ?? {}) } };
-  let changed = false;
-  for (const [name, server] of Object.entries(servers)) {
-    if (JSON.stringify(next.mcpServers[name]) !== JSON.stringify(server)) {
-      next.mcpServers[name] = server;
-      changed = true;
-    }
-  }
-  return [next, changed];
+  const missing = unregistered(servers, existing);
+  for (const name of missing) next.mcpServers[name] = servers[name];
+  return [next, missing.length > 0];
 }
 
-function main() {
-  const repos = findMcpRepos(SESSION_ROOT);
-  if (repos.length === 0) {
-    log(`no attached repo under ${SESSION_ROOT} declares .mcp.json — nothing to register.`);
-    return;
-  }
-
-  const servers = collectServers(repos);
-  const names = Object.keys(servers);
-  if (names.length === 0) {
-    log("found .mcp.json but no usable server entries.");
-    return;
-  }
+/**
+ * Report — WITHOUT writing — whether boot-time registration actually happened.
+ *
+ * This exists because the registration step is the one link in the chain that
+ * nothing observes. The setup script that calls this file lives outside version
+ * control, so no reviewer and no CI gate can see it; when the call was dropped
+ * from that field the only symptom was a session whose `~/.claude.json` read
+ * `mcpServers: null` while every repo's CLAUDE.md went on telling the model to
+ * ask for tools that were not there. Observed 2026-08-01: the model did as the
+ * instruction said, found no `next` tool, and hand-ranked the board from the
+ * GitHub API instead — the one thing front-desk-scheduler's CLAUDE.md forbids in
+ * its opening paragraph. Nothing in the session said the tool was missing.
+ *
+ * Read-only because it is the REPORT: `register()` is the write, and a caller
+ * that wants both calls both. Splitting them is what lets the dispatcher say
+ * "still missing after we tried", which is a different and more useful claim than
+ * either half alone.
+ *
+ * Returns `{ repos, declared, missing }`. Empty `declared` means no attached repo
+ * asked for anything, which is not a fault.
+ */
+export function registrationStatus({
+  root = SESSION_ROOT,
+  configPath = CONFIG_PATH,
+  read = (p) => readFileSync(p, "utf8"),
+  exists = existsSync,
+  readdir = readdirSync,
+} = {}) {
+  const repos = findMcpRepos(root, { readdir, exists });
+  const servers = collectServers(repos, { read, exists });
+  const declared = Object.keys(servers);
 
   let existing = {};
-  if (existsSync(CONFIG_PATH)) {
+  if (exists(configPath)) {
     try {
-      existing = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+      existing = JSON.parse(read(configPath));
+    } catch {
+      // Unreadable: every declared server is unverifiable. Report them all
+      // missing rather than issuing a clean bill of health we cannot support.
+      return { repos, declared, missing: declared };
+    }
+  }
+  return { repos, declared, missing: unregistered(servers, existing) };
+}
+
+/**
+ * Do the registration. Returns `{ declared, wrote, outcome }` and never throws.
+ *
+ * `outcome` is one of `none` (nothing declared), `already` (config agrees),
+ * `wrote`, or `refused` (the config is not readable JSON, so writing would
+ * discard Claude Code's own state).
+ *
+ * Extracted from what used to be `main` so the SessionStart dispatcher can call
+ * it in-process. The comment this file used to carry — that registering after
+ * launch cannot help, because servers resolve before hooks run — is only half
+ * true, and the wrong half was load-bearing. Verified live 2026-08-01 on Claude
+ * Code 2.1.42: a session that started with `mcpServers: null` picked up
+ * `front-desk`'s five tools **within the same session**, seconds after this file
+ * ran, with no relaunch. The launch-time resolution is real; it is just not the
+ * only door — the config is watched.
+ *
+ * So run it late as well as at boot. Boot is still the right primary call site
+ * (it is ordered before anything reads the tool list); this is the fallback for
+ * when that call is not made, which is the failure that actually happened.
+ */
+export function register({ root = SESSION_ROOT, configPath = CONFIG_PATH } = {}) {
+  const repos = findMcpRepos(root);
+  const servers = collectServers(repos);
+  const declared = Object.keys(servers);
+  if (declared.length === 0) return { declared, wrote: [], outcome: "none" };
+
+  let existing = {};
+  if (existsSync(configPath)) {
+    try {
+      existing = JSON.parse(readFileSync(configPath, "utf8"));
     } catch (e) {
       // Refuse rather than overwrite: this file is Claude Code's own state, and
       // replacing an unparseable one with a fresh object would discard it.
-      log(`FATAL ${CONFIG_PATH} is not readable JSON (${e.message}) — refusing to overwrite it.`);
-      return;
+      log(`FATAL ${configPath} is not readable JSON (${e.message}) — refusing to overwrite it.`);
+      return { declared, wrote: [], outcome: "refused" };
     }
   }
 
-  const [next, changed] = mergeConfig(existing, servers);
-  if (!changed) {
-    log(`already registered: ${names.join(", ")}`);
-    return;
-  }
+  const wrote = unregistered(servers, existing);
+  if (wrote.length === 0) return { declared, wrote, outcome: "already" };
 
-  const tmp = `${CONFIG_PATH}.register-mcp.tmp`;
+  const [next] = mergeConfig(existing, servers);
+  // Temp file and rename: an interrupted write cannot truncate the real config.
+  const tmp = `${configPath}.register-mcp.tmp`;
   writeFileSync(tmp, JSON.stringify(next, null, 2));
-  renameSync(tmp, CONFIG_PATH);
-  log(`registered at user scope: ${names.join(", ")} (from ${repos.length} repo(s))`);
+  renameSync(tmp, configPath);
+  return { declared, wrote, outcome: "wrote" };
+}
+
+function main() {
+  const { declared, wrote, outcome } = register();
+  if (outcome === "none") log(`no attached repo under ${SESSION_ROOT} declares a usable MCP server — nothing to do.`);
+  else if (outcome === "already") log(`already registered: ${declared.join(", ")}`);
+  else if (outcome === "wrote") log(`registered at user scope: ${wrote.join(", ")}`);
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
