@@ -97,3 +97,56 @@ for (const file of files) {
     );
   });
 }
+
+// ── Every local broker-gh-token caller declares the scopes it needs ──────────
+//
+// The action exports `permissions` so callers can assert their scope before
+// doing work, and for months exactly one caller did — asserting `pull_requests`
+// and then dying on the unasserted `contents` at `git push`, exit 128, before
+// any of its own failure annotations could run (#87). #93 moved the assertion
+// into the action behind a `require:` input; this is the half that keeps a
+// fourth caller from silently opting out of it.
+//
+// Scoped to `uses: ./` — the LOCAL action. front-desk-add.yml pins a published
+// SHA of an older version where the input does not exist, and is deliberately
+// `continue-on-error` (the central sweep is its backstop), so requiring a
+// declaration there would be both impossible and pointless.
+for (const file of files) {
+  const source = readFileSync(join(DIR, file), "utf8");
+  if (!source.includes("uses: ./.github/actions/broker-gh-token")) continue;
+
+  test(`${file}: every local broker-gh-token step declares require:`, () => {
+    // Each `uses:` line through to the end of its `with:` block. Indentation
+    // ends the step, which is enough structure without a YAML dependency —
+    // the same trade this file's header records.
+    const lines = source.split("\n");
+    const missing = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].includes("uses: ./.github/actions/broker-gh-token")) continue;
+      const indent = lines[i].search(/\S/);
+      let declared = false;
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j];
+        if (line.trim() === "") continue;
+        // Strictly less, not `<=`: a step's sibling keys (`with:`, `env:`) sit at
+        // the SAME indent as `uses:`, so `<=` stopped at `with:` and never saw
+        // the input inside it — reporting both correctly-declared callers as
+        // missing. The next step's `- ` marker dedents further, which is what
+        // actually ends the block.
+        if (line.search(/\S/) < indent) break;
+        if (/^\s*require:/.test(line)) { declared = true; break; }
+      }
+      if (!declared) missing.push(i + 1);
+    }
+
+    assert.deepEqual(
+      missing,
+      [],
+      `${file} mints a broker token without declaring require: at line(s) ` +
+        `${missing.join(", ")}. State every scope the job will use — a partial ` +
+        `preflight is worse than none, because it turns "check your scopes" into ` +
+        `"scopes were checked". If the job genuinely only reads, say so in a ` +
+        `comment on the step rather than leaving the input off.`,
+    );
+  });
+}

@@ -15,6 +15,26 @@ inputs:
     description: OIDC audience the broker pins for this app.
     required: false
     default: github-app-broker
+  require:
+    description: >-
+      Comma-separated permission names this job needs at `write` (e.g.
+      "contents, pull_requests"). Asserted against what GitHub GRANTED, before
+      the token is handed back, so a missing scope fails at mint time naming the
+      gap rather than as a bare 403 partway through the work.
+
+      Declare every scope the job will use, not just the first one. On
+      2026-08-01 the `pin` job in org-defaults.yml asserted `pull_requests` by
+      hand and then died on the unasserted `contents`, at `exit 128` — which
+      killed the script before any of its carefully written failure annotations
+      could run, and left a job predicting a failure mode ("branch pushed, PR
+      not opened") that could not occur, because the branch could not be pushed
+      at all. A partial preflight is worse than none: it turns "check your
+      scopes" into "scopes were checked".
+
+      Optional, and empty means no assertion — so a caller that only reads, or
+      one deliberately best-effort, is unaffected.
+    required: false
+    default: ""
 outputs:
   token:
     description: The installation access token (already masked in logs).
@@ -66,3 +86,51 @@ runs:
         perms="$(printf '%s' "$res" | jq -c 'if has("permissions") then .permissions else "full-grant" end')"
         echo "permissions=$perms" >> "$GITHUB_OUTPUT"
         echo "granted: $perms"
+    # Assert the scopes the CALLER declared, before handing the token back.
+    #
+    # Lives here rather than in each caller because the one caller that did this
+    # by hand asserted a single scope and died on the next one (see `require`
+    # above). A shared component that exports `permissions` so callers "can
+    # assert" leaves each of them to get the list right independently; three
+    # callers is three chances to miss one.
+    - name: The minted token carries every scope this job declared
+      if: ${{ inputs.require != '' }}
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        GRANTED: ${{ steps.broker.outputs.permissions }}
+        REQUIRE: ${{ inputs.require }}
+      run: |
+        set -euo pipefail
+        # A registry entry with no permissions map mints full-grant: the token
+        # carries whatever the installation holds, which is not enumerable here.
+        # Nothing to check against, and refusing would break every full-grant
+        # caller — so pass, and say why.
+        if [ "$GRANTED" = '"full-grant"' ]; then
+          echo "full-grant token — carries whatever the installation holds; '$REQUIRE' not independently checkable"
+          exit 0
+        fi
+        missing=""
+        for scope in $(printf '%s' "$REQUIRE" | tr ',' ' '); do
+          got="$(printf '%s' "$GRANTED" | jq -r --arg s "$scope" '.[$s] // "absent"')"
+          if [ "$got" = "write" ]; then
+            echo "✓ $scope: write"
+          else
+            missing="$missing $scope(granted: $got)"
+          fi
+        done
+        [ -z "$missing" ] && exit 0
+        # Name BOTH fixable places. The mint succeeding proves the app is
+        # registered and the OIDC trust holds; it does not tell you whether the
+        # broker failed to REQUEST the scope or the installation does not HOLD
+        # it, and the two are fixed in different systems. bounded-systems/.github#87
+        # was the second, and was misread as the first for half a day precisely
+        # because this message did not exist to say "check both".
+        echo "::error title=broker-gh-token: app '$APP' is missing a scope this job needs::" \
+             "Required:$missing. Granted: $GRANTED. The mint SUCCEEDED, so the app is" \
+             "registered and the OIDC trust is fine — the gap is one of two things, and" \
+             "they are fixed in different places: (1) the broker's GH_APPS entry for" \
+             "'$APP' does not REQUEST the scope, fixable in the broker registry; or (2)" \
+             "the App installation does not HOLD it, fixable in the App's settings on" \
+             "GitHub. Check both — do not assume the first."
+        exit 1

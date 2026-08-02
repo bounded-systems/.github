@@ -88,32 +88,12 @@ jobs:
         with:
           app: front-desk
           broker-url: ${{ vars.CF_BROKER_URL }}
-      # Assert the scope BEFORE doing the work. The broker echoes what GitHub
-      # GRANTED (not what it asked for) exactly so a caller can do this; until
-      # now nothing consumed it, so a missing scope surfaced only as a 403 at
-      # `gh pr create`, after the branch had already been pushed. wrangler.jsonc
-      # records that precise failure for this App (run 30373059795) and its
-      # reading: mint succeeded + call 403 means the BROKER did not ask for it;
-      # mint failing outright means the INSTALLATION lacks the grant. Only the
-      # first is fixable in the registry, so naming which one saves the guess.
-      - name: The minted token can actually open a PR
-        if: ${{ steps.app-token.outputs.token != '' }}
-        env:
-          GRANTED: ${{ steps.app-token.outputs.permissions }}
-        run: |
-          if [ "$GRANTED" = '"full-grant"' ]; then
-            echo "full-grant token — carries whatever the installation holds"; exit 0
-          fi
-          got="$(printf '%s' "$GRANTED" | jq -r '.pull_requests // "absent"')"
-          [ "$got" = "write" ] && { echo "✓ pull_requests: write"; exit 0; }
-          echo "::error title=pin: minted token cannot open a PR::The front-desk" \
-               "token granted pull_requests=$got, not write, so \`gh pr create\`" \
-               "below would 403 after pushing the branch. Fix the broker's GH_APPS" \
-               "registry entry (infra → cloudflare/broker/wrangler.jsonc), not the" \
-               "App settings — a mint that SUCCEEDS while the call 403s means the" \
-               "broker did not ask for the scope, whereas a missing installation" \
-               "grant makes the mint itself fail. Granted set: $GRANTED"
-          exit 1
+          # BOTH, and in this order of discovery: the hand-rolled check that used
+          # to live here asserted `pull_requests` only, and the job then died on
+          # the unasserted `contents` at `git push` — exit 128, before any of the
+          # annotations below could run (#87). The assertion now lives in the
+          # action so the next caller cannot repeat that (#93).
+          require: contents, pull_requests
       - env:
           GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
           BROKERED: "${{ steps.app-token.outputs.token != '' }}"
