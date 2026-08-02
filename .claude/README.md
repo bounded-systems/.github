@@ -18,6 +18,16 @@ installed by something outside the repo, and on 2026-08-01 that something silent
 stopped doing it (#85). All three are now re-done by the dispatcher when the setup
 script has not done them.
 
+> **Why this file keeps growing a new fallback.** The general property these are
+> instances of — *a capability needs a canonical definition, a detector for
+> drift, and a repairer or a loud failure, all three in version control* — is
+> written up with its evidence in
+> [`docs/session-capability-invariants.md`](../docs/session-capability-invariants.md).
+> Read that before adding a fourth bespoke repair here: #91 replaces these with
+> one manifest, gated against the canonical field text below, so that a step
+> added to the field without a fallback fails a test instead of failing in
+> production.
+
 ## The problem the dispatcher solves
 
 Claude Code fires SessionStart hooks from the **project directory's**
