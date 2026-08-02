@@ -41,6 +41,12 @@ jobs:
         with:
           app: front-desk
           broker-url: ${{ vars.CF_BROKER_URL }}
+          # This job pushes a branch and opens a PR, exactly like org-defaults'
+          # `pin`. It has never done either — it early-exits on "in sync", so it
+          # reported success weekly for over a month without once exercising the
+          # grant (#92). Declaring the scopes means the first run with real work
+          # fails at mint naming the gap, rather than 403'ing mid-push.
+          require: contents, pull_requests
       - env:
           GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
         run: |
