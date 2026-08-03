@@ -92,7 +92,13 @@ jobs:
         continue-on-error: true
         uses: ./.github/actions/broker-gh-token
         with:
-          app: front-desk
+          # `front-desk-pin`, NOT `front-desk` (#87). The fan-in entry carries no
+          # `contents`, so it could never push the bump branch — and it cannot be
+          # given any: it is deliberately unpinned, and `contents` is privileged,
+          # so the broker would refuse the entry outright and every other consumer
+          # of it with it. This is its own entry, pinned to this workflow, the
+          # same shape `front-desk-schema` and `forge` already have.
+          app: front-desk-pin
           broker-url: ${{ vars.CF_BROKER_URL }}
           # BOTH, and in this order of discovery: the hand-rolled check that used
           # to live here asserted `pull_requests` only, and the job then died on
@@ -100,9 +106,21 @@ jobs:
           # annotations below could run (#87). The assertion now lives in the
           # action so the next caller cannot repeat that (#93).
           require: contents, pull_requests
+      # The token is used ONLY if the mint step actually succeeded, which includes
+      # its `require:` assertion passing. That assertion was previously worth
+      # nothing here: `continue-on-error` swallowed it, so a token proven to lack
+      # `contents` was used anyway and the push 403'd one step later — the very
+      # failure the assertion exists to pre-empt, arriving unchanged (#87).
+      #
+      # `github.token` DOES hold contents:write here (see this job's permissions),
+      # and pushed this branch fine before the broker was wired in (#79). So the
+      # fallback is strictly better than proceeding with an insufficient App token:
+      # the branch lands with the correct pin either way, and only OPENING the PR
+      # is lost. Falling back costs a manual PR; proceeding costs a hand-regenerate.
       - env:
-          GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
-          BROKERED: "${{ steps.app-token.outputs.token != '' }}"
+          GH_TOKEN: "${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token || github.token }}"
+          BROKERED: "${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token != '' }}"
+          MINT: "${{ steps.app-token.outcome }}"
         run: |
           [ -z "$(git status --porcelain)" ] && { echo "pin is current"; exit 0; }
           # A FIXED branch, unlike registry-graph's timestamped one: consecutive
@@ -143,6 +161,16 @@ jobs:
                  "correct pin. The App token minted, so this is NOT the Actions-cannot-" \
                  "create-PRs case: check that the front-desk App is installed on this" \
                  "repo with pull_requests:write. Open a PR from $b by hand meanwhile."
+          elif [ "${MINT}" = "failure" ]; then
+            # The broker answered and the token was REFUSED by the `require:` check
+            # — so this is a scope gap, not a connectivity one, and the two are
+            # fixed in different systems. The action's own annotation names which.
+            echo "::error title=pin: branch pushed with github.token, PR not opened::Pushed" \
+                 "$b with the correct pin. The broker was reachable but the minted token" \
+                 "failed its scope assertion, so this fell back to github.token — which can" \
+                 "push but cannot create PRs in this org. See the broker-gh-token error above" \
+                 "for which scope is missing and where to fix it (#87). Open a PR from $b by" \
+                 "hand meanwhile; the branch content is correct and needs no regeneration."
           else
             echo "::error title=pin: branch pushed, PR not opened::Pushed $b with the" \
                  "correct pin, but no App token was minted, so this fell back to" \
