@@ -39,7 +39,12 @@ jobs:
         continue-on-error: true
         uses: ./.github/actions/broker-gh-token
         with:
-          app: front-desk
+          # Its OWN pinned entry, not `front-desk` (#87). That entry carries no
+          # `contents`, so this job could never have pushed — which is exactly what
+          # #92 predicted and what org-defaults' `pin` proved four times over. And
+          # it is not shareable with `front-desk-pin`: a workflowRef pins ONE
+          # workflow, so each privileged caller needs its own entry.
+          app: front-desk-registry
           broker-url: ${{ vars.CF_BROKER_URL }}
           # This job pushes a branch and opens a PR, exactly like org-defaults'
           # `pin`. It has never done either — it early-exits on "in sync", so it
@@ -47,8 +52,15 @@ jobs:
           # grant (#92). Declaring the scopes means the first run with real work
           # fails at mint naming the gap, rather than 403'ing mid-push.
           require: contents, pull_requests
+      # Only use the token if the mint step SUCCEEDED, which includes its
+      # `require:` assertion passing. `continue-on-error` otherwise swallows that
+      # verdict and the job proceeds with a token already proven insufficient —
+      # the bug org-defaults' `pin` hit live (#87). github.token holds
+      # contents:write here (see this job's permissions), so the fallback still
+      # pushes the branch; only opening the PR is lost, which this job already
+      # handles below.
       - env:
-          GH_TOKEN: "${{ steps.app-token.outputs.token || github.token }}"
+          GH_TOKEN: "${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token || github.token }}"
         run: |
           [ -z "$(git status --porcelain)" ] && { echo "in sync"; exit 0; }
           b="registry-graph/$(date -u +%Y%m%d%H%M%S)"
