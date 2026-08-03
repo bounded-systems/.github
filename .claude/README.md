@@ -23,10 +23,36 @@ script has not done them.
 > drift, and a repairer or a loud failure, all three in version control* — is
 > written up with its evidence in
 > [`docs/session-capability-invariants.md`](../docs/session-capability-invariants.md).
-> Read that before adding a fourth bespoke repair here: #91 replaces these with
-> one manifest, gated against the canonical field text below, so that a step
-> added to the field without a fallback fails a test instead of failing in
-> production.
+>
+> **Do not add a fifth bespoke repair here.** They are now one `MANIFEST` in
+> `session-start-dispatch.mjs`, and it is gated against the canonical field text
+> below: `parseSteps` in `gen-bootstrap-pin.mjs` enumerates that field's steps,
+> and `bootstrap-steps.test.mjs` asserts each one maps to a manifest entry or to
+> an `IRREDUCIBLE` declaration with a reason. A step added to the field with no
+> fallback fails `node --test .claude/` instead of failing in production six
+> weeks later, which is how #85 was found (#91).
+
+### Adding a step to the setup script
+
+Add the line to the canonical text below, then give it one of two things in
+`session-start-dispatch.mjs`:
+
+- a **`MANIFEST` entry** — `artifact` (the file the step installs, which is the
+  key the gate matches on), `compare`, `repair`, and `context`. The comparison is
+  per-entry on purpose: the Stop hook compares **bytes** because its failure was a
+  *wrong* file, while MCP compares a **predicate over JSON** because
+  `~/.claude.json` legitimately holds much more than what any repo declares.
+  Forcing one comparison on both would reinstate a failure that has already
+  happened here.
+- an **`IRREDUCIBLE` entry** with a reason, when nothing in the dispatcher can
+  re-do it. Both of today's — the `settings.json` write and the
+  `CLAUDE_SESSION_ROOT=` prefix — are the same irreducibility: they install the
+  pointer that invokes the dispatcher, so a fallback would have to run before
+  itself.
+
+If the parse does not recognise the verb you used, it **refuses to parse** rather
+than skipping the line — a step nobody has classified is exactly what the gate
+exists to catch, so teach `parseSteps` the verb rather than working around it.
 
 ## The problem the dispatcher solves
 

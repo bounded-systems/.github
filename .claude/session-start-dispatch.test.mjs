@@ -13,10 +13,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  applyEntry,
+  applyManifest,
   extractContext,
   findRepos,
   mcpDriftContext,
   mergeContexts,
+  needsRepair,
   sessionRootFrom,
   sessionStartCommands,
   stopHookAction,
@@ -386,6 +389,118 @@ test("a missing source never throws and never truncates what is installed", () =
     "the platform's hook is left intact rather than replaced with nothing",
   );
   fx.cleanup();
+});
+
+// ── The manifest loop (#91) ──────────────────────────────────────────────────
+//
+// The two repairs above are now entries driven by one loop, so the loop is
+// load-bearing for both. What is worth pinning is the shape of its decisions:
+// a healthy artifact is not written to, an unrepairable one is not attempted,
+// and no entry can take the session down with it.
+//
+// Fake entries rather than the real MANIFEST: these must keep testing the loop
+// the day an entry changes its mind about what "healthy" means, and must not
+// start passing because the live manifest happens to be quiet.
+
+/** An entry that records what the loop asked it to do. */
+function spy({ compare, repair = () => ({ ok: true, state: "repaired" }), context = null }) {
+  const calls = [];
+  return {
+    artifact: "thing.sh",
+    what: "the thing",
+    calls,
+    compare: (ctx) => (calls.push("compare"), typeof compare === "function" ? compare(ctx) : compare),
+    repair: (ctx) => (calls.push("repair"), typeof repair === "function" ? repair(ctx) : repair),
+    context,
+  };
+}
+
+test("a healthy artifact is never written to", async () => {
+  // The property that makes it safe to run this on every session start: the
+  // dispatcher touches nothing it did not find wrong.
+  const e = spy({ compare: { ok: true, state: "current" } });
+  const got = await applyEntry(e);
+  assert.deepEqual(e.calls, ["compare"], "a healthy entry was repaired anyway");
+  assert.equal(got.state, "current");
+});
+
+test("a drifted artifact is repaired", async () => {
+  const e = spy({ compare: { ok: false, state: "drifted" } });
+  const got = await applyEntry(e);
+  assert.deepEqual(e.calls, ["compare", "repair"]);
+  assert.equal(got.ok, true);
+});
+
+test("an unrepairable artifact is reported, not attempted", () => {
+  // The Stop hook's "absent" case: a refused digest leaves nothing to install
+  // from, and guessing would overwrite the platform's hook with nothing. Stated
+  // on the shared predicate so the loop and syncStopHook cannot disagree.
+  assert.equal(needsRepair({ ok: false, repairable: false, state: "absent" }), false);
+  assert.equal(needsRepair({ ok: false, state: "drifted" }), true);
+  assert.equal(needsRepair({ ok: true, state: "current" }), false);
+});
+
+test("an unrepairable entry really does skip the repairer", async () => {
+  const e = spy({ compare: { ok: false, repairable: false, state: "absent" } });
+  await applyEntry(e);
+  assert.deepEqual(e.calls, ["compare"]);
+});
+
+test("an entry that throws degrades to 'could not check' rather than killing the session", async () => {
+  // Same contract the child hooks get. "Could not check" is also a different
+  // claim from "nothing is missing", which is why it does not report healthy.
+  const e = spy({ compare: () => { throw new Error("boom"); } });
+  const got = await applyEntry(e);
+  assert.equal(got.ok, false);
+  assert.equal(got.state, "unknown");
+});
+
+test("a repair that throws is caught too", async () => {
+  const e = spy({ compare: { ok: false, state: "drifted" }, repair: () => { throw new Error("nope"); } });
+  const got = await applyEntry(e);
+  assert.equal(got.state, "unknown");
+});
+
+test("only entries that could NOT be repaired contribute session context", async () => {
+  // The generalisation of mcpDriftContext (I5). A repaired artifact leaves no
+  // trace in the window — the org context file's own header says every byte
+  // counts — and a block that fires when nothing is wrong teaches skimming.
+  const healed = spy({ compare: { ok: false, state: "drifted" }, context: () => "SHOULD NOT APPEAR" });
+  const stuck = spy({ compare: { ok: false, repairable: false, state: "absent" }, context: () => "STILL BROKEN" });
+  const { contexts } = await applyManifest([healed, stuck]);
+  assert.deepEqual(contexts, ["STILL BROKEN"]);
+});
+
+test("an entry with no context block reports on stderr only", async () => {
+  // The Stop hook's deliberate choice: it degrades git advice, not the model's
+  // willingness to invent an answer, so it does not spend context on itself.
+  const stuck = spy({ compare: { ok: false, repairable: false, state: "absent" }, context: null });
+  const { contexts } = await applyManifest([stuck]);
+  assert.deepEqual(contexts, []);
+});
+
+test("the missing list reaches the entry's wording, so the block can name names", async () => {
+  const stuck = spy({
+    compare: { ok: false, state: "unrepaired", missing: ["front-desk"] },
+    repair: { ok: false, state: "unrepaired", missing: ["front-desk"] },
+    context: (missing) => `missing: ${missing.join(", ")}`,
+  });
+  const { contexts } = await applyManifest([stuck]);
+  assert.deepEqual(contexts, ["missing: front-desk"]);
+});
+
+test("entries run in manifest order, so context order is reproducible", async () => {
+  const order = [];
+  const mk = (name) => ({
+    artifact: name,
+    what: name,
+    compare: () => (order.push(name), { ok: false, repairable: false, state: "absent" }),
+    repair: () => ({ ok: false, state: "absent" }),
+    context: () => name,
+  });
+  const { contexts } = await applyManifest([mk("first"), mk("second")]);
+  assert.deepEqual(order, ["first", "second"]);
+  assert.deepEqual(contexts, ["first", "second"]);
 });
 
 test("this repo's own hook is what would be installed, byte for byte", () => {

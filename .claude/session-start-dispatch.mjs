@@ -26,6 +26,13 @@
  * hook to a repo, requires no edit here. If you find yourself special-casing a
  * repo in this file, the logic belongs in that repo's own hook.
  *
+ * ── The other half: repairing the setup script's steps ───────────────────────
+ * Before fanning out it re-does the steps of the canonical setup-script field
+ * that the field itself may have stopped doing — see THE REPAIR MANIFEST below.
+ * That is per-ARTIFACT knowledge, not per-repo, and it is data plus one loop
+ * rather than a function per artifact, because the mapping from the field's
+ * steps to what is covered here is gated by a test (#91).
+ *
  * ── Install ──────────────────────────────────────────────────────────────────
  * The user settings directory is ephemeral — the container is reclaimed — so the
  * environment's setup script must recreate the pointer on every boot:
@@ -201,7 +208,7 @@ export function extractContext(stdout) {
 
 /**
  * The context block emitted when a declared MCP server is STILL absent after
- * `ensureMcpRegistered` has tried to register it.
+ * registration has been attempted.
  *
  * Reached only when the write was refused or did not take — an unreadable
  * `~/.claude.json`, or a config that disagrees with the declaration for a reason
@@ -243,6 +250,79 @@ export function mcpDriftContext(missing) {
   ].join("\n");
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * THE REPAIR MANIFEST
+ *
+ * ── Why a manifest and not more functions (#91, I1) ───────────────────────────
+ * The two repairs below were written a few hours apart as two bespoke
+ * implementations of one idea, and a third would have been a third. That is the
+ * smaller half of the problem. The larger half: nothing related the canonical
+ * setup-script field's CONTENTS to what this file re-does when the field has not,
+ * so a step added to the field with no fallback was invisible until it went
+ * missing in production — which is exactly how #85 happened.
+ *
+ * So each entry names the `artifact` it covers, and `parseSteps` in
+ * gen-bootstrap-pin.mjs enumerates the steps of the canonical text in
+ * `.claude/README.md`. bootstrap-steps.test.mjs asserts the two agree: every step
+ * of the field maps to an entry here or to an IRREDUCIBLE declaration. Adding a
+ * line to the field with no fallback now fails `node --test .claude/` instead of
+ * failing silently in a session six weeks later.
+ *
+ * ── The entries are deliberately NOT symmetric ────────────────────────────────
+ * The comparison is per-entry because the failures differ in kind: the Stop hook
+ * broke as a WRONG file, so presence proves nothing and only bytes decide; the
+ * MCP config broke as a config that disagrees with a declaration, which is a
+ * predicate over JSON, not a byte compare. A manifest that forced one comparison
+ * on both would have to pick, and either pick reinstates a failure that has
+ * already happened here. Entry shape:
+ *
+ *   artifact    the step of the canonical field this covers — the gate's key
+ *   what        a human label for the log line
+ *   compare     the DETECTOR: (ctx) => { ok, state, repairable?, missing?, log? }
+ *   repair      the REPAIRER: (ctx) => the same shape, after trying
+ *   context     failure wording: (missing) => a session-context block, or null
+ *
+ * `compare` and `repair` may be sync or async; the loop awaits either.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Steps of the canonical field that NOTHING here can re-do, with the reason.
+ *
+ * Declared rather than merely absent, which is the whole point of the gate: an
+ * omission and a decision are indistinguishable from silence, and it was an
+ * omission presenting as a decision that cost #85. A step that appears in the
+ * field and in neither list fails the test.
+ *
+ * Both entries below are the same irreducibility. Something outside the repos
+ * must name the entry point, because the hook that would self-heal a missing
+ * hook is the thing being installed. Verified 2026-08-01 against the
+ * cloud-environment docs: environments are editable only in the selector at
+ * claude.ai/code — "There's no settings page or direct URL" — and `/remote-env`
+ * "can't add or edit environments". No API, no CLI, no repo-committed form.
+ *
+ * So the target is not elimination. It is ONE line that fails loudly rather than
+ * four steps where losing any one is silent.
+ */
+export const IRREDUCIBLE = [
+  {
+    artifact: "settings.json",
+    reason:
+      "This writes the pointer that invokes this dispatcher. A fallback would have to run " +
+      "before itself. It is also the one file that must live outside version control, so it " +
+      "is the thing the rest of this machinery is anchored to rather than something the " +
+      "machinery can hold up.",
+  },
+  {
+    artifact: "CLAUDE_SESSION_ROOT",
+    reason:
+      "An environment prefix on that same command, not a file. It is load-bearing only on " +
+      "the fallback path, where the dispatcher was fetched to a cache directory and its " +
+      "self-location resolves to `/` — see `sessionRootFrom`. Nothing running INSIDE the " +
+      "dispatcher can supply it, because being wrong about the session root is precisely " +
+      "the state it corrects.",
+  },
+];
+
 /** What syncing the Stop hook should do, given the two files' bytes (`null` = absent). */
 export function stopHookAction(source, installed) {
   if (source == null) return "absent";
@@ -250,13 +330,21 @@ export function stopHookAction(source, installed) {
   return "copy";
 }
 
+const readBytes = (p) => {
+  try {
+    return readFileSync(p);
+  } catch {
+    return null;
+  }
+};
+
 /**
  * Replace the platform's Stop hook with this repo's copy (infra#112).
  *
- * The same move as the MCP registration below, prompted by the same failure. The
- * copy is one line of the environment's setup script — the part of the chain no
- * reviewer and no gate can read — and on 2026-08-01 it had gone missing along
- * with the `register-mcp.mjs` call (#85). Nothing reported either.
+ * The same move as the MCP entry above, prompted by the same failure. The copy is
+ * one line of the environment's setup script — the part of the chain no reviewer
+ * and no gate can read — and on 2026-08-01 it had gone missing along with the
+ * `register-mcp.mjs` call (#85). Nothing reported either.
  *
  * This one fails quietly rather than loudly, which is why it went unnoticed
  * longer: the stock hook scopes its check to `origin/<branch>..HEAD`, which after
@@ -276,40 +364,203 @@ export function stopHookAction(source, installed) {
  * live — while the repos are under `/home/user`. That asymmetry is exactly what
  * `sessionRootFrom` above exists for. Do not "fix" one to match the other.
  *
- * Returns the action taken, and never throws: a session that starts with the
- * stock Stop hook beats one that fails to start.
+ * Sync, unlike the MCP entry: it is two file reads and a copy, and `syncStopHook`
+ * below is the seam its tests drive.
+ */
+const STOP_HOOK_ENTRY = {
+  artifact: "stop-hook-git-check.sh",
+  what: "the Stop hook",
+
+  // BYTES, not presence. The failure was a *wrong* file — 3262 stock bytes
+  // against this repo's 5458 — so a hook that is merely THERE reports health
+  // while advising an `--amend` over already-merged history.
+  compare({ sourceDir = HERE, targetDir = join(homedir(), ".claude") } = {}) {
+    const name = "stop-hook-git-check.sh";
+    const state = stopHookAction(readBytes(join(sourceDir, name)), readBytes(join(targetDir, name)));
+    // "absent" is a real case, not a bug: the bootstrap verifies each fetched
+    // file independently, so a refused digest leaves the dispatcher present and
+    // this one not. Nothing to install from — say so rather than guessing, and
+    // never overwrite the platform's hook with nothing.
+    if (state === "absent") {
+      return {
+        ok: false,
+        repairable: false,
+        state,
+        log: `WARN no ${name} beside this file — leaving the platform's Stop hook in place`,
+      };
+    }
+    return { ok: state === "current", state };
+  },
+
+  repair({ sourceDir = HERE, targetDir = join(homedir(), ".claude") } = {}) {
+    const name = "stop-hook-git-check.sh";
+    try {
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(join(targetDir, name), readBytes(join(sourceDir, name)));
+      // Executable, because a copied-but-unrunnable hook is silently no hook.
+      chmodSync(join(targetDir, name), 0o755);
+    } catch (e) {
+      return { ok: false, state: "failed", log: `WARN could not install ${name} — ${e?.message ?? e}` };
+    }
+    return {
+      ok: true,
+      state: "copy",
+      log: "WARN installed the Stop hook the setup script did not (infra#112) — see .claude/README.md",
+    };
+  },
+
+  // Deliberately no session-context block, unlike MCP. A stock Stop hook
+  // degrades advice the model gives about git; a missing tool makes the model
+  // fabricate an answer nothing downstream can distinguish from the real one.
+  // Only the second is worth what a context block costs — the org context file's
+  // own header says it counts against the window every session, and a block that
+  // fires for the milder case teaches the reader to skim past both.
+  context: null,
+};
+
+/**
+ * Register any declared MCP server the config is missing, and report what is
+ * STILL missing afterwards.
+ *
+ * The primary call site for registration is the environment's setup script,
+ * before Claude Code launches. This is the fallback for when that call is not
+ * made — which is not hypothetical: that script is the one link in the chain
+ * living outside version control, where no reviewer and no gate can see it, and
+ * on 2026-08-01 it had silently stopped making the call. A session ran with
+ * `mcpServers: null` while every repo's CLAUDE.md went on telling the model to
+ * ask for tools that were not there, and the model did the predictable thing —
+ * it reconstructed the answer by hand from the GitHub API, which is the one move
+ * front-desk-scheduler's CLAUDE.md forbids in its opening paragraph.
+ *
+ * Registering this late does work: verified live on Claude Code 2.1.42, a session
+ * that started with nothing registered gained the server's tools seconds after
+ * the write, with no relaunch. It is a fallback rather than the fix because it
+ * cannot be ordered before whatever already read the tool list, and because a
+ * setup script that has stopped calling `register-mcp.mjs` has probably stopped
+ * doing the rest of its job too — hence the warning on success, not just on
+ * failure.
+ *
+ * Dynamic import, not a top-level one: the two files sit beside each other in the
+ * attached checkout AND in the fetch cache, but the bootstrap verifies each
+ * fetched file independently, so a refused digest can leave one present and the
+ * other not. A missing register-mcp.mjs must degrade this dispatcher to what it
+ * did before, never take the hooks down with it.
+ */
+const MCP_ENTRY = {
+  artifact: "register-mcp.mjs",
+  what: "MCP registration",
+
+  // A PREDICATE over JSON, not a byte compare: the question is whether the
+  // config agrees with what the attached repos declare, and `~/.claude.json`
+  // legitimately holds much more than MCP config.
+  async compare({ root = SESSION_ROOT } = {}) {
+    let mod;
+    try {
+      mod = await import("./register-mcp.mjs");
+    } catch (e) {
+      // "Could not check" is a different claim from "nothing is missing", and
+      // the log is the only place that distinction can be made. Not repairable
+      // and no context block: an unverifiable state must not be reported to the
+      // session as a confirmed missing tool.
+      return { ok: false, repairable: false, state: "unknown", log: `WARN could not check MCP registration — ${e?.message ?? e}` };
+    }
+    const { missing } = mod.registrationStatus({ root });
+    return { ok: missing.length === 0, state: missing.length ? "drifted" : "current", missing };
+  },
+
+  async repair({ root = SESSION_ROOT } = {}) {
+    let mod;
+    try {
+      mod = await import("./register-mcp.mjs");
+      const { wrote, outcome } = mod.register({ root });
+      // Reached only when the config disagreed, so the write is the interesting
+      // case; `register` is a no-op when it agrees.
+      const wroteLog =
+        outcome === "wrote"
+          ? `WARN registered MCP server(s) the setup script did not: ${wrote.join(", ")} — see .claude/README.md`
+          : null;
+      const { missing } = mod.registrationStatus({ root });
+      if (missing.length) {
+        return {
+          ok: false,
+          state: "unrepaired",
+          missing,
+          log: `WARN MCP servers declared but NOT registered: ${missing.join(", ")}`,
+        };
+      }
+      return { ok: true, state: "repaired", missing, log: wroteLog };
+    } catch (e) {
+      return { ok: false, state: "failed", missing: [], log: `WARN MCP registration failed — ${e?.message ?? e}` };
+    }
+  },
+
+  context: (missing) => mcpDriftContext(missing),
+};
+
+export const MANIFEST = [MCP_ENTRY, STOP_HOOK_ENTRY];
+
+/**
+ * Should the repairer run, given what the detector saw?
+ *
+ * One line, factored out because it is the only decision the loop makes and it is
+ * shared with `syncStopHook` below. `repairable: false` is how an entry says
+ * "wrong, and nothing here can fix it" — distinct from healthy, and distinct from
+ * a repair that was tried and failed.
+ */
+export const needsRepair = (seen) => !seen.ok && seen.repairable !== false;
+
+/**
+ * Run one entry: compare, repair if that is worth attempting, report either way.
+ *
+ * Never throws. An entry that blows up degrades to "could not check" — the same
+ * contract the child hooks get, and for the same reason: a session that starts
+ * slightly wrong beats a session that refuses to start.
+ */
+export async function applyEntry(entry, ctx = {}) {
+  let result;
+  try {
+    result = await entry.compare(ctx);
+    if (needsRepair(result)) result = await entry.repair(ctx);
+  } catch (e) {
+    result = { ok: false, state: "unknown", log: `WARN ${entry.what}: could not check — ${e?.message ?? e}` };
+  }
+  if (result.log) log(result.log);
+  return { ...result, artifact: entry.artifact, what: entry.what, entry };
+}
+
+/**
+ * The loop that replaced the two hand-written call sites in `main`.
+ *
+ * Returns the context blocks contributed by entries that could NOT be repaired —
+ * the generalisation of what `mcpDriftContext` did for one artifact (I5). An
+ * entry with `context: null` reports on stderr only.
+ */
+export async function applyManifest(entries = MANIFEST, ctx = {}) {
+  const results = [];
+  for (const entry of entries) results.push(await applyEntry(entry, ctx));
+  const contexts = results
+    .filter((r) => !r.ok)
+    .map((r) => r.entry.context?.(r.missing ?? []))
+    .filter(Boolean);
+  return { results, contexts };
+}
+
+/**
+ * Sync convenience for the Stop-hook entry, and the seam its tests drive.
+ *
+ * Kept because the entry is sync all the way down while `applyManifest` is not,
+ * and a test that has to await to assert on a file copy is a test that will one
+ * day pass because it forgot to. Shares `needsRepair` with the loop, so the two
+ * cannot disagree about when a repair runs.
+ *
+ * Returns the action taken, and never throws.
  */
 export function syncStopHook({ sourceDir = HERE, targetDir = join(homedir(), ".claude") } = {}) {
-  const name = "stop-hook-git-check.sh";
-  const read = (p) => {
-    try {
-      return readFileSync(p);
-    } catch {
-      return null;
-    }
-  };
-
-  const source = read(join(sourceDir, name));
-  const action = stopHookAction(source, read(join(targetDir, name)));
-  // "absent" is a real case, not a bug: the bootstrap verifies each fetched file
-  // independently, so a refused digest leaves the dispatcher present and this one
-  // not. Nothing to install from — say so rather than guessing.
-  if (action === "absent") {
-    log(`WARN no ${name} beside this file — leaving the platform's Stop hook in place`);
-    return action;
-  }
-  if (action === "current") return action;
-
-  try {
-    mkdirSync(targetDir, { recursive: true });
-    writeFileSync(join(targetDir, name), source);
-    chmodSync(join(targetDir, name), 0o755);
-    log(`WARN installed the Stop hook the setup script did not (infra#112) — see .claude/README.md`);
-  } catch (e) {
-    log(`WARN could not install ${name} — ${e?.message ?? e}`);
-    return "failed";
-  }
-  return action;
+  const ctx = { sourceDir, targetDir };
+  const seen = STOP_HOOK_ENTRY.compare(ctx);
+  const result = needsRepair(seen) ? STOP_HOOK_ENTRY.repair(ctx) : seen;
+  if (result.log) log(result.log);
+  return result.state;
 }
 
 async function runHook(repoDir, command) {
@@ -340,60 +591,11 @@ async function runHook(repoDir, command) {
   }
 }
 
-/**
- * Register any declared MCP server the config is missing, and report what is
- * STILL missing afterwards — `[]` if nothing is, or if it could not be checked.
- *
- * The primary call site for registration is the environment's setup script,
- * before Claude Code launches. This is the fallback for when that call is not
- * made — which is not hypothetical: that script is the one link in the chain
- * living outside version control, where no reviewer and no gate can see it, and
- * on 2026-08-01 it had silently stopped making the call. A session ran with
- * `mcpServers: null` while every repo's CLAUDE.md went on telling the model to
- * ask for tools that were not there, and the model did the predictable thing —
- * it reconstructed the answer by hand from the GitHub API, which is the one move
- * front-desk-scheduler's CLAUDE.md forbids in its opening paragraph.
- *
- * Registering this late does work: verified live on Claude Code 2.1.42, a session
- * that started with nothing registered gained the server's tools seconds after
- * the write, with no relaunch. It is a fallback rather than the fix because it
- * cannot be ordered before whatever already read the tool list, and because a
- * setup script that has stopped calling `register-mcp.mjs` has probably stopped
- * doing the rest of its job too — hence the warning below even on success.
- *
- * Dynamic import, not a top-level one: the two files sit beside each other in the
- * attached checkout AND in the fetch cache, but the bootstrap verifies each
- * fetched file independently, so a refused digest can leave one present and the
- * other not. A missing register-mcp.mjs must degrade this dispatcher to what it
- * did before, never take the hooks down with it.
- */
-async function ensureMcpRegistered() {
-  let mod;
-  try {
-    mod = await import("./register-mcp.mjs");
-  } catch (e) {
-    // "Could not check" is a different claim from "nothing is missing", and the
-    // log is the only place that distinction can be made.
-    log(`WARN could not check MCP registration — ${e?.message ?? e}`);
-    return [];
-  }
-  try {
-    const { wrote, outcome } = mod.register({ root: SESSION_ROOT });
-    if (outcome === "wrote") {
-      log(`WARN registered MCP server(s) the setup script did not: ${wrote.join(", ")} — see .claude/README.md`);
-    }
-    const { missing } = mod.registrationStatus({ root: SESSION_ROOT });
-    if (missing.length) log(`WARN MCP servers declared but NOT registered: ${missing.join(", ")}`);
-    return missing;
-  } catch (e) {
-    log(`WARN MCP registration failed — ${e?.message ?? e}`);
-    return [];
-  }
-}
-
 async function main() {
-  const missingMcp = await ensureMcpRegistered();
-  syncStopHook();
+  // Every fallback the manifest declares, before fanning out. One loop; the two
+  // call sites that used to sit here are now entries in MANIFEST above, and a
+  // third fallback is a third entry rather than a third call site (#91).
+  const { contexts: repairContexts } = await applyManifest();
 
   const repos = findRepos(SESSION_ROOT);
   if (repos.length === 0) {
@@ -420,11 +622,10 @@ async function main() {
   }
 
   const failed = ran.filter((r) => !r.ok).map((r) => r.label);
-  // First, deliberately: it is a statement about what this session CAN do, and it
-  // is worth nothing if the model reads it after the instructions telling it to
-  // use the tool that is missing.
-  const drift = mcpDriftContext(missingMcp);
-  const merged = mergeContexts(drift ? [drift, ...contexts] : contexts);
+  // First, deliberately: these are statements about what this session CAN do, and
+  // they are worth nothing if the model reads them after the instructions telling
+  // it to use the tool that is missing.
+  const merged = mergeContexts([...repairContexts, ...contexts]);
   log(
     `ran ${ran.length} hook(s) across ${repos.length} repo(s); ` +
       `${merged.kept} injected context` +
