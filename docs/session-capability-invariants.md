@@ -1,13 +1,15 @@
 ---
 title: Session Capability Invariants
 status: draft # draft | reviewed | canonical
-last_reviewed: 2026-08-01
+last_reviewed: 2026-08-03
 sources:
   - .claude/README.md
   - .claude/session-start-dispatch.mjs
+  - .claude/bootstrap-steps.test.mjs
   - .github/workflows/org-defaults.yml
   - https://github.com/bounded-systems/.github/pull/84
   - https://github.com/bounded-systems/.github/pull/88
+  - https://github.com/bounded-systems/.github/issues/91
   - https://github.com/bounded-systems/front-desk-scheduler/pull/101
 ---
 
@@ -58,19 +60,42 @@ not, or the step is explicitly recorded as irreducible with the reason.
 entirely; losing the `stop-hook-git-check.sh` copy reinstated infra#112 silently
 (#85 has the measurements).
 
-**Grade: Partial.** Two of four steps now self-heal (#84, #88). Two do not, and
-nothing relates the field's contents to the dispatcher's coverage — the mapping
-exists only in prose in this repo's `.claude/README.md`.
+**Grade: Enforced** (#91, 2026-08-03). Two of the four steps self-heal (#84,
+#88); the other two are declared irreducible with reasons. The relation between
+the field's contents and that coverage is now machine-checked rather than prose.
 
-**To enforce.** Replace the two bespoke repair functions with one manifest the
-dispatcher interprets: artifact, canonical source, install target, comparison
-(bytes or predicate), repair action, failure wording. Then extend the parse in
-`gen-bootstrap-pin.mjs`, which **already reads the canonical field text**, to
-assert every step maps to a manifest entry or an `irreducible:` declaration.
-Adding a line to the field without a fallback then fails a test.
+**How.** The two bespoke repair functions are one `MANIFEST` in
+`.claude/session-start-dispatch.mjs` — per entry: the artifact, a detector
+(`compare`), a repairer (`repair`), and the failure wording (`context`) — driven
+by one loop. `parseSteps` in `gen-bootstrap-pin.mjs`, which **already read the
+canonical field text** for `PIN` and the `SUM_*` lines, now also enumerates the
+field's steps, and `.claude/bootstrap-steps.test.mjs` asserts every step maps to
+a manifest entry or an `IRREDUCIBLE` declaration. Adding a line to the field with
+no fallback fails `node --test .claude/`.
+
+Three details carry most of the value:
+
+- **The comparison stays per-entry.** The Stop hook compares bytes (its failure
+  was a *wrong* file, so presence reports health); MCP compares a predicate over
+  JSON. A manifest that forced one comparison on both would have to pick, and
+  either pick reinstates a failure that has already happened here.
+- **The parse refuses what it cannot classify.** An unrecognised verb throws
+  rather than dropping out of the enumeration — a step silently missing from the
+  gate is precisely the invisibility this invariant is about.
+- **Irreducible is declared, not inferred from absence.** An omission and a
+  decision both present as silence, and it was an omission wearing a decision's
+  clothes that cost #85. A bare declaration is not enough either: the test
+  requires a reason.
 
 The idiom is the repo's own: `bootstrap-pin.test.mjs` asserts on its generator
 rather than reimplementing it, precisely so the two cannot drift.
+
+**What this still does not catch.** The gate relates the field text in
+`.claude/README.md` to the dispatcher. It cannot see the *actual* field, which
+lives in the environment selector where nothing can read it — so it catches a
+step added to the canonical text with no fallback, not a canonical text that has
+drifted from what the field really says. That gap is I1's residue and is
+unchanged; see "What this does not claim" below.
 
 ---
 
@@ -168,12 +193,17 @@ answer, delivered with the confidence of the real one, that nothing downstream
 can distinguish. An agent that finds its tool missing does not stop; it
 improvises.
 
-**Grade: Partial.** #84 injects a warning into session context, but only for MCP
-servers and only when registration could not be repaired.
+**Grade: Partial.** The mechanism is now general — `applyManifest` collects a
+context block from every manifest entry that could not be repaired (#91) — but
+only the MCP entry declares one. The Stop hook deliberately does not: a stock
+Stop hook degrades advice about git, while a missing tool makes the model
+fabricate an answer nothing downstream can distinguish from the real one, and a
+warning that fires for the milder case teaches the reader to skim past both.
 
-**To enforce.** Generalise from the manifest (I1): any entry that could not be
-repaired contributes to the same warning block. The behavioural half — *say
-which answer this is* — belongs in the org context file, and stays convention.
+**To enforce.** The remaining half is behavioural — *say which answer this is* —
+and belongs in the org context file. It stays convention: a gate would have to
+tell a reconstructed answer from a retrieved one, which is the thing the failure
+mode is defined by being unable to do.
 
 ---
 

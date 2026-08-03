@@ -31,6 +31,12 @@ jobs:
       - run: node --test .claude/session-start-dispatch.test.mjs
       - run: node --test .claude/register-mcp.test.mjs
       - run: node --test .claude/gen-bootstrap-pin.test.mjs
+      # The relation between the canonical setup-script field and what the
+      # dispatcher re-does when that field has not (#91). Red means a step was
+      # added to the field with no fallback and no `irreducible:` reason — the
+      # state #85 shipped in, which nothing caught until it was read out of
+      # /tmp/env-manager.log by hand.
+      - run: node --test .claude/bootstrap-steps.test.mjs
       # Reads GITHUB_EVENT_NAME: FRESHNESS is reported on a pull_request and
       # asserted on push. See the header of bootstrap-pin.test.mjs — PIN cannot
       # name a merge commit that does not exist yet, so no PR touching a fetched

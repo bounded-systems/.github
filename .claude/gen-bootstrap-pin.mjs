@@ -92,6 +92,120 @@ export function parseBootstrap(source) {
   return { pin, digests, fetches };
 }
 
+/** Command words in the canonical script that stage, observe or report rather
+ *  than install. `curl`/`sha256sum`/`cut` are the fetch_verified transport, and
+ *  `fetch_verified` calls themselves are gated by the digest parse above — an
+ *  unverified fetch already fails bootstrap-pin.test.mjs. */
+const FIELD_PLUMBING = new Set([
+  "set", "echo", "mkdir", "rm", "local", "return", "true",
+  "curl", "sha256sum", "cut", "fetch_verified",
+]);
+
+/**
+ * The STEPS of the canonical setup script — the installs it performs, keyed by
+ * the artifact each touches.
+ *
+ * ── Why this parse exists (#91 / I1 in docs/session-capability-invariants.md) ─
+ * The setup-script field lives where no reviewer and no gate can see it; the
+ * text in README.md is its canonical form. Some of its steps the dispatcher can
+ * re-do when the field has not; some it cannot — and the mapping between the
+ * field's contents and that coverage used to exist only as prose, so a step
+ * added to the field with no fallback was invisible until it went missing in
+ * production (#85). bootstrap-steps.test.mjs asserts every step this parse
+ * finds maps to a MANIFEST entry or an IRREDUCIBLE declaration in
+ * session-start-dispatch.mjs.
+ *
+ * A "step" is mechanical, not judged: a command that writes or invokes
+ * something durable — `cat >`, `cp`/`mv` landing outside the fetch cache,
+ * `node`, `chmod` — plus the `CLAUDE_SESSION_ROOT=` prefix, which is a step
+ * without a file of its own. Guards (`[ … ]`) and FIELD_PLUMBING are ignored.
+ * Anything else REFUSES to parse: a verb this function does not know is by
+ * definition a step nobody has classified, and skipping it silently would
+ * re-open exactly the gap the gate exists to close.
+ */
+export function parseSteps(source) {
+  const block = source.match(/```sh\n#!\/usr\/bin\/env bash\n[\s\S]*?\n```/)?.[0];
+  if (!block) throw new Error("no canonical setup-script block found — nothing to enumerate");
+
+  const steps = new Map();
+  const claim = (artifact, line) => {
+    if (!artifact) throw new Error(`cannot name the artifact of: "${line}"`);
+    if (!steps.has(artifact)) steps.set(artifact, { artifact, lines: [] });
+    steps.get(artifact).lines.push(line);
+  };
+  const unquote = (w = "") => w.replace(/^["']|["']$/g, "");
+  const basename = (p) => unquote(p).split("/").pop();
+
+  // The env prefix is a step without a file. Scanned on the RAW block because
+  // one of its two spellings sits inside the heredoc body stripped below.
+  if (/\bCLAUDE_SESSION_ROOT=/.test(block)) claim("CLAUDE_SESSION_ROOT", "the CLAUDE_SESSION_ROOT=… prefix");
+
+  // Join continuation lines, then drop heredoc BODIES — they are content being
+  // written, not commands being run. The settings heredoc contains a
+  // `node …session-start-dispatch.mjs` command STRING; enumerating it would
+  // demand a fallback for the dispatcher installing itself, which is the
+  // declared-irreducible case, not a step of its own.
+  const lines = [];
+  let terminator = null;
+  for (const raw of block.replace(/\\\n\s*/g, " ").split("\n")) {
+    if (terminator) {
+      if (raw.trim() === terminator) terminator = null;
+      continue;
+    }
+    terminator = raw.match(/<<-?'?(\w+)'?/)?.[1] ?? null;
+    lines.push(raw);
+  }
+
+  for (const raw of lines) {
+    // `(^|\s)#`, not a bare `#`: `echo "… (infra#112)"` carries a # that is not
+    // a comment, and it is not preceded by whitespace.
+    const line = raw.replace(/(^|\s)#.*$/, "").trim();
+    if (!line || line.startsWith("```")) continue;
+    if (/^\w+\(\)\s*\{?/.test(line)) continue; // a function definition; its body parses line by line
+
+    // Flatten `$( … )` command substitutions into fragments of their own, then
+    // split compound lines; each fragment is classified by its first word.
+    for (let frag of line.replace(/\$\(/g, "; ").split(/&&|\|\||[;|{}]/)) {
+      frag = frag.replace(/^\s*(?:if|then|elif|else|fi|do|done|while|until)\b/, "").trim();
+      if (!frag.replace(/["')]/g, "").trim()) continue;
+      if (frag.startsWith("[")) continue; // guards observe; they do not install
+      const cmd = frag.replace(/^(?:\w+=(?:"[^"]*"|'[^']*'|\S*)[ \t]+)+/, "");
+      if (/^\w+=/.test(cmd)) continue; // an assignment — its command subs were flattened out above
+      const words = cmd.split(/\s+/);
+      const verb = words[0];
+      if (FIELD_PLUMBING.has(verb)) continue;
+
+      if (verb === "cat") {
+        const target = cmd.match(/>\s*"?([^"\s]+)/)?.[1];
+        if (!target) throw new Error(`"cat" with no redirect target in the canonical setup script: "${frag}"`);
+        claim(basename(target), raw.trim());
+      } else if (verb === "cp" || verb === "mv") {
+        const paths = words.slice(1).filter((w) => !w.startsWith("-"));
+        const dest = unquote(paths[paths.length - 1]);
+        if (dest.startsWith("$BOOT/")) continue; // landing INSIDE the fetch cache is staging, not installing
+        claim(basename(dest), raw.trim());
+      } else if (verb === "node") {
+        const script = words.slice(1).find((w) => !unquote(w).startsWith("-"));
+        if (!script) throw new Error(`"node" with no script in the canonical setup script: "${frag}"`);
+        claim(basename(script), raw.trim());
+      } else if (verb === "chmod") {
+        claim(basename(words[words.length - 1]), raw.trim());
+      } else {
+        throw new Error(
+          `unrecognized command in the canonical setup script: "${frag}"\n` +
+            `  Every line of the field is either plumbing or a step, and this parse does not\n` +
+            `  know which this one is. If it stages or reports, add its verb to FIELD_PLUMBING\n` +
+            `  with a reason. If it installs something, it is a STEP: give it a MANIFEST entry\n` +
+            `  in session-start-dispatch.mjs (the dispatcher re-does it when the field has\n` +
+            `  not) or an IRREDUCIBLE declaration (why nothing can), and teach this parse its\n` +
+            `  verb. Skipping it silently is how the next #85 happens.`,
+        );
+      }
+    }
+  }
+  return [...steps.values()];
+}
+
 /**
  * Rewrite the pin and digests in place.
  *
