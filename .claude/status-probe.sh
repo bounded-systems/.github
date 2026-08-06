@@ -31,11 +31,19 @@
 #      Preferred: sessions then need exactly ONE owned host reachable instead
 #      of every provider's, and it can serve MOCK incidents for testing outage
 #      handling. A parseable AND FRESH snapshot ends the probe, healthy or not.
-#   2. Direct Statuspage APIs. NOTE: the cloud egress proxy 403'd
-#      www.githubstatus.com on 2026-08-06 — that is the fail-open path here,
-#      and the reason source 1 exists. status.anthropic.com bypasses the proxy
-#      (*.anthropic.com is on its no-proxy list), so the Anthropic half works
-#      even before an allowlist entry or the layer lands.
+#   2. Direct Statuspage APIs. NOTE: in cloud sessions on 2026-08-06 BOTH were
+#      unreachable, by two different mechanisms — worth knowing, because they
+#      look like different problems and are the same one:
+#        - www.githubstatus.com — denied at CONNECT (proxy answers 403 to the
+#          tunnel).
+#        - status.anthropic.com — bypasses the proxy (`.anthropic.com` is on
+#          NO_PROXY) and is then refused by the egress filter itself:
+#          `HTTP/2 403, x-deny-reason: host_not_allowed`.
+#      Bypassing the proxy is NOT the same as being allowed out, so neither
+#      half of this fallback works in a cloud session until the environment's
+#      network policy allowlists the hosts. Source 1 is the fix: one owned
+#      host to allowlist instead of one per vendor. Elsewhere (local dev, CI
+#      runners) the direct probes work normally.
 set -uo pipefail
 command -v curl >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
