@@ -82,6 +82,20 @@ test("the two vocabularies diverge in both directions", () => {
   assert.ok(!("organization_issue_types" in wire));
 });
 
+test("the fixture says where it came from and when", async () => {
+  // The grant half carries source/digest/date; the wire half used to be a bare
+  // slug->levels map. Both halves are evidence, so both have to be datable --
+  // an undated pin cannot be told from a current one, which is the whole
+  // complaint this repo has about impossibility claims (I4).
+  const { readFile } = await import("node:fs/promises");
+  const raw = JSON.parse(await readFile("./scripts/gh-app-permissions.fixture.json", "utf8"));
+  assert.match(raw.source, /^https:\/\/raw\.githubusercontent\.com\/github\/rest-api-description\//);
+  assert.match(raw.source_sha256, /^[0-9a-f]{64}$/);
+  assert.match(raw.retrieved, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(raw.count, Object.keys(raw.permissions).length);
+  assert.deepEqual(raw.permissions, wire, "loadWire must return the payload, not the envelope");
+});
+
 test("the fixture is the schema, not a hand-written enum", () => {
   assert.equal(Object.keys(wire).length, 55);
   for (const [slug, l] of Object.entries(wire)) {
