@@ -53,6 +53,13 @@ command -v jq >/dev/null 2>&1 || exit 0
 # SessionStart critical path). A refused/403'd connect is already instant.
 fetch() { curl -fsS --connect-timeout 1 --max-time 3 "$1" 2>/dev/null; }
 
+# TEST SEAMS. The defaults ARE the contract; these variables exist so
+# status-probe.test.mjs can point every source at a file:// fixture and
+# exercise each path with no network. They are not a redirection mechanism —
+# pointing sessions somewhere else is what BOUNDED_STATUS_URL is for.
+: "${BOUNDED_STATUS_GITHUB_URL:=https://www.githubstatus.com}"
+: "${BOUNDED_STATUS_ANTHROPIC_URL:=https://status.anthropic.com}"
+
 warnings=""
 add_warning() { warnings="${warnings}${1}"$'\n'; }
 
@@ -108,8 +115,8 @@ probe_statuspage() {
 if [ -n "${BOUNDED_STATUS_URL:-}" ] && probe_snapshot; then
   : # snapshot answered (healthy or degraded) — do not double-report from direct probes
 else
-  probe_statuspage "GitHub" "https://www.githubstatus.com"
-  probe_statuspage "Anthropic (Claude)" "https://status.anthropic.com"
+  probe_statuspage "GitHub" "$BOUNDED_STATUS_GITHUB_URL"
+  probe_statuspage "Anthropic (Claude)" "$BOUNDED_STATUS_ANTHROPIC_URL"
 fi
 
 [ -n "$warnings" ] || exit 0
