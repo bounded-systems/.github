@@ -2,10 +2,19 @@
 # SessionStart hook — service-status probe: the weather report at check-in.
 #
 # Injects a context warning ONLY when a provider (GitHub, Anthropic) reports an
-# active incident, so a fresh session knows before it burns retries into a
-# platform outage it cannot see. Motivating failure, 2026-08-06: four retry
-# rounds against a degraded Actions queue (githubstatus incident qcvjkzcs7j74)
-# before the outage was diagnosed by hand, outside the session.
+# active incident, so a session that STARTS during one knows before it burns
+# retries into a platform outage it cannot see. Scope, honestly: that is the
+# only case a SessionStart hook covers. 2026-08-06 (githubstatus qcvjkzcs7j74)
+# was the OTHER case — the incident began mid-session and cost four retry
+# rounds anyway. Catching that one belongs to the retry path consulting the
+# same snapshot (a different consumer, per the layer handoff), not to this hook.
+#
+# When both .github repos are attached, both copies fire, and the dispatcher's
+# mergeContexts dedupe is only PROBABILISTIC here: unlike the org-context hooks
+# (which read one identical file), these are independent network calls seconds
+# apart, and a component flipping between them yields two differing blocks —
+# both inject. Accepted: rare, bounded to one incident window, and two
+# slightly-different warnings still beat zero.
 #
 # SILENT when healthy, and silent when it cannot check — injected context
 # counts against the window every session, and a block that fires when nothing
@@ -21,7 +30,7 @@
 #      layer; contract in .github-private docs/handoffs/service-status-layer.md).
 #      Preferred: sessions then need exactly ONE owned host reachable instead
 #      of every provider's, and it can serve MOCK incidents for testing outage
-#      handling. A parseable snapshot ends the probe, healthy or not.
+#      handling. A parseable AND FRESH snapshot ends the probe, healthy or not.
 #   2. Direct Statuspage APIs. NOTE: the cloud egress proxy 403'd
 #      www.githubstatus.com on 2026-08-06 — that is the fail-open path here,
 #      and the reason source 1 exists. status.anthropic.com bypasses the proxy
@@ -31,17 +40,30 @@ set -uo pipefail
 command -v curl >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
-fetch() { curl -fsS --max-time 3 "$1" 2>/dev/null; }
+# --connect-timeout 1: a host that black-holes instead of refusing must not
+# cost the full --max-time on every session start (two probes sit in the
+# SessionStart critical path). A refused/403'd connect is already instant.
+fetch() { curl -fsS --connect-timeout 1 --max-time 3 "$1" 2>/dev/null; }
 
 warnings=""
 add_warning() { warnings="${warnings}${1}"$'\n'; }
 
 # Source 1 — the org snapshot:
-# { providers: { <name>: { indicator, components: [...], incidents: [{name,url}], mock? } } }
+# { generated_at, providers: { <name>: { indicator, components: [...], incidents: [{name,url}], mock? } } }
+#
+# FRESHNESS GATES TRUST. A reachable-but-stuck layer (poller wedged, cache
+# never revalidating) serving yesterday's "none" would silently suppress the
+# direct probes in every session — green from a job that did nothing is not
+# evidence of health. So a snapshot may end the probe only if it proves its
+# age: generated_at present, parseable, under 10 minutes old. Stale, missing,
+# or malformed → unanswered (return 1) → fall through to the direct probes.
+# jq's fromdateiso8601 does the parsing so there is no GNU-date dependency.
 probe_snapshot() {
   local body lines
   body="$(fetch "$BOUNDED_STATUS_URL")" || return 1
-  jq -e 'has("providers")' >/dev/null 2>&1 <<<"$body" || return 1
+  jq -e '
+    has("providers") and ((now - (.generated_at | fromdateiso8601)) < 600)
+  ' >/dev/null 2>&1 <<<"$body" || return 1
   lines="$(jq -r '
     .providers | to_entries[]
     | .value.indicator as $i
@@ -87,10 +109,12 @@ fi
 ctx="## Service status warning — active provider incident(s) at session start
 
 ${warnings}
-Checked once at session start; it may be stale by the time you read it. Before
-spending retries on failing CI runs or API calls, confirm the incident is over
-(provider status page, or ask the user). This probe fails open — an ABSENT
-warning in another session is not proof of health. A [MOCK] line is a
+Checked ONCE at session start, so it covers incidents that were already open
+then — an incident starting mid-session produces no warning at all. Before
+spending retries on failing CI runs or API calls, confirm current status
+(provider status page, or ask the user) rather than treating this block, or
+its absence, as live. This probe fails open — an ABSENT warning is not proof
+of health. A [MOCK] line is a
 synthetic incident served by the org status layer to exercise outage
 handling; treat it as real inside tests, and say it is a mock anywhere else."
 
