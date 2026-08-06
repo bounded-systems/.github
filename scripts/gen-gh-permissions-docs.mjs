@@ -40,14 +40,21 @@ const HEADING = new RegExp(
 );
 const ENDPOINT = /\b(GET|POST|PUT|PATCH|DELETE)\s+(\/\S*)\s+(read|write|admin)\b/g;
 
-const unescape = (s) =>
-  s
-    .replace(/&quot;/g, '"')
-    .replace(/&#x27;|&apos;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&nbsp;/g, " ");
+// One pass, not a chain of replaces. Unescaping `&amp;` in its own pass feeds
+// the resulting `&` back into the later passes, so `&amp;lt;` -- the escaped
+// form of the literal text `&lt;` -- would come out as `<`. Replacing every
+// entity in a single scan means no output is ever re-scanned.
+const ENTITIES = {
+  "&quot;": '"',
+  "&#x27;": "'",
+  "&apos;": "'",
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&nbsp;": " ",
+};
+export const unescape = (s) =>
+  s.replace(/&(?:quot|#x27|apos|amp|lt|gt|nbsp);/g, (e) => ENTITIES[e]);
 
 const strip = (s) => unescape(s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ")).trim();
 

@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { unescape } from "./scripts/gen-gh-permissions-docs.mjs";
 import {
   guessSlug,
   loadDocs,
@@ -87,6 +88,22 @@ test("the fixture is the schema, not a hand-written enum", () => {
     assert.ok(Array.isArray(l) && l.length > 0, `${slug} has no levels`);
     assert.ok(l.every((x) => ["read", "write", "admin"].includes(x)), `${slug}: ${l}`);
   }
+});
+
+test("entity unescaping is single-pass", () => {
+  // CodeQL flagged the first version: unescaping `&amp;` in its own pass fed
+  // the resulting `&` into the later passes, so `&amp;lt;` -- the escaped form
+  // of the literal text `&lt;` -- came out as `<`. It produced identical output
+  // on the page as it stands today, which is precisely why it needs a test
+  // rather than an eye.
+  assert.equal(unescape("&amp;lt;"), "&lt;");
+  assert.equal(unescape("&amp;quot;"), "&quot;");
+  assert.equal(unescape("&amp;amp;"), "&amp;");
+
+  // and the ordinary cases still work
+  assert.equal(unescape("&lt;b&gt;"), "<b>");
+  assert.equal(unescape("permissions for &quot;Issue Types&quot;"), 'permissions for "Issue Types"');
+  assert.equal(unescape("a&nbsp;b"), "a b");
 });
 
 test("the grant vocabulary is parsed, not asserted", () => {
