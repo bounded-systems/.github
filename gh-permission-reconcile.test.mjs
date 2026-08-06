@@ -9,12 +9,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { guessSlug, loadDocs, loadWire, reconcile } from "./scripts/gh-permission-reconcile.mjs";
+import {
+  guessSlug,
+  loadDocs,
+  loadSlugs,
+  loadWire,
+  reconcile,
+} from "./scripts/gh-permission-reconcile.mjs";
 
 process.argv.push("--offline");
 const wire = await loadWire();
 const docs = await loadDocs();
-const r = reconcile(wire, docs);
+const slugs = await loadSlugs();
+const r = reconcile(wire, docs, slugs);
 
 const levels = (slug) => wire[slug];
 
@@ -49,10 +56,10 @@ test("the display name does not determine the slug", () => {
   // `Members` is an organization permission whose slug carries no
   // `organization_` prefix. Prefix-as-plane is therefore unsound, and so is any
   // probe that derives its target from the slug.
-  const members = docs.permissions.find((p) => p.plane === "organization" && p.name === "Members");
-  assert.equal(members.slug, "members");
-  assert.notEqual(guessSlug(members.name, members.plane), members.slug);
+  assert.equal(slugs["organization/Members"].slug, "members");
+  assert.notEqual(guessSlug("Members", "organization"), "members");
   assert.ok("members" in wire);
+  assert.ok(docs.permissions.some((p) => p.plane === "organization" && p.name === "Members"));
 
   const handAsserted = r.resolved.filter((x) => x.asserted);
   assert.ok(
@@ -82,9 +89,33 @@ test("the fixture is the schema, not a hand-written enum", () => {
   }
 });
 
-test("the transcription declares whether a human has checked it", () => {
-  // `verified: false` is not a failure -- it is the file admitting what it is.
-  // This asserts the field exists, so the admission cannot be dropped silently.
-  assert.equal(typeof docs.verified, "boolean");
+test("the grant vocabulary is parsed, not asserted", () => {
+  // It was hand-transcribed once, and the first parse caught the transcription
+  // recording 13 account permissions where the page publishes 14. These assert
+  // the file is still derived from the page and still carries what it was
+  // derived from.
+  assert.match(docs.source_sha256, /^[0-9a-f]{64}$/);
   assert.match(docs.retrieved, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(docs.counts.total, docs.permissions.length);
+  assert.equal(docs.counts.user, 14);
+
+  for (const p of docs.permissions) {
+    assert.ok(p.endpoints > 0, `${p.plane}/${p.name} derived from no endpoint rows`);
+    assert.ok(p.levels.length > 0, `${p.plane}/${p.name} has no levels`);
+    assert.ok(p.anchor.startsWith(`${p.plane}-permissions-for-`));
+  }
+});
+
+test("endpoint -> permission is published, just not in the OpenAPI description", () => {
+  // Correction to the first version of this claim (#104): the mapping is absent
+  // from the description, but the docs page carries it as a table per
+  // permission. Only GraphQL and webhooks are genuinely probe-only.
+  const rows = docs.permissions.reduce((n, p) => n + p.endpoints, 0);
+  assert.ok(rows > 1000, `expected a substantial endpoint table, got ${rows} rows`);
+
+  // The level set is derived FROM those rows, which is why write-only
+  // permissions fall out rather than being asserted.
+  const workflows = docs.permissions.find((p) => p.name === "Workflows");
+  assert.deepEqual(workflows.levels, ["write"]);
+  assert.deepEqual(wire.workflows, ["write"], "grant and wire agree that workflows is write-only");
 });

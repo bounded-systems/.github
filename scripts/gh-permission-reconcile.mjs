@@ -7,8 +7,13 @@
 //             -- what `default_permissions` and the token-mint `permissions`
 //             object actually accept. Machine-readable, carries exact levels.
 //   grant     the "Permissions required for GitHub Apps" docs page
-//             -- what an installer sees and approves. Prose only; transcribed
-//             into scripts/gh-permissions-docs.json.
+//             -- what an installer sees and approves. Published as HTML only,
+//             parsed into scripts/gh-permissions-docs.json by
+//             scripts/gen-gh-permissions-docs.mjs.
+//
+// The display-name -> slug correspondences that normalization cannot derive are
+// authored in scripts/gh-permission-slugs.json, deliberately separate so the
+// generated file stays generated.
 //
 // Neither is a superset of the other, and the display name does not determine
 // the slug (`Members` -> `members`, with no `organization_` prefix, is the
@@ -41,6 +46,7 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DOCS = join(root, "scripts", "gh-permissions-docs.json");
+const SLUGS = join(root, "scripts", "gh-permission-slugs.json");
 const FIXTURE = join(root, "scripts", "gh-app-permissions.fixture.json");
 const SRC =
   "https://raw.githubusercontent.com/github/rest-api-description/main" +
@@ -75,13 +81,14 @@ export async function loadWire() {
   return wire;
 }
 
-export function reconcile(wire, docs) {
+export function reconcile(wire, docs, slugs = {}) {
   const claimed = new Map(); // slug -> grant entry that claimed it
   const resolved = [];
   const unresolved = [];
 
   for (const entry of docs.permissions) {
-    const slug = entry.slug ?? guessSlug(entry.name, entry.plane);
+    const asserted = slugs[`${entry.plane}/${entry.name}`]?.slug;
+    const slug = asserted ?? guessSlug(entry.name, entry.plane);
     if (!(slug in wire)) {
       unresolved.push({ ...entry, tried: slug });
       continue;
@@ -91,7 +98,7 @@ export function reconcile(wire, docs) {
     if (collision) unresolved.push({ ...entry, tried: slug, collidesWith: collision });
     else {
       claimed.set(slug, `${entry.plane}/${entry.name}`);
-      resolved.push({ ...entry, slug, wireLevels: wire[slug], asserted: Boolean(entry.slug) });
+      resolved.push({ ...entry, slug, wireLevels: wire[slug], asserted: Boolean(asserted) });
     }
   }
 
@@ -116,10 +123,13 @@ export const digest = (wire) =>
 function report(r, wire, docs) {
   const line = (s = "") => console.log(s);
   line(`wire  : ${Object.keys(wire).length} slugs   (app-permissions, sha256 ${digest(wire).slice(0, 16)})`);
-  line(`grant : ${docs.permissions.length} entries  (${docs.source}, retrieved ${docs.retrieved})`);
-  if (!docs.verified) {
-    line("        ^ transcription NOT human-verified; every count below inherits that.");
-  }
+  const c = docs.counts;
+  line(
+    `grant : ${docs.permissions.length} entries  (parsed ${docs.retrieved}, page sha256 ` +
+      `${docs.source_sha256.slice(0, 16)})`,
+  );
+  line(`        enterprise ${c.enterprise}, organization ${c.organization}, ` +
+    `repository ${c.repository}, user ${c.user} -- plane exists only here`);
 
   line(`\n## lattice -- ${r.nonUniform.length} of ${Object.keys(wire).length} slugs deviate from read/write`);
   for (const { slug, levels } of r.nonUniform) line(`  ${slug.padEnd(48)} ${levels.join("/")}`);
@@ -147,13 +157,14 @@ function report(r, wire, docs) {
 }
 
 export const loadDocs = async () => JSON.parse(await readFile(DOCS, "utf8"));
+export const loadSlugs = async () => JSON.parse(await readFile(SLUGS, "utf8")).slugs;
 
 // Importing this module must not run the CLI -- the test drives the pure
 // functions over the fixture, with no network.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const wire = await loadWire();
   const docs = await loadDocs();
-  const r = reconcile(wire, docs);
+  const r = reconcile(wire, docs, await loadSlugs());
 
   if (args.has("--json")) {
     console.log(JSON.stringify({ digest: digest(wire), ...r }, null, 2));

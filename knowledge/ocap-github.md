@@ -7,7 +7,8 @@ tracking: https://github.com/bounded-systems/.github/issues/104
 last_reviewed: 2026-08-06
 sources:
   - scripts/gh-permission-reconcile.mjs
-  - scripts/gh-permissions-docs.json
+  - scripts/gen-gh-permissions-docs.mjs
+  - scripts/gh-permission-slugs.json
   - docs/session-capability-invariants.md
   - https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest
   - https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps
@@ -36,14 +37,17 @@ guessing across it:
 
 - **The wire** — `app-permissions` in `github/rest-api-description`: 55 slugs
   with exact levels; what `default_permissions` and token-mint actually accept.
-- **The grant** — the docs page an installer approves from: prose only,
-  transcribed into `scripts/gh-permissions-docs.json`.
+- **The grant** — the docs page an installer approves from: 78 permissions,
+  published as HTML, parsed into `scripts/gh-permissions-docs.json` by
+  `scripts/gen-gh-permissions-docs.mjs`.
 
-Measured 2026-08-06: 36 grant entries have no wire slug, 14 wire slugs no grant
-entry claims, and 4 resolved pairs disagree on levels. The display name does not
+Measured 2026-08-06: 37 grant entries have no wire slug, 14 wire slugs no grant
+entry claims, and 5 resolved pairs disagree on levels. The display name does not
 determine the slug — `Members` is `members`, with no `organization_` prefix,
 which is the case that kills prefix-as-plane and with it any probe that derives
-its target from the slug.
+its target from the slug. The seven correspondences normalization cannot reach
+are authored in `scripts/gh-permission-slugs.json`, separate so the generated
+file stays generated.
 
 **The lattice is not `read < write < admin`.** 8 of 55 deviate: four admit
 `admin` (including `organization_projects`, the Front Desk door), `profile` and
@@ -57,12 +61,16 @@ slug at all, and org Issue Types is `gh-issues-room`'s declared door.
 
 ## What is measured, and what cannot be
 
-Endpoint→permission is absent from the description (0 of 1220 operations) and is
-recoverable only from `X-Accepted-GitHub-Permissions` on a 403. Webhooks carry
-`supported-webhook-types` but no permission field. **GraphQL has no discovery
-mechanism at all** — which matters because ProjectV2 is GraphQL-only, so the
-org's most-used door sits on the one surface where authority can only be probed,
-never read.
+Endpoint→permission is absent from the OpenAPI description (0 of 1220
+operations) but **is** published — as a table per permission on the docs page,
+1073 rows, which is where each permission's level set is derived from rather
+than asserted. `X-Accepted-GitHub-Permissions` on a 403 remains the only
+*runtime* authority, and the only one that can confirm the published table.
+
+Webhooks carry `supported-webhook-types` but no permission field. **GraphQL has
+no discovery mechanism at all** — which matters because ProjectV2 is
+GraphQL-only, so the org's most-used door sits on the one surface where
+authority can only be probed, never read.
 
 API version is not the drift axis: `2022-11-28` and `2026-03-10` yield identical
 `app-permissions`. Drift is the schema's content digest over time — the same
