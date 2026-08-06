@@ -42,6 +42,13 @@ jobs:
       # name a merge commit that does not exist yet, so no PR touching a fetched
       # file can satisfy it. INTEGRITY stays hard on both.
       - run: node --test .claude/bootstrap-pin.test.mjs
+      # The GitHub App permission reconciliation (#104). Fixture-only, so a
+      # docs.github.com or raw.githubusercontent outage cannot turn it red for
+      # reasons unrelated to the claim. Named explicitly like every step above:
+      # this job enumerates its test files, so a test file that is never listed
+      # here runs only on the author's machine and green CI says nothing about
+      # it — which is how this one shipped in the first place.
+      - run: node --test gh-permission-reconcile.test.mjs
 
   # The other half of that split: main IS the merged state, so main can bump its
   # own pin. Mirrors registry-graph.yml — regenerate, and if that changed

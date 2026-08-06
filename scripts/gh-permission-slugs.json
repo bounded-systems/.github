@@ -1,0 +1,33 @@
+{
+  "$comment": "AUTHORED. The display name a GitHub App installer approves does not determine the wire slug that `default_permissions` accepts, and GitHub publishes no mapping between them. These are the correspondences established by hand; everything else is left to naive normalization, and whatever that fails to resolve is reported as unresolved by gh-permission-reconcile.mjs rather than guessed. The unresolved set is the work item (.github#104) -- do not close it by inventing entries here. Each addition should be justified the way these are.",
+  "slugs": {
+    "organization/Blocking users": {
+      "slug": "organization_user_blocking",
+      "why": "noun order reversed; naive normalization yields organization_blocking_users"
+    },
+    "organization/Custom organization roles": {
+      "slug": "organization_custom_org_roles",
+      "why": "'organization' abbreviated to 'org' in the slug only. Note the wire also carries organization_custom_roles, which no display name claims -- see orphans"
+    },
+    "organization/Members": {
+      "slug": "members",
+      "why": "an organization permission whose slug carries NO organization_ prefix. This is the case that makes prefix-as-plane unsound"
+    },
+    "organization/Webhooks": {
+      "slug": "organization_hooks",
+      "why": "'webhooks' -> 'hooks'"
+    },
+    "repository/Commit statuses": {
+      "slug": "statuses",
+      "why": "'commit' dropped"
+    },
+    "repository/Custom properties": {
+      "slug": "repository_custom_properties",
+      "why": "repository plane carries an explicit repository_ prefix here, though most repository slugs carry none"
+    },
+    "repository/Webhooks": {
+      "slug": "repository_hooks",
+      "why": "'webhooks' -> 'hooks', with the repository_ prefix that most repository slugs lack"
+    }
+  }
+}
