@@ -1,0 +1,184 @@
+# The org-wide claim window for tickets. Dispatch this BEFORE starting work on
+# an issue; only a completed green run means the claim is yours.
+#
+# ── Why this exists ──────────────────────────────────────────────────────────
+# Two agents doing the same ticket is not hypothetical: hooksmith#108 was
+# duplicated outright in the week of 2026-08-03, and infra#184 nearly repeated
+# .github#104 an hour before this file was written. Both times the workaround
+# was a hand-done "assign + comment" — which works only if the second agent
+# happens to look, and nothing made it look. The org's own docs already named
+# `claim-ticket.yml` as the ticket-window pattern (session-capability-invariants
+# I2, org-sync.yml's header), but no repo in scope actually contained one — a
+# named mechanism that does not resolve, which is exactly what
+# .github-private/docs/claim-boundary.md P4 forbids. This file is the mechanism.
+#
+# ── The ticket-window shape ──────────────────────────────────────────────────
+# Same move as org-sync.yml, front-desk-add.yml and adopt-claude-harness.yml:
+# the workflow holds the credential, so dispatching it is something any actor
+# can do, and `issues: write` on every org repo never has to be handed out. One
+# central window rather than a per-repo template, because a per-repo copy is
+# absent from precisely the repo you are about to duplicate work in — the
+# failure above — while this one covers a repo that did not exist yesterday.
+#
+# ── What a claim IS ──────────────────────────────────────────────────────────
+# The claim record on the issue is: the `claimed` label, plus a marker comment
+# naming the claimant and this run. The assignee is a best-effort human-facing
+# projection of it — agents and bots are usually not assignable, so assignment
+# must not be load-bearing. An issue with ANY assignee or the `claimed` label
+# counts as already claimed, which also honours claims made by the manual
+# workaround this replaces.
+#
+# Releasing a claim = remove the `claimed` label (and unassign). Nothing expires
+# stale claims yet; if that starts to hurt, it is a scheduled sweep in the
+# board-parity family, not more logic here.
+#
+# ── Why it FAILS CLOSED ──────────────────────────────────────────────────────
+# The opposite posture from front-desk-add.yml, on claim-boundary.md's
+# fail-direction rule: this job's only product is the sentence "the claim is
+# yours", and a false green there is what gets believed — it IS the duplicated
+# week of work. So no broker, no scope, no recorded claim ⇒ red, and the caller
+# falls back to claiming by hand (assign + comment), saying the window was down.
+#
+# ── Ordering under a race ────────────────────────────────────────────────────
+# The concurrency group serializes runs per (repo, issue): of two racing claims
+# the second run starts after the first completes, sees its label, and fails
+# naming the holder. A run superseded while queued is CANCELLED, and cancelled
+# is not green — the fail-closed contract already covers it.
+#
+# Because a dispatch does not return its run id, callers should verify on the
+# ISSUE, not the run list: your claim exists iff the claim comment names your
+# claimant (and the `claimed` label is present).
+#
+# ── The identity ─────────────────────────────────────────────────────────────
+# `front-desk-claim` is its own broker entry pinned to this workflow, the shape
+# front-desk-pin and front-desk-schema already have (#87): the fan-in
+# `front-desk` entry must not grow `issues: write` just because this window
+# needs it. Until the broker registry (infra) carries the entry, the mint fails
+# at `require:` naming the gap and which of the two places fixes it — that is
+# the intended arrival state, not a bug here.
+name: claim-ticket
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository name in bounded-systems (e.g. infra)"
+        required: true
+        type: string
+      issue:
+        description: "Issue number to claim"
+        required: true
+        type: string
+      claimant:
+        description: "Who is claiming — a session URL, branch name, or handle"
+        required: true
+        type: string
+
+permissions:
+  contents: read # checkout, for the local broker action
+  id-token: write # OIDC → cf-token-broker
+
+# THE serializer — see "Ordering under a race" above. Never cancel a run that
+# has started: a claim half-recorded then killed is the worst of both worlds.
+concurrency:
+  group: claim-${{ inputs.repo }}-${{ inputs.issue }}
+  cancel-in-progress: false
+
+jobs:
+  claim:
+    runs-on: ubuntu-latest
+    steps:
+      # Inputs land in URL paths below; refuse anything path-shaped rather than
+      # escaping it. Broker unset is a red run, not a skip — fail-closed, unlike
+      # front-desk-add, for the reason the header gives.
+      - name: Preflight — inputs are well-formed and the broker is configured
+        env:
+          REPO: ${{ inputs.repo }}
+          ISSUE: ${{ inputs.issue }}
+          BROKER: ${{ vars.CF_BROKER_URL }}
+        run: |
+          set -euo pipefail
+          case "$REPO" in
+            (*[!A-Za-z0-9._-]*|"") echo "::error::repo '$REPO' is not a plain repository name"; exit 1 ;;
+          esac
+          case "$ISSUE" in
+            (*[!0-9]*|"") echo "::error::issue '$ISSUE' is not a number"; exit 1 ;;
+          esac
+          if [ -z "$BROKER" ]; then
+            echo "::error::CF_BROKER_URL is unset — the window cannot mint a claim identity." \
+              "This run proves nothing about the ticket. Claim by hand instead:" \
+              "assign yourself and comment on bounded-systems/$REPO#$ISSUE, and say the window was down."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Mint the claim identity via the OIDC broker
+        id: app-token
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk-claim
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          # The only scope this job uses: labels and comments are both issue
+          # operations. No contents, no projects — the board reflects claims via
+          # its own sweep; this window records them.
+          require: issues
+      - name: Claim, or fail naming the holder
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ inputs.repo }}
+          ISSUE: ${{ inputs.issue }}
+          CLAIMANT: ${{ inputs.claimant }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          api="repos/bounded-systems/$REPO/issues/$ISSUE"
+          issue="$(gh api "$api")"
+
+          state="$(jq -r '.state' <<<"$issue")"
+          if [ "$state" != "open" ]; then
+            echo "::error::bounded-systems/$REPO#$ISSUE is $state — nothing to claim"
+            exit 1
+          fi
+
+          # ANY assignee or the label counts — see "What a claim IS" above.
+          assignees="$(jq -r '[.assignees[].login] | join(", ")' <<<"$issue")"
+          labelled="$(jq -r '[.labels[].name] | contains(["claimed"])' <<<"$issue")"
+          if [ -n "$assignees" ] || [ "$labelled" = "true" ]; then
+            holder="${assignees:-the \`claimed\` label (see the claim comment on the issue)}"
+            echo "::error title=claim-ticket: already claimed::bounded-systems/$REPO#$ISSUE" \
+              "is held by $holder. Do NOT start work — read the issue and coordinate there."
+            echo "❌ **Not claimed** — bounded-systems/$REPO#$ISSUE is held by $holder." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # Create the label deliberately rather than leaning on any add-time
+          # auto-create behaviour — a claim must not depend on an undocumented
+          # side effect.
+          if ! gh api "repos/bounded-systems/$REPO/labels/claimed" >/dev/null 2>&1; then
+            gh api -X POST "repos/bounded-systems/$REPO/labels" \
+              -f name=claimed -f color=1d76db \
+              -f description="Held by an agent or human — see the claim comment. Remove to release." \
+              >/dev/null
+          fi
+
+          gh api -X POST "$api/labels" -f 'labels[]=claimed' >/dev/null
+
+          body="$(printf '🎫 **Claimed** by %s — [run](%s)\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
+            "$CLAIMANT" "$RUN_URL")"
+          gh api -X POST "$api/comments" -f body="$body" >/dev/null
+
+          # Projection only — most dispatchers are bots and not assignable, and
+          # the claim above is already recorded either way.
+          gh api -X POST "$api/assignees" -f "assignees[]=$ACTOR" >/dev/null 2>&1 \
+            || echo "assignee projection skipped — '$ACTOR' is not assignable on $REPO"
+
+          # The fail-closed backstop: green means the record is READABLE, not
+          # that the writes returned 2xx.
+          after="$(gh api "$api")"
+          if [ "$(jq -r '[.labels[].name] | contains(["claimed"])' <<<"$after")" != "true" ]; then
+            echo "::error::the claim did not record on bounded-systems/$REPO#$ISSUE — treat as NOT claimed"
+            exit 1
+          fi
+
+          echo "✅ **Claimed** bounded-systems/$REPO#$ISSUE for \`$CLAIMANT\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "claimed: bounded-systems/$REPO#$ISSUE by $CLAIMANT"
