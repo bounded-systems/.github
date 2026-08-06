@@ -4,7 +4,10 @@
 # See bounded-systems/conformance for the caller template + rollout.
 #
 # Behaviors (all opt-in):
-#   security   (default true)  — OSV-Scanner (report-only) + dependency-review (PR gate)
+#   security   (default true)  — OSV-Scanner over git-tracked lockfiles (findings
+#                                report-only unless security-gate) + dependency-review (PR gate)
+#   security-gate (default false) — promote osv findings from report-only to a hard
+#                                fail; tool failures are red in EVERY mode
 #   spell      (default false) — cspell dictionary/allowlist gate (needs a cspell.json)
 #   test       (default false) — set up `runtime` and run `test-command`
 #   descriptor (default false) — README managed blocks must match trellis.json
@@ -29,6 +32,10 @@ on:
         description: "Run OSV-Scanner + dependency-review."
         type: boolean
         default: true
+      security-gate:
+        description: "Fail the osv job on known vulnerabilities. Off, findings are report-only; a scanner that could not run fails in every mode."
+        type: boolean
+        default: false
       spell:
         description: "Spell-gate: fail on tokens not in the dictionaries or the repo's cspell.json words allowlist (needs a cspell.json in the repo)."
         type: boolean
@@ -70,23 +77,92 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: OSV-Scanner (report-only)
+      # git is the authority on what gets scanned — NOT the scanner's directory
+      # walk. osv-scanner's `--recursive` applies .gitignore PATTERNS without
+      # git's tracked-file exemption, so a stray `Cargo.lock` line in .gitignore
+      # hides a tracked lockfile and the scan reports green having extracted
+      # nothing: hooksmith#108 shipped sixteen advisories behind exactly that
+      # green for months. Explicit --lockfile args from `git ls-files` make the
+      # class unrepresentable — every tracked lockfile is either scanned or
+      # fails the run out loud.
+      - name: Discover tracked lockfiles
+        id: locks
+        run: |
+          set -euo pipefail
+          # Exact basenames osv-scanner can extract. deno.lock is deliberately
+          # absent — OSV has no extractor for it; the ci-workflows deps lane
+          # covers the npm subset of Deno repos via SBOM conversion. Extending
+          # the list is a reviewed diff, and a file matched here that the
+          # scanner cannot parse reds the run rather than being skipped.
+          names='Cargo.lock|composer.lock|Gemfile.lock|go.mod|mix.lock|package-lock.json|pnpm-lock.yaml|yarn.lock|bun.lock|poetry.lock|pdm.lock|uv.lock|Pipfile.lock|requirements.txt|renv.lock|pubspec.lock|conan.lock|packages.lock.json|gradle.lockfile|buildscript-gradle.lockfile|Package.resolved'
+          mapfile -t locks < <(git ls-files | grep -E "(^|/)(${names})\$" || true)
+          {
+            echo "count=${#locks[@]}"
+            echo 'args<<EOF'
+            for f in "${locks[@]+"${locks[@]}"}"; do echo "--lockfile=$f"; done
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          if [ "${#locks[@]}" -eq 0 ]; then
+            # Explicit, because "nothing scannable" and "scanned and clean" must
+            # never look alike — the hooksmith#108 tell was silence.
+            echo "::notice::osv: no tracked lockfiles — nothing scannable, passing explicitly."
+          else
+            printf 'osv: %d tracked lockfile(s) to scan:\n' "${#locks[@]}"
+            printf '  %s\n' "${locks[@]}"
+          fi
+      - name: OSV-Scanner
+        id: scan
+        if: ${{ steps.locks.outputs.count != '0' }}
+        # Not report-only here: the triage step below decides pass/fail, so a
+        # swallowed FINDING stays possible (by choice) while a swallowed TOOL
+        # FAILURE is not.
         continue-on-error: true
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
         with:
-          # --recursive auto-discovers every lockfile/manifest in the repo, so this
-          # is language-agnostic (bun.lock, deno.lock, Cargo.lock, package-lock, …).
           scan-args: |-
             --format=sarif
             --output=results.sarif
-            --recursive
-            .
+            ${{ steps.locks.outputs.args }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
+        if: ${{ steps.locks.outputs.count != '0' }}
         with:
           name: osv-scanner-results
           path: results.sarif
           retention-days: 5
+          if-no-files-found: ignore
+      - name: Triage scan outcome
+        if: ${{ steps.locks.outputs.count != '0' }}
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          GATE: ${{ inputs.security-gate }}
+          COUNT: ${{ steps.locks.outputs.count }}
+        run: |
+          set -euo pipefail
+          if [ "$OUTCOME" = "success" ]; then
+            echo "osv: scanned $COUNT tracked lockfile(s), 0 known vulnerabilities." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The action exposes no exit code, so the SARIF is the discriminator:
+          # findings write one, a scanner that could not run does not. The
+          # latter must fail in EVERY mode, or an adopting repo shows a
+          # reassuring green check while scanning nothing.
+          n=0
+          if [ -s results.sarif ]; then
+            n="$(jq '[.runs[]?.results[]?] | length' results.sarif)"
+          fi
+          if [ "$n" -eq 0 ]; then
+            echo "::error::osv-scanner failed without recording findings — a tool, parse or network failure, not a clean scan. A lane that cannot run must never report green."
+            exit 1
+          fi
+          {
+            echo "### osv: $n known vulnerabilities in tracked lockfiles"
+            jq -r '.runs[]?.results[]? | "- \(.ruleId): \(.locations[0].physicalLocation.artifactLocation.uri // "?")"' results.sarif | sort -u
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$GATE" = "true" ]; then
+            echo "::error::osv: $n known vulnerabilities and security-gate is on. Fix them, or commit an osv-scanner.toml [[IgnoredVulns]] entry next to the lockfile with a written reason."
+            exit 1
+          fi
+          echo "::warning::osv: $n known vulnerabilities — report-only. See the run summary and the osv-scanner-results artifact; set security-gate: true in your standard.yml to make this red."
 
   dependency-review:
     if: ${{ inputs.security && github.event_name == 'pull_request' }}
