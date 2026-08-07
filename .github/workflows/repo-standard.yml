@@ -24,7 +24,8 @@
 #   sbom       → repo-release.yml    (adds contents: write)
 # Callers opt into those with a dedicated, event-gated job (see #55 / #56).
 #
-# All actions SHA-pinned (org policy).
+# All actions SHA-pinned (org policy) — and so is `conformance-kit-ref`, which is the
+# only non-action code this workflow executes (see the input's description).
 name: repo-standard
 
 on:
@@ -47,9 +48,9 @@ on:
         type: boolean
         default: true
       conformance-kit-ref:
-        description: "conformance-kit tag to pin the quality gates to."
+        description: "conformance-kit COMMIT to pin the quality gates to. A SHA, not a tag: this is the one input that selects code the job actually executes, and a tag can be re-pointed under it."
         type: string
-        default: "v0.9.0"
+        default: "dc33dd87e8547f9d9543b1f74eef229b4d8abbc9" # v0.9.0
       test:
         description: "Run the test job (set runtime + test-command)."
         type: boolean
@@ -224,6 +225,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      # THREAT-MODEL GUARD (#133). The safety analysis for this job — untrusted repo
+      # content consumed only as DATA, executed code only from the SHA-pinned kit —
+      # holds for push / pull_request. This is a reusable workflow, so the CALLER
+      # supplies the trigger, and a pull_request_target caller would run it with
+      # base-repo authority against attacker-controlled PR content. That combination
+      # is refused out loud, not skipped: an `if:` on the job would go quietly green,
+      # and silence must never mean "didn't run" (same rule as the osv job).
+      - name: refuse pull_request_target callers
+        if: ${{ github.event_name == 'pull_request_target' }}
+        run: |
+          echo "::error::repo-standard quality: refusing to run under pull_request_target. This job's threat model assumes push/pull_request; a pull_request_target caller pairs base-repo authority with attacker-controlled PR content. Call repo-standard from push or pull_request instead (see bounded-systems/.github#133)."
+          exit 1
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
@@ -246,17 +259,28 @@ jobs:
             const fs = require("fs");
             const md = (s) => s.replace(/```[\s\S]*?```/g, " ").replace(/`[^`]*`/g, " ").replace(/[#>*_\[\]()!|-]/g, " ");
             const files = ["README.md"];
-            if (fs.existsSync("docs")) for (const f of fs.readdirSync("docs")) if (f.endsWith(".md")) files.push("docs/" + f);
+            // Recursive: docs/adr/*.md and docs/handoffs/*.md are docs too, and a repo
+            // that nests them must not get a quieter quality bar than a flat-docs one.
+            // statSync guards the case existsSync cannot tell apart — `docs` as a FILE,
+            // where readdirSync throws and (no continue-on-error) reds the whole job.
+            if (fs.existsSync("docs") && fs.statSync("docs").isDirectory())
+              for (const f of fs.readdirSync("docs", { recursive: true })) if (f.endsWith(".md")) files.push("docs/" + f);
             const corpus = {};
-            for (const f of files) { try { corpus[f] = md(fs.readFileSync(f, "utf8")); } catch {} }
+            // A skipped file is announced. Silence must mean "read everything", never
+            // "gave up on something" — same rule the osv job states for scanners.
+            for (const f of files) { try { corpus[f] = md(fs.readFileSync(f, "utf8")); } catch (e) { console.log("::warning::corpus: skipped " + f + " (" + e.code + ")"); } }
             fs.writeFileSync("corpus.json", JSON.stringify(corpus));
             console.log("corpus:", Object.keys(corpus).join(", ") || "(none)");
           '
+      # No continue-on-error, deliberately. Report-only is enforced INSIDE each gate —
+      # both end in `process.exit(strict ? 1 : 0)`, so findings without --strict already
+      # exit 0. continue-on-error could therefore never soften a finding; it could only
+      # ever hide a BROKEN run (renamed gate script, bad conformance-kit-ref, node crash,
+      # changed kit CLI) behind a step annotation. That is the inversion of the rule the
+      # osv job states above: a lane that could not run fails in EVERY mode.
       - name: claim discipline (report-only)
-        continue-on-error: true
         run: node .conformance-kit/gates/claim-discipline-gate.mjs corpus.json
       - name: grammar repetition (report-only)
-        continue-on-error: true
         run: node .conformance-kit/gates/grammar-repetition-gate.mjs corpus.json
 
   test:
