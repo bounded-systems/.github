@@ -8,7 +8,8 @@
     "SessionStart": [
       { "matcher": "", "hooks": [
         { "type": "command", "command": "bash .claude/inject-org-context.sh" },
-        { "type": "command", "command": "bash .claude/status-probe.sh" }
+        { "type": "command", "command": "bash .claude/status-probe.sh" },
+        { "type": "command", "command": "bash .claude/setup-toolpath.sh" }
       ] }
     ]
   }
