@@ -412,3 +412,21 @@ It fails open (`exit 0`), so the dispatcher reports `0 injected context` and the
 session proceeds without it. Getting org context into a cloud session needs a source a
 session can actually reach — attaching `.github-private`, or serving it from somewhere
 that does not require a GitHub credential.
+
+**The source now exists; the rewire is the remaining work.** `boot.bounded.tools`
+is live and verified, and serving `claude/context.md` lease-gated from it is the
+accepted plan (infra#245, `.github-private` →
+`docs/handoffs/portable-secrets-and-brokers.md`) — with the custody trade
+recorded there: a lease key's exposure set is everything that executes in any
+session using that environment, which is tolerable for conventions prose and
+never for credentials. The source side of that bargain is already mechanical —
+`_scripts-lint.yml` fails any PR that puts credential-shaped content into
+`claude/context.md` (boot `SECURITY.md` R1).
+
+What the rewire needs is a way to change the hook **in the 84 repos that already
+committed it**, which the rollout lane cannot do — it skips every repo that has
+a `.claude/settings.json`. That path now exists as
+`.github-private` → `docs/handoffs/claude-harness-reroll.md`
+(`reroll-claude-harness.sh` + `reroll-claude-harness.yml`): edit the canonical
+hook in `adopt-claude-harness.sh`, then run a re-roll wave. So this gap is no
+longer blocked on tooling — it is a canonical-hook edit plus a wave.
