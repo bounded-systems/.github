@@ -1,10 +1,11 @@
 # Session-start machinery
 
-Four files here, with different jobs:
+Five files here, with different jobs:
 
 | file | scope | fires when |
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
+| `status-probe.sh` | this repo | same — a second SessionStart hook; warns only when a provider reports an active incident (`.github-private` → `docs/handoffs/service-status-layer.md`) |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
 | `register-mcp.mjs` | **every attached repo** | run from the environment setup script; re-run by the dispatcher as a fallback (see below) |
 | `stop-hook-git-check.sh` | the session | copied over the platform's Stop hook by the setup script; re-copied by the dispatcher as a fallback (infra#112) |

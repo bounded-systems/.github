@@ -29,6 +29,11 @@ jobs:
       # The multi-repo SessionStart dispatcher. Separate step so a failure names
       # itself rather than reading as an org-defaults contract break.
       - run: node --test .claude/session-start-dispatch.test.mjs
+      # The service-status probe. Its failure modes are all silence, and
+      # silence is also its healthy state — the only thing distinguishing
+      # "quiet because healthy" from "quiet because broken" is this suite,
+      # which drives the real script over file:// fixtures via its URL seams.
+      - run: node --test .claude/status-probe.test.mjs
       - run: node --test .claude/register-mcp.test.mjs
       - run: node --test .claude/gen-bootstrap-pin.test.mjs
       # The relation between the canonical setup-script field and what the
