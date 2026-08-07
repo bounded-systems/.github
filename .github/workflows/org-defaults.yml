@@ -139,17 +139,36 @@ jobs:
           # pushes that each touch a fetched file should update one bump PR to the
           # newest commit, not open a queue of PRs that pin superseded commits.
           b=bootstrap-pin/bump
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$b"
-          git commit -am "chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests"
-          # Push AS the same identity that will open the PR. Attribution is not
-          # cosmetic here: a branch pushed by github.token and a PR opened by the
-          # App would leave the PR's head commit authored by Actions, and the
-          # recursion guard keys on the identity behind the event.
-          git remote set-url origin \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push -f origin "$b"
+          # Commit via the API, never `git commit` (#129). A runner-made commit is
+          # UNSIGNED, and the ruleset requires verified signatures — so the old
+          # `git commit && git push` produced a branch that pushed fine and a PR
+          # that could never merge. Every check green, outcome impossible: the
+          # required-baseline.yml failure shape (infra#135), one layer up.
+          # createCommitOnBranch commits are signed by GitHub as the token's
+          # identity — the App here, or github-actions[bot] on the fallback —
+          # which satisfies the rule with no signing key in the runner. It also
+          # keeps commit and PR under ONE identity, which the recursion guard
+          # keys on (same reason the old code pushed with the PR-opening token).
+          # Two calls: force the ref to this run's commit, then one API commit
+          # carrying the regenerated file on top of it.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/heads/$b" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          gh api graphql \
+            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) {
+              createCommitOnBranch(input: {
+                branch: { repositoryNameWithOwner: $repo, branchName: $b },
+                expectedHeadOid: $head,
+                message: { headline: $msg },
+                fileChanges: { additions: [{ path: ".claude/boot.sh", contents: $c }] }
+              }) { commit { oid } } }' \
+            -f repo="$GITHUB_REPOSITORY" -f b="$b" -f head="$GITHUB_SHA" \
+            -f msg="chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests" \
+            -f c="$(base64 -w0 .claude/boot.sh)"
           gh pr view "$b" --json state --jq .state 2>/dev/null | grep -q OPEN && { echo "bump PR already open — updated it"; exit 0; }
           # --body-file, never an inline --body. Prose wants blank lines, a `---`
           # rule and a leading `_`, and inside a `run: |` block scalar every one
