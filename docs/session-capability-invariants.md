@@ -11,6 +11,7 @@ sources:
   - https://github.com/bounded-systems/.github/pull/88
   - https://github.com/bounded-systems/.github/issues/91
   - https://github.com/bounded-systems/front-desk-scheduler/pull/101
+  - https://code.claude.com/docs/en/self-hosted-environments-production
 ---
 
 # Session Capability Invariants
@@ -252,3 +253,18 @@ Server-managed settings may reduce it further, since they support `hooks` and
 explicitly do reach cloud sessions where endpoint-managed settings do not. That
 is recorded on #85 as unverified — nobody here has tried it, and the hook
 approval dialog's behaviour in a cloud session is unknown.
+
+**Re-dated 2026-08-07 (I4 applied to this section's own claim).** The
+2026-08-01 "no API, no CLI, no repo-committed form" still holds for the
+managed environment every org session runs on. What changed is that the
+residue is no longer floor-independent: Anthropic's **self-hosted
+environments** beta (Team/Enterprise; production page in `sources` above)
+runs cloud sessions on runners we deploy, where per-session setup is a
+wrapper script and lifecycle hooks on the runner — files in a repo — and the
+runner image is a Dockerfile we build. On that floor, I1's target collapses
+from "one line that fails loudly" toward "the environment secret and the
+runner deployment", and one detector loses its repairer: private repos cannot
+be added mid-session there, so the scope-check's `add_repo` repair path is
+selector-or-nothing. Recorded, not adopted — the option and its hardening
+facts live in `.github-private` →
+`docs/handoffs/self-hosted-session-floors.md` (#337).
