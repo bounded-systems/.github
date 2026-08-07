@@ -33,6 +33,44 @@ set -uo pipefail
 
 LOG="${HOME:-/root}/.claude/toolpath-install.log"
 
+# ── Pathbase lease (.github#115 step 3: hook wiring) ─────────────────────────
+# If the environment carries the two lease levers, redeem them into the
+# credentials file a stock `path` reads. Both levers are environment-owner
+# config (the environment selector), and their absence is the normal case —
+# skip silently, not degraded. The lease endpoint is the broker's /lease/<name>
+# tier (infra), whose response IS credentials.json's shape ({url, token, user})
+# by design, so this block is a fetch and a 0600 write, no assembly.
+#
+# Ordering: BEFORE the install/early-exit ladder, so a container whose `path`
+# is still compiling in the background redeems now and is authed the moment the
+# binary lands — and the already-installed branch below reports the auth state
+# this block just established. A REAL login always wins: an existing
+# credentials file is never overwritten (report it instead; `path auth logout`
+# is the release).
+CRED_DIR="${TOOLPATH_CONFIG_DIR:-${HOME:-/root}/.toolpath}"
+CRED_FILE="$CRED_DIR/credentials.json"
+if [ -n "${PATHBASE_LEASE_URL:-}" ] && [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
+  if [ -f "$CRED_FILE" ]; then
+    echo "toolpath: lease levers set but credentials already exist — keeping the existing login ($CRED_FILE)"
+  else
+    # The broker records x-session-id as CLAIMED provenance (explicitly
+    # unverified there); send what this runtime knows about itself.
+    lease="$(curl -fsS --max-time 10 -X POST \
+      -H "Authorization: Bearer $PATHBASE_LEASE_KEY" \
+      -H "X-Session-Id: ${CLAUDE_CODE_SESSION_ID:-unknown}" \
+      "$PATHBASE_LEASE_URL" 2>/dev/null || true)"
+    if [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"token"'; then
+      mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
+      printf '%s' "$lease" > "$CRED_FILE" && chmod 600 "$CRED_FILE"
+      echo "toolpath: Pathbase lease redeemed — credentials at $CRED_FILE (release: rotate the lease key, or \`path auth logout\`)"
+    else
+      # Fail soft and SAY so: a refused lease is an environment/broker state
+      # the session cannot fix, but silence here is how #117's lesson repeats.
+      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Check the broker's LEASE_KEYS entry and the environment's lease key (.github#115)."
+    fi
+  fi
+fi
+
 # Already present — attached image, a prior container hook, or a future baked
 # image. Report rather than reinstall; auth state is the useful part.
 if command -v path >/dev/null 2>&1; then
