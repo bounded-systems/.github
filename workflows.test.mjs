@@ -98,6 +98,46 @@ for (const file of files) {
   });
 }
 
+// ── No workflow writes history with git; commits go through the API ─────────
+//
+// This repo's default branch requires verified signatures, and a commit made by
+// `git commit` inside a runner carries none. The lane still goes entirely green
+// — the branch pushes, the PR opens — and the PR is simply unmergeable forever.
+// Every check passing while the outcome is impossible is the required-baseline
+// failure shape (infra#135), and it has now happened twice here: org-defaults'
+// `pin` hit it live (#128/#129), and registry-graph carried the identical defect
+// unexercised the whole time, because it early-exits on "in sync" and had never
+// once had real work to do. Two instances of one mistake is where a comment stops
+// being enough.
+//
+// The fix both lanes use is `createCommitOnBranch`: commits made through the API
+// are signed by GitHub as the token's identity, so the rule is satisfied with no
+// signing key in the runner. This test is the ratchet — a third lane cannot
+// reintroduce the shape by copying an older one.
+//
+// `git push` is covered by the same assertion for the same reason: pushing is how
+// a runner-made commit reaches the branch. Comments may name either (both fixed
+// lanes explain themselves at length); only an executable occurrence is the bug.
+for (const file of files) {
+  test(`${file}: creates commits through the API, not git`, () => {
+    const offenders = readFileSync(join(DIR, file), "utf8")
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => !line.trim().startsWith("#"))
+      .filter(({ line }) => /\bgit\s+(commit|push)\b/.test(line));
+
+    assert.deepEqual(
+      offenders.map(({ n, line }) => `${n}: ${line.trim().slice(0, 70)}`),
+      [],
+      `${file} runs git commit/push in the runner. Runner-made commits are ` +
+        `unsigned and this repo requires verified signatures, so the lane goes ` +
+        `green and produces a PR that can never merge (#129). Force the ref with ` +
+        `the refs API, then carry the file changes in one createCommitOnBranch ` +
+        `mutation — see the pin job in org-defaults.yml.`,
+    );
+  });
+}
+
 // ── Every local broker-gh-token caller declares the scopes it needs ──────────
 //
 // The action exports `permissions` so callers can assert their scope before
