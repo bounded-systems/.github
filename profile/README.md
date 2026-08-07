@@ -85,7 +85,12 @@ Not every `@bounded-systems/*` package is a capability seam:
 
 - **[`verbspec`](https://jsr.io/@bounded-systems/verbspec)** — spec-driven CLI
   core: author a verb once as a typed `VerbSpec`, then project it to CLI, MCP,
-  OpenAPI, and Anthropic tool surfaces. One source, many surfaces.
+  OpenAPI, and Anthropic tool surfaces. One source, many surfaces. The gap is
+  real even at the top: GitHub generates its Octokit SDKs and REST reference
+  docs from its [published OpenAPI description](https://github.com/github/rest-api-description),
+  yet `gh` is hand-maintained against the API —
+  [`cli/cli`](https://github.com/cli/cli) contains no reference to the
+  description (checked 2026-08).
 - **[`prx-config`](https://jsr.io/@bounded-systems/prx-config)** — TUI
   configuration schema parser/emitter for the L1/L2 tools.
 
