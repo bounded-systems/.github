@@ -73,10 +73,30 @@ runs:
         #    Capture the WHOLE response once: it carries the granted permissions
         #    alongside the token, and a second POST would mint a second credential
         #    just to read them.
-        res="$(curl -fsS -X POST -H "Authorization: Bearer ${jwt}" \
-          "${BROKER_URL%/}/github/${APP}")"
+        #
+        #    Status and body are captured SEPARATELY — never `curl -f` here. The broker
+        #    puts its diagnosis IN the body ("unknown app: <name>", "unauthorized",
+        #    "broker misconfigured"), and -f discards exactly that, collapsing every
+        #    refusal into an unexplained `curl: (22)`. That collapse is how a freshly
+        #    registered entry whose deploy had not propagated yet (~4 minutes observed)
+        #    spent an hour looking like a missing registry entry — infra#192.
+        res_file="$(mktemp)"
+        code="$(curl -sS -o "$res_file" -w '%{http_code}' -X POST \
+          -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}/github/${APP}")"
+        res="$(cat "$res_file")"; rm -f "$res_file"
+        if [ "$code" != "200" ]; then
+          echo "::error::broker refused to mint for app '${APP}' (HTTP ${code}): ${res}"
+          if [ "$code" = "404" ]; then
+            echo "::error::404 = the broker DEPLOYMENT serving ${BROKER_URL%/} does not carry '${APP}'." \
+                 "Three states look identical from this chair: the registry lacks the entry, the app name" \
+                 "is a typo, or the entry is registered and its deploy has not propagated yet (~4 minutes" \
+                 "observed once — infra#192). If the registry diff shows '${APP}', retry before concluding" \
+                 "it is absent; otherwise the fix is a registry entry in infra plus a broker-deploy."
+          fi
+          exit 1
+        fi
         tok="$(printf '%s' "$res" | jq -r '.token // empty')"
-        if [ -z "$tok" ]; then echo "::error::broker did not return a token for app '${APP}'"; exit 1; fi
+        if [ -z "$tok" ]; then echo "::error::broker returned 200 but no token for app '${APP}' — body was not the mint response"; exit 1; fi
         echo "::add-mask::$tok"
         echo "token=$tok" >> "$GITHUB_OUTPUT"
         # An entry with no permissions map mints FULL-GRANT and the broker returns
