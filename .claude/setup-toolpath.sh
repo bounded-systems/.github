@@ -12,6 +12,16 @@
 # the environment's network allowlist and a Pathbase token are environment-owner
 # levers, documented in `.github-private` → docs/handoffs/toolpath-pathbase.md.
 #
+# Every status line goes to STDOUT, and that is load-bearing: SessionStart
+# injects a hook's stdout into the session's context, while stderr goes only to
+# the transcript. These lines were written to stderr at first, and the result
+# was measured on the first live cloud session to run this hook (2026-08-07):
+# the install fired correctly and the session could not see that it had — it
+# had to go looking for the process to find out. A status line the session
+# cannot read is not a status line. The audience here IS the agent: "your
+# `path` is compiling, don't conclude it is missing" is precisely the fact that
+# stops the next session from re-deriving this from scratch.
+#
 # Install is `cargo install path-cli`, not the vendor's `curl | bash`: the
 # registry index carries per-crate checksums that cargo verifies locally, which
 # keeps the same no-unverified-bytes posture the bootstrap's fetch_verified
@@ -28,19 +38,19 @@ LOG="${HOME:-/root}/.claude/toolpath-install.log"
 if command -v path >/dev/null 2>&1; then
   ver="$(path --version 2>/dev/null || echo 'path (version unknown)')"
   auth="$(path auth status 2>&1 | head -1 || true)"
-  echo "toolpath: $ver — auth: ${auth:-unknown}" >&2
+  echo "toolpath: $ver — auth: ${auth:-unknown}"
   exit 0
 fi
 
 # A background install from an earlier hook in this container may still be
 # compiling — do not stack a second one on top of it.
 if pgrep -f "cargo install path-cli" >/dev/null 2>&1; then
-  echo "toolpath: install already running — log: $LOG" >&2
+  echo "toolpath: install already running — log: $LOG"
   exit 0
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "toolpath: no cargo in this image — skipping install (see toolpath-pathbase.md)" >&2
+  echo "toolpath: no cargo in this image — skipping install (see toolpath-pathbase.md)"
   exit 0
 fi
 
@@ -51,12 +61,12 @@ fi
 # .github#112); the probe stays because other environments' policies differ,
 # and a closed registry should cost one line, not a hung compile.
 if ! curl -fs --max-time 5 -o /dev/null https://index.crates.io/config.json; then
-  echo "toolpath: crates.io egress blocked — not installing. The fix is the environment network allowlist, not this script (.github#112)." >&2
+  echo "toolpath: crates.io egress blocked — not installing. The fix is the environment network allowlist, not this script (.github#112)."
   exit 0
 fi
 
 mkdir -p "$(dirname "$LOG")"
-echo "toolpath: installing path-cli in the background — log: $LOG" >&2
+echo "toolpath: installing path-cli in the background — log: $LOG"
 nohup sh -c '
   if cargo install path-cli; then
     echo "toolpath-install: done — $(path --version 2>/dev/null || echo installed)"
