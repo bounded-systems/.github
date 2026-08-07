@@ -191,6 +191,37 @@ test("mock incident carries the [MOCK] label through, and the warning explains i
   assert.match(ctx, /say it is a mock anywhere else/);
 });
 
+// ── the canonical default (unset vs empty) ──────────────────────────────────
+test("BOUNDED_STATUS_URL unset → probe defaults to the canonical layer and fails through cleanly", () => {
+  // Build an env WITHOUT the variable at all — {…, BOUNDED_STATUS_URL: ""}
+  // would exercise the off-switch, which is the OTHER case. In this sandbox
+  // the canonical host is egress-blocked, so the correct observable is: no
+  // crash, fast fallthrough to the direct probes.
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BOUNDED_STATUS_URL;
+  const r = spawnSync("bash", [PROBE], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {
+      ...cleanEnv,
+      BOUNDED_STATUS_GITHUB_URL: statuspage(MARKER_PAGE),
+      BOUNDED_STATUS_ANTHROPIC_URL: UNREACHABLE,
+    },
+  });
+  assert.equal(r.status, 0, `must fail open; stderr: ${r.stderr}`);
+  const ctx = context(r.stdout);
+  assert.match(ctx, /DirectMarker/, "canonical host unreachable here → direct probes must still run");
+});
+
+test("BOUNDED_STATUS_URL set EMPTY is an explicit off-switch — snapshot source skipped entirely", () => {
+  // The distinction under test: unset means "use the layer", empty means
+  // "don't". If empty ever started defaulting too, every existing caller
+  // that opts out (including this suite's own runProbe) would silently start
+  // making network calls.
+  const ctx = context(probe({ BOUNDED_STATUS_GITHUB_URL: statuspage(MARKER_PAGE) }));
+  assert.match(ctx, /DirectMarker/);
+});
+
 test("byte-identity claim: the copy in .github-private must match this one", () => {
   // The dispatcher dedupes the two probes' output only if the scripts stay
   // identical. Cross-repo bytes can't be asserted from one repo's CI, but a
