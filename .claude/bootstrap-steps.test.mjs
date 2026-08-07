@@ -1,4 +1,5 @@
-// Drift gate between the canonical setup-script field and the dispatcher's
+// Drift gate between the canonical bootstrap (boot.sh — fetched by the
+// one-line setup-script field, see README.md) and the dispatcher's
 // coverage of it (#91 — I1 in docs/session-capability-invariants.md).
 //
 // ── Why this exists ──────────────────────────────────────────────────────────
@@ -42,9 +43,9 @@ import { parseSteps } from "./gen-bootstrap-pin.mjs";
 import { IRREDUCIBLE, MANIFEST } from "./session-start-dispatch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const README = readFileSync(join(HERE, "README.md"), "utf8");
+const BOOT_SH = readFileSync(join(HERE, "boot.sh"), "utf8");
 
-const steps = parseSteps(README);
+const steps = parseSteps(BOOT_SH);
 const covered = new Map(MANIFEST.map((e) => [e.artifact, e]));
 const declared = new Map(IRREDUCIBLE.map((e) => [e.artifact, e]));
 
@@ -139,11 +140,11 @@ test("a step added to the field with no fallback fails this gate", () => {
   // The NEGATIVE test, and the reason to believe any of the above. A gate nobody
   // has watched go red is a gate nobody knows is wired up: this adds a line to a
   // copy of the canonical text and asserts the step surfaces uncovered.
-  const withNewStep = README.replace(
+  const withNewStep = BOOT_SH.replace(
     'echo "bootstrap: ready — dispatcher at $BOOT"',
     'cp "$BOOT/some-new-thing.sh" "$HOME/.claude/some-new-thing.sh"\necho "bootstrap: ready — dispatcher at $BOOT"',
   );
-  assert.notEqual(withNewStep, README, "the anchor line moved — this test is no longer exercising anything");
+  assert.notEqual(withNewStep, BOOT_SH, "the anchor line moved — this test is no longer exercising anything");
 
   const found = parseSteps(withNewStep).map((s) => s.artifact);
   assert.ok(found.includes("some-new-thing.sh"), "the parse did not notice a new install step");
@@ -157,7 +158,7 @@ test("an unclassifiable command refuses to parse rather than being skipped", () 
   // The failure mode this parse must not have: a verb it does not know silently
   // dropping out of the enumeration, which would make the gate above green for a
   // step nothing covers — the exact invisibility #91 is about.
-  const withMystery = README.replace(
+  const withMystery = BOOT_SH.replace(
     'echo "bootstrap: ready — dispatcher at $BOOT"',
     'systemctl restart something\necho "bootstrap: ready — dispatcher at $BOOT"',
   );

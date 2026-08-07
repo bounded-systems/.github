@@ -43,7 +43,9 @@ const read = (name) => readFileSync(join(HERE, name), "utf8");
 // while README.md had `/home/user/.github/...`), so it is pinned here.
 
 const SNIPPET_PATH = "/home/user/.github/.claude/session-start-dispatch.mjs";
-const DOCS = ["session-start-dispatch.mjs", "README.md"];
+// boot.sh, not README.md: the canonical install snippet moved into the fetched
+// stage-1 bootstrap (#125); README now carries only the one-line field text.
+const DOCS = ["session-start-dispatch.mjs", "boot.sh"];
 
 /**
  * Every `"command": "node …session-start-dispatch.mjs"` a doc actually tells the
@@ -102,11 +104,11 @@ test("every documented install command points at the session root, not $HOME", (
   }
 });
 
-test("the docstring and the README do not drift apart", () => {
-  // Two copies of one pointer, and the pointer lives outside version control —
-  // so a stale copy is retyped into a real session on the next boot.
-  const [fromCode, fromReadme] = DOCS.map((n) => installCommands(read(n)));
-  assert.deepEqual(fromCode, fromReadme);
+test("the docstring and boot.sh do not drift apart", () => {
+  // Two copies of one pointer — and boot.sh's copy is what a session without
+  // `.github` attached actually executes, so a stale one runs for real.
+  const [fromCode, fromBoot] = DOCS.map((n) => installCommands(read(n)));
+  assert.deepEqual(fromCode, fromBoot);
 });
 
 // ── Locating the session root ────────────────────────────────────────────────

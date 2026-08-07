@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# bounded-systems session bootstrap — stage 1, FETCHED.
+#
+# The environment's setup-script field is ONE LINE (canonical text in
+# README.md): it fetches this file from $ORG_BOOT_URL and refuses to run it
+# unless it hashes to the dialog-recorded $ORG_BOOT_SHA256. So this file is
+# reviewed, tested and gated in-repo, and the field never carries logic —
+# logic in the field is unreviewable and ungateable, infra#122's failure mode.
+set -uo pipefail
+
+ROOT=/home/user                                    # where the repo checkouts land
+BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
+
+# --- the trust anchor -------------------------------------------------------
+# PIN is a COMMIT SHA (content-addressed, so the URL is immutable). The SHA-256s
+# are the second, independent check: pinning the URL only guarantees immutability
+# IF the endpoint is honest, because the SHA in the URL is a path component the
+# client never verifies. These digests are checked locally, so a wrong-bytes
+# response is refused whatever served it.
+#
+# These digests ARE fetched now — this file arrives via the one-line field —
+# and that is sound only because the field refuses this file unless it hashes
+# to the dialog-recorded ORG_BOOT_SHA256, the one value that is not fetched.
+# The root of trust moved from this block to that dialog pair; these lines are
+# the second link of the chain, not its anchor. See "Why the chain has three
+# links" in README.md.
+#
+# PIN and the digests are ONE PAIR — bump them together or the bootstrap refuses
+# a legitimate file. Do not hand-edit them; regenerate:
+#
+#   node .claude/gen-bootstrap-pin.mjs <commit>
+#
+# On main this is automatic: org-defaults.yml regenerates on push and opens the
+# bump PR, because the pin can only name a merge commit once that commit exists.
+# The equivalent by hand, against the endpoint rather than the git objects:
+#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
+#     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
+#   done
+PIN=ec84469401fbbd03e4019b1bc8f6b0e6707ee86c
+SUM_session_start_dispatch_mjs=0c145e502a32dcca7f9c368177d2af85cea0d261f82db5341ccf53684ff3505d
+SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
+SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
+
+# Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
+# to a temp name and only moves it into place after the check, so an unverified
+# file never sits at a path something might execute.
+fetch_verified() {
+  local f="$1" want="$2" got
+  curl -fsSL --retry 2 \
+    "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
+    -o "$BOOT/$f.unverified" || { echo "bootstrap: WARN could not fetch $f"; return 1; }
+  got="$(sha256sum "$BOOT/$f.unverified" | cut -d' ' -f1)"
+  if [ "$got" != "$want" ]; then
+    echo "bootstrap: REFUSING $f — sha256 mismatch, not executing it"
+    echo "bootstrap:   expected $want"
+    echo "bootstrap:   got      $got"
+    rm -f "$BOOT/$f.unverified"
+    return 1
+  fi
+  mv "$BOOT/$f.unverified" "$BOOT/$f"
+}
+
+# The attached checkout is NOT digest-checked: it arrives over the session's git
+# proxy with git's own integrity, and it may legitimately be NEWER than PIN — so
+# comparing it against these digests would fail on every merge. Only the fetched
+# copy is verified, because only it is fetched.
+if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
+  echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
+  BOOT=/opt/bounded-boot
+  mkdir -p "$BOOT"
+  fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
+  fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
+  fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh"
+fi
+
+# Both scripts self-locate from their own path, which is correct in the attached
+# checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
+# the first case and load-bearing in the second.
+#
+# The heredoc terminator below is deliberately unquoted: $ROOT and $BOOT must
+# interpolate, and nothing else in that JSON is $-shaped. Escape any literal $
+# you add. (Spelled out in prose because a literal here-doc operator in this
+# comment would trip parseSteps' heredoc detection in gen-bootstrap-pin.mjs.)
+mkdir -p "$HOME/.claude"
+if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
+  cat > "$HOME/.claude/settings.json" <<JSON
+{
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [ { "type": "command",
+        "command": "CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" } ] }
+    ]
+  }
+}
+JSON
+else
+  echo "bootstrap: WARN no dispatcher — repo SessionStart hooks will not run"
+fi
+
+# Keep this call. The dispatcher re-runs register-mcp.mjs as a fallback (#84), but
+# only THIS one is ordered before Claude Code launches and reads the tool list.
+if [ -f "$BOOT/register-mcp.mjs" ]; then
+  CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
+else
+  echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
+fi
+
+# Replace the platform's Stop hook with the infra#112 fix. The stock one scopes
+# its check to `origin/<branch>..HEAD`, which after a squash merge includes
+# GitHub's own merge commit — so it warned "Unverified" after EVERY merge and
+# advised an --amend that would rewrite already-merged history. Copied rather than
+# executed here, but still digest-verified above when fetched, so the fallback
+# path installs the same bytes the attached checkout would.
+if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$HOME/.claude" ]; then
+  cp "$BOOT/stop-hook-git-check.sh" "$HOME/.claude/stop-hook-git-check.sh"
+  chmod +x "$HOME/.claude/stop-hook-git-check.sh"
+  echo "bootstrap: stop-hook patched (infra#112)"
+fi
+
+echo "bootstrap: ready — dispatcher at $BOOT"

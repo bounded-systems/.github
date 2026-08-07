@@ -3,11 +3,13 @@
  * Generator for the bootstrap pin and its digests.
  *
  * ── Why this is generated and not hand-edited ────────────────────────────────
- * README.md's setup script fetches a few files from a pinned commit and refuses
- * any whose SHA-256 does not match a recorded digest. `PIN` and the `SUM_*`
- * lines are therefore ONE ATOMIC PAIR: the digests describe the files as they
- * exist at that specific commit, and a pin bumped without re-recording the
- * digests bricks the bootstrap for everyone without `.github` attached.
+ * boot.sh (the fetched stage-1 bootstrap; the setup-script field is one line
+ * that fetches and digest-checks it — see README.md) fetches a few files from
+ * a pinned commit and refuses any whose SHA-256 does not match a recorded
+ * digest. `PIN` and the `SUM_*` lines are therefore ONE ATOMIC PAIR: the
+ * digests describe the files as they exist at that specific commit, and a pin
+ * bumped without re-recording the digests bricks the bootstrap for everyone
+ * without `.github` attached.
  *
  * Both halves were hand-maintained and both went wrong within one afternoon
  * (2026-07-31): #71 recorded a pin predating the file it existed to install, and
@@ -50,9 +52,20 @@
  * So freshness is judged as a claim about content (`planBump`): an older pin
  * that still serves byte-identical files is correct, and correct is a no-op.
  *
+ * ── The OUTER pair ───────────────────────────────────────────────────────────
+ * The chain gained a link above this file (.github#125): the one-line field
+ * verifies boot.sh itself against a dialog-recorded ORG_BOOT_URL/ORG_BOOT_SHA256
+ * pair, recorded in `.github-private` → `.claude/cloud-environment.json` and
+ * gated there by env-record.yml. Any change to boot.sh's BYTES — including the
+ * inner PIN/SUM_* rewrite a bump performs — moves ORG_BOOT_SHA256, so every
+ * bump implies a record PR + dialog edit. The same commit-after-merge argument
+ * applies one level up: the URL's commit can only name the merge commit once it
+ * exists, so `--outer` is run AFTER the bump lands, against main.
+ *
  * ── Usage ────────────────────────────────────────────────────────────────────
- *   node .claude/gen-bootstrap-pin.mjs --check     # verify; exit 1 on drift
- *   node .claude/gen-bootstrap-pin.mjs <commit>    # rewrite PIN + digests
+ *   node .claude/gen-bootstrap-pin.mjs --check            # verify; exit 1 on drift
+ *   node .claude/gen-bootstrap-pin.mjs <commit>           # rewrite PIN + digests
+ *   node .claude/gen-bootstrap-pin.mjs --outer [commit]   # print the dialog pair at commit (default HEAD)
  */
 
 import { execFileSync } from "node:child_process";
@@ -62,7 +75,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const README = join(HERE, "README.md");
+const BOOT = join(HERE, "boot.sh");
+const RAW_BASE = "https://raw.githubusercontent.com/bounded-systems/.github";
 
 export const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
@@ -124,7 +138,11 @@ const FIELD_PLUMBING = new Set([
  * re-open exactly the gap the gate exists to close.
  */
 export function parseSteps(source) {
-  const block = source.match(/```sh\n#!\/usr\/bin\/env bash\n[\s\S]*?\n```/)?.[0];
+  // boot.sh is the canonical script and parses whole; a fenced ```sh block is
+  // still accepted so a fixture (or a doc embedding the script) parses the same.
+  const block = source.startsWith("#!")
+    ? source
+    : source.match(/```sh\n#!\/usr\/bin\/env bash\n[\s\S]*?\n```/)?.[0];
   if (!block) throw new Error("no canonical setup-script block found — nothing to enumerate");
 
   const steps = new Map();
@@ -209,17 +227,17 @@ export function parseSteps(source) {
 /**
  * Rewrite the pin and digests in place.
  *
- * Anchored line rewrites rather than a whole-file render: README.md is mostly
- * prose explaining this mechanism, including a worked example of a REFUSED
- * digest and a `PIN=<the pin>` placeholder in a copy-paste snippet. Regenerating
- * the document would destroy that; the `^PIN=<40 hex>$` and `^SUM_x=<64 hex>$`
- * anchors match only the live assignments, and the placeholder is not 40 hex.
+ * Anchored line rewrites rather than a whole-file render: boot.sh is mostly
+ * comments explaining this mechanism, including a hand-verify snippet whose
+ * loop interpolates `$PIN`. Regenerating the document would destroy that; the
+ * `^PIN=<40 hex>$` and `^SUM_x=<64 hex>$` anchors match only the live
+ * assignments.
  */
 export function renderBootstrap(source, { pin, digests }) {
   let out = source.replace(/^PIN=[0-9a-f]{40}[ \t]*$/m, `PIN=${pin}`);
   for (const [name, value] of Object.entries(digests)) {
     const line = new RegExp(`^${name}=[0-9a-f]{64}[ \\t]*$`, "m");
-    if (!line.test(out)) throw new Error(`${name} is not declared in README.md — cannot rewrite it`);
+    if (!line.test(out)) throw new Error(`${name} is not declared in boot.sh — cannot rewrite it`);
     out = out.replace(line, `${name}=${value}`);
   }
   return out;
@@ -274,6 +292,21 @@ export function inspect(source, { commit = "HEAD", read = fileAtCommit } = {}) {
 }
 
 /**
+ * The OUTER pair the one-line field verifies boot.sh against: the values the
+ * operator records in the dialog (and `.github-private`'s
+ * cloud-environment.json records in-repo). Computed AT A COMMIT, never from
+ * the working tree, because the URL half names a commit — the same
+ * content-vs-commit distinction the inner pair lives with.
+ */
+export function outerPair(commit, { read = fileAtCommit } = {}) {
+  const bytes = read(commit, "boot.sh");
+  return {
+    ORG_BOOT_URL: `${RAW_BASE}/${commit}/.claude/boot.sh`,
+    ORG_BOOT_SHA256: sha256(bytes),
+  };
+}
+
+/**
  * What a bump should write at `commit`, if anything.
  *
  * Split out of main() because this is the termination argument in code, and the
@@ -300,9 +333,28 @@ export function planBump(source, { commit, read = fileAtCommit } = {}) {
 }
 
 function main(argv) {
-  const source = readFileSync(README, "utf8");
+  const source = readFileSync(BOOT, "utf8");
   const check = argv.includes("--check");
+  const outer = argv.includes("--outer");
   const commit = argv.find((a) => !a.startsWith("--")) ?? "HEAD";
+
+  if (outer) {
+    // Run after a bump merges, against main: prints what the dialog (and the
+    // .github-private record PR) should say. Warns rather than errors when the
+    // working tree has drifted past the named commit — the pair is still
+    // internally consistent; it just doesn't describe what you are looking at.
+    const resolved = execFileSync("git", ["rev-parse", commit], { cwd: HERE, encoding: "utf8" }).trim();
+    const pair = outerPair(resolved);
+    for (const [k, v] of Object.entries(pair)) console.log(`${k}=${v}`);
+    if (pair.ORG_BOOT_SHA256 !== sha256(source)) {
+      console.error(
+        `bootstrap-pin: NOTE — boot.sh in this working tree differs from ${resolved.slice(0, 12)}; ` +
+          `the pair above describes the commit, not your tree. If a bump PR is pending, merge it ` +
+          `first and re-run against the merge commit.`,
+      );
+    }
+    return 0;
+  }
 
   if (check) {
     const { pin, integrity, stale } = inspect(source);
@@ -329,8 +381,15 @@ function main(argv) {
     console.log(`bootstrap-pin: ${reason} — nothing to write`);
     return 0;
   }
-  writeFileSync(README, next);
+  writeFileSync(BOOT, next);
   console.log(`bootstrap-pin: ${reason}`);
+  // The outer half, stated as far as it can be stated today: the SHA-256 is
+  // final (it hashes the bytes just written), but the URL's commit can only be
+  // the merge commit this bump lands as. `--outer` completes it after merge.
+  console.log(
+    `bootstrap-pin: outer pair implied by this bump — ORG_BOOT_SHA256=${sha256(next)}; ` +
+      `ORG_BOOT_URL commit = the commit this lands as (run: node .claude/gen-bootstrap-pin.mjs --outer origin/main after merge)`,
+  );
   return 0;
 }
 

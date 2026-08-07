@@ -191,6 +191,65 @@ test("mock incident carries the [MOCK] label through, and the warning explains i
   assert.match(ctx, /say it is a mock anywhere else/);
 });
 
+// ── the canonical default (unset vs empty) ──────────────────────────────────
+test("BOUNDED_STATUS_URL unset → probe requests the canonical layer URL, and falls through on failure", () => {
+  // HERMETIC BY STUB, after shipping the non-hermetic version and having CI
+  // prove the point: in this sandbox the canonical host is egress-blocked
+  // (falls through), on a GitHub runner it is reachable and healthy (probe
+  // goes correctly silent) — one test, two right answers, guaranteed to fail
+  // somewhere. Run 31184805977 is the receipt.
+  //
+  // So: a curl stub that records every requested URL, delegates file:// to
+  // the real curl (fixtures keep working), and fails everything else. That
+  // pins the two claims that are actually environment-independent — unset
+  // means the probe ASKS for the canonical URL, and an unreachable canonical
+  // falls through to the direct probes.
+  const realCurl = spawnSync("bash", ["-lc", "command -v curl"], { encoding: "utf8" }).stdout.trim();
+  const stubDir = join(root, `stub${n++}`);
+  mkdirSync(stubDir, { recursive: true });
+  const curlLog = join(stubDir, "requests.log");
+  writeFileSync(
+    join(stubDir, "curl"),
+    `#!/usr/bin/env bash
+printf '%s\n' "$@" >> "${curlLog}"
+for a in "$@"; do case "$a" in file://*) exec "${realCurl}" "$@";; esac; done
+exit 22
+`,
+    { mode: 0o755 },
+  );
+
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.BOUNDED_STATUS_URL; // unset, not empty — the case under test
+  const r = spawnSync("bash", [PROBE], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: {
+      ...cleanEnv,
+      PATH: `${stubDir}:${process.env.PATH}`,
+      BOUNDED_STATUS_GITHUB_URL: statuspage(MARKER_PAGE),
+      BOUNDED_STATUS_ANTHROPIC_URL: UNREACHABLE,
+    },
+  });
+  assert.equal(r.status, 0, `must fail open; stderr: ${r.stderr}`);
+  const requested = readFileSync(curlLog, "utf8");
+  assert.match(
+    requested,
+    /https:\/\/status\.bounded\.tools\/status\.json/,
+    "unset must default to the canonical layer URL",
+  );
+  const ctx = context(r.stdout);
+  assert.match(ctx, /DirectMarker/, "canonical unreachable → direct probes must still run");
+});
+
+test("BOUNDED_STATUS_URL set EMPTY is an explicit off-switch — snapshot source skipped entirely", () => {
+  // The distinction under test: unset means "use the layer", empty means
+  // "don't". If empty ever started defaulting too, every existing caller
+  // that opts out (including this suite's own runProbe) would silently start
+  // making network calls.
+  const ctx = context(probe({ BOUNDED_STATUS_GITHUB_URL: statuspage(MARKER_PAGE) }));
+  assert.match(ctx, /DirectMarker/);
+});
+
 test("byte-identity claim: the copy in .github-private must match this one", () => {
   // The dispatcher dedupes the two probes' output only if the scripts stay
   // identical. Cross-repo bytes can't be asserted from one repo's CI, but a
