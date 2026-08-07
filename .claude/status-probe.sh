@@ -26,11 +26,13 @@
 # status hosts — all yield no output and exit 0, never a blocked session.
 #
 # Sources, in order:
-#   1. $BOUNDED_STATUS_URL — the org's own snapshot (the Cloudflare status
-#      layer; contract in .github-private docs/handoffs/service-status-layer.md).
-#      Preferred: sessions then need exactly ONE owned host reachable instead
-#      of every provider's, and it can serve MOCK incidents for testing outage
-#      handling. A parseable AND FRESH snapshot ends the probe, healthy or not.
+#   1. The org's own snapshot — https://status.bounded.tools/status.json by
+#      default (the Cloudflare status layer, live since 2026-08-07; contract in
+#      .github-private docs/handoffs/service-status-layer.md), overridable via
+#      $BOUNDED_STATUS_URL and disabled by setting it EMPTY. Preferred:
+#      sessions need exactly ONE owned host allowlisted instead of every
+#      vendor's, and it can serve MOCK incidents for testing outage handling.
+#      A parseable AND FRESH snapshot ends the probe, healthy or not.
 #   2. Direct Statuspage APIs. NOTE: in cloud sessions on 2026-08-06 BOTH were
 #      unreachable, by two different mechanisms — worth knowing, because they
 #      look like different problems and are the same one:
@@ -111,6 +113,15 @@ probe_statuspage() {
   [ -n "$line" ] && add_warning "$line"
   return 0
 }
+
+# Default to the org's canonical status host (live since 2026-08-07). UNSET
+# means "use the layer": a session needs only the network allowlist to
+# benefit — no env var, no selector edit. EMPTY is an explicit off-switch
+# (the tests use it), which is why this is ${var+x} rather than ${var:-}:
+# unset and empty mean different things here, on purpose.
+if [ -z "${BOUNDED_STATUS_URL+x}" ]; then
+  BOUNDED_STATUS_URL="https://status.bounded.tools/status.json"
+fi
 
 if [ -n "${BOUNDED_STATUS_URL:-}" ] && probe_snapshot; then
   : # snapshot answered (healthy or degraded) — do not double-report from direct probes
