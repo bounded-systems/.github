@@ -33,19 +33,23 @@
 #      sessions need exactly ONE owned host allowlisted instead of every
 #      vendor's, and it can serve MOCK incidents for testing outage handling.
 #      A parseable AND FRESH snapshot ends the probe, healthy or not.
-#   2. Direct Statuspage APIs. NOTE: in cloud sessions on 2026-08-06 BOTH were
-#      unreachable, by two different mechanisms — worth knowing, because they
-#      look like different problems and are the same one:
+#   2. Direct Statuspage APIs. Anthropic's page MOVED 2026-08-07 (infra#224):
+#      status.anthropic.com now 302s to status.claude.com, and fetch() below
+#      does not follow redirects, so the pre-move default was silently dead —
+#      jq failed on the redirect HTML and the probe said nothing. The default
+#      now names the new host. NOTE: in cloud sessions the direct probes stay
+#      unreachable until the environment's network policy allowlists the
+#      hosts (measured 2026-08-06, re-measured for the new host 2026-08-07):
 #        - www.githubstatus.com — denied at CONNECT (proxy answers 403 to the
 #          tunnel).
-#        - status.anthropic.com — bypasses the proxy (`.anthropic.com` is on
-#          NO_PROXY) and is then refused by the egress filter itself:
-#          `HTTP/2 403, x-deny-reason: host_not_allowed`.
-#      Bypassing the proxy is NOT the same as being allowed out, so neither
-#      half of this fallback works in a cloud session until the environment's
-#      network policy allowlists the hosts. Source 1 is the fix: one owned
-#      host to allowlist instead of one per vendor. Elsewhere (local dev, CI
-#      runners) the direct probes work normally.
+#        - status.claude.com — same mechanism, denied at CONNECT. The
+#          PRE-move host was the interesting one: it bypassed the proxy
+#          (`.anthropic.com` is on NO_PROXY) and was refused by the egress
+#          filter itself (`HTTP/2 403, x-deny-reason: host_not_allowed`) —
+#          bypassing the proxy is NOT the same as being allowed out.
+#      Source 1 is the fix: one owned host to allowlist instead of one per
+#      vendor. Elsewhere (local dev, CI runners) the direct probes work
+#      normally.
 set -uo pipefail
 command -v curl >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -60,7 +64,7 @@ fetch() { curl -fsS --connect-timeout 1 --max-time 3 "$1" 2>/dev/null; }
 # exercise each path with no network. They are not a redirection mechanism —
 # pointing sessions somewhere else is what BOUNDED_STATUS_URL is for.
 : "${BOUNDED_STATUS_GITHUB_URL:=https://www.githubstatus.com}"
-: "${BOUNDED_STATUS_ANTHROPIC_URL:=https://status.anthropic.com}"
+: "${BOUNDED_STATUS_ANTHROPIC_URL:=https://status.claude.com}"
 
 warnings=""
 add_warning() { warnings="${warnings}${1}"$'\n'; }
