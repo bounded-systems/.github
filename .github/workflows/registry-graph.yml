@@ -25,9 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # See org-defaults.yml's `pin`: checkout's persisted extraheader beats
-          # userinfo in a remote URL, so leaving it on would push as Actions
-          # regardless of the token we set below.
+          # Nothing in this job pushes any more (#129 — the commit is made
+          # through the API), so the extraheader-beats-userinfo trap that
+          # originally motivated this is gone. Kept anyway: the job holds
+          # contents:write, and leaving a credential for github.com in the
+          # runner's git config for the rest of the run buys nothing once no
+          # step needs it.
           persist-credentials: false
       - run: node scripts/gen-registry-graph.mjs
       # Same brokered identity as org-defaults.yml's `pin`, for the same two
@@ -61,23 +64,94 @@ jobs:
       # handles below.
       - env:
           GH_TOKEN: "${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token || github.token }}"
+          BROKERED: "${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token != '' }}"
+          MINT: "${{ steps.app-token.outcome }}"
+          TITLE: "chore(profile): sync knowledge-graph from the registry"
         run: |
           [ -z "$(git status --porcelain)" ] && { echo "in sync"; exit 0; }
-          b="registry-graph/$(date -u +%Y%m%d%H%M%S)"
-          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$b"; git commit -am "chore(profile): sync knowledge-graph from the registry"
-          git remote set-url origin \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin "$b"
+          # A FIXED branch, replacing the timestamped `registry-graph/<utc>` this
+          # job used to mint. Same argument as org-defaults.yml's `pin`: the
+          # generator's output is a pure function of the upstream registry, so
+          # two unmerged sync PRs never disagree usefully — the older one just
+          # renders a registry that no longer exists. One branch means the weekly
+          # run UPDATES the open PR to the current registry instead of queueing a
+          # second PR that supersedes it on arrival.
+          b=registry-graph/sync
+          # Commit via the API, never `git commit` (#129). A runner-made commit is
+          # UNSIGNED and this repo's default branch requires verified signatures,
+          # so the old `git commit && git push` would have produced a branch that
+          # pushed fine and a PR that could never merge. That is not a prediction:
+          # it is what org-defaults.yml's `pin` did on its first real run (#128).
+          # This job never got that far — it early-exits on "in sync" and had not
+          # once had real work to do — so the same defect sat here unexercised.
+          # createCommitOnBranch commits are signed by GitHub as the token's
+          # identity (the App here, or github-actions[bot] on the fallback), which
+          # satisfies the rule with no signing key in the runner, and keeps commit
+          # and PR under ONE identity for the recursion guard.
+          # Two calls: force the ref to this run's commit, then one API commit
+          # carrying the regenerated file on top of it.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/heads/$b" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          # profile/README.md is the ONLY file the generator writes — see the
+          # single writeFile in scripts/gen-registry-graph.mjs. If that ever grows
+          # a second output, this addition list has to grow with it, which is what
+          # the `git status --porcelain` assertion below is for: it fails loudly
+          # here rather than silently committing half the change.
+          changed="$(git status --porcelain | awk '{print $2}')"
+          if [ "$changed" != "profile/README.md" ]; then
+            echo "::error title=registry-graph: unexpected working-tree change::The" \
+                 "generator wrote [$changed], not just profile/README.md. The API commit" \
+                 "below carries a fixed file list, so committing now would land a partial" \
+                 "change. Add the new path to the fileChanges additions in this workflow."
+            exit 1
+          fi
+          gh api graphql \
+            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) {
+              createCommitOnBranch(input: {
+                branch: { repositoryNameWithOwner: $repo, branchName: $b },
+                expectedHeadOid: $head,
+                message: { headline: $msg },
+                fileChanges: { additions: [{ path: "profile/README.md", contents: $c }] }
+              }) { commit { oid } } }' \
+            -f repo="$GITHUB_REPOSITORY" -f b="$b" -f head="$GITHUB_SHA" \
+            -f msg="$TITLE" \
+            -f c="$(base64 -w0 profile/README.md)"
+          gh pr view "$b" --json state --jq .state 2>/dev/null | grep -q OPEN && { echo "sync PR already open — updated it"; exit 0; }
+          # --body-file, never an inline --body: prose at column 0 inside a `run: |`
+          # block scalar ends the scalar and stops the file being a workflow at all.
+          # See the header of workflows.test.mjs for the run that proved it.
+          #
           # Same failure mode as org-defaults.yml's `pin` job, found there on its
           # first real run and fixed here before this one ever fires: Actions is
-          # not permitted to create pull requests in this org, so the branch lands
+          # not permitted to create pull requests in this org, so the commit lands
           # and `gh pr create` refuses. This job has apparently never opened a PR.
-          if gh pr create --base main --head "$b" --title "chore(profile): sync knowledge-graph from the registry" --body "Automated by registry-graph.yml — the registry changed."; then
+          if gh pr create --base main --head "$b" --title "$TITLE" \
+               --body-file .github/registry-graph-sync.md; then
             exit 0
           fi
-          echo "::error title=registry-graph: branch pushed, PR not opened::Pushed $b," \
-               "but could not open its PR. If the cause above is \"GitHub Actions is not" \
-               "permitted to create or approve pull requests\", that is a settings fix for" \
-               "the repo or org. Until then, open a PR from $b by hand."
+          if [ "${BROKERED}" = "true" ]; then
+            echo "::error title=registry-graph: commit landed, PR not opened::Committed the" \
+                 "regenerated graph to $b. The App token minted, so this is NOT the" \
+                 "Actions-cannot-create-PRs case: check that the front-desk App is installed" \
+                 "on this repo with pull_requests:write. Open a PR from $b by hand meanwhile."
+          elif [ "${MINT}" = "failure" ]; then
+            echo "::error title=registry-graph: commit landed with github.token, PR not opened::" \
+                 "Committed the regenerated graph to $b. The broker was reachable but the minted" \
+                 "token failed its scope assertion, so this fell back to github.token — which can" \
+                 "commit but cannot create PRs in this org. See the broker-gh-token error above" \
+                 "for which scope is missing and where to fix it (#87). Open a PR from $b by hand;" \
+                 "the branch content is correct and needs no regeneration."
+          else
+            echo "::error title=registry-graph: commit landed, PR not opened::Committed the" \
+                 "regenerated graph to $b, but no App token was minted, so this fell back to" \
+                 "github.token — which this org does not permit to create PRs. Fix is the org" \
+                 "variable CF_BROKER_URL resolving here (infra#41), NOT the Actions" \
+                 "create-and-approve setting: a github.token PR triggers no workflow runs, so" \
+                 "the drift check on it would never report. Open a PR from $b by hand."
+          fi
           exit 1
