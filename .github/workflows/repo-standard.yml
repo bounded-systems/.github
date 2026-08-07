@@ -225,6 +225,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      # THREAT-MODEL GUARD (#133). The safety analysis for this job — untrusted repo
+      # content consumed only as DATA, executed code only from the SHA-pinned kit —
+      # holds for push / pull_request. This is a reusable workflow, so the CALLER
+      # supplies the trigger, and a pull_request_target caller would run it with
+      # base-repo authority against attacker-controlled PR content. That combination
+      # is refused out loud, not skipped: an `if:` on the job would go quietly green,
+      # and silence must never mean "didn't run" (same rule as the osv job).
+      - name: refuse pull_request_target callers
+        if: ${{ github.event_name == 'pull_request_target' }}
+        run: |
+          echo "::error::repo-standard quality: refusing to run under pull_request_target. This job's threat model assumes push/pull_request; a pull_request_target caller pairs base-repo authority with attacker-controlled PR content. Call repo-standard from push or pull_request instead (see bounded-systems/.github#133)."
+          exit 1
       - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
