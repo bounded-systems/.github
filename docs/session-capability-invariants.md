@@ -50,9 +50,10 @@ health**.
 
 ## I1 — Every step of the canonical bootstrap has a fallback, or is declared irreducible
 
-**Statement.** For each step in the canonical setup-script text in
-`.claude/README.md`, either the dispatcher re-does it when the setup script has
-not, or the step is explicitly recorded as irreducible with the reason.
+**Statement.** For each step in the canonical bootstrap `.claude/boot.sh`
+(fetched by the one-line setup-script field — `.claude/README.md` carries the
+field's canonical text), either the dispatcher re-does it when the setup script
+has not, or the step is explicitly recorded as irreducible with the reason.
 
 **Why.** The setup-script field is the one link outside version control. On
 2026-08-01 it had been reduced to 264 bytes — the `settings.json` heredoc alone
@@ -90,12 +91,16 @@ Three details carry most of the value:
 The idiom is the repo's own: `bootstrap-pin.test.mjs` asserts on its generator
 rather than reimplementing it, precisely so the two cannot drift.
 
-**What this still does not catch.** The gate relates the field text in
-`.claude/README.md` to the dispatcher. It cannot see the *actual* field, which
-lives in the environment selector where nothing can read it — so it catches a
-step added to the canonical text with no fallback, not a canonical text that has
-drifted from what the field really says. That gap is I1's residue and is
-unchanged; see "What this does not claim" below.
+**What this still does not catch.** The gate relates `.claude/boot.sh` to the
+dispatcher. It cannot see the *actual* field, which lives in the environment
+selector where nothing can read it — so it catches a step added to the
+canonical bootstrap with no fallback, not a field that has drifted from the
+one-line canonical text. That residue is now much smaller than it was: the
+field is one stable line, and the values it depends on (`ORG_BOOT_URL`,
+`ORG_BOOT_SHA256`) are recorded in `.github-private`'s
+`cloud-environment.json`, where a stale pair is flagged at every session start
+by `cloud-env-check.mjs` — but the line itself remains unverifiable from here.
+See "What this does not claim" below.
 
 ---
 

@@ -262,8 +262,9 @@ export function mcpDriftContext(missing) {
  * missing in production — which is exactly how #85 happened.
  *
  * So each entry names the `artifact` it covers, and `parseSteps` in
- * gen-bootstrap-pin.mjs enumerates the steps of the canonical text in
- * `.claude/README.md`. bootstrap-steps.test.mjs asserts the two agree: every step
+ * gen-bootstrap-pin.mjs enumerates the steps of the canonical bootstrap in
+ * `.claude/boot.sh` (fetched by the one-line setup-script field — see
+ * README.md). bootstrap-steps.test.mjs asserts the two agree: every step
  * of the field maps to an entry here or to an IRREDUCIBLE declaration. Adding a
  * line to the field with no fallback now fails `node --test .claude/` instead of
  * failing silently in a session six weeks later.

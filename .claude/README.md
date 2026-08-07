@@ -93,139 +93,101 @@ This is the canonical text of that field. It is recorded here — the same way
 field itself lives where no reviewer and no gate can see it. If the two drift,
 this file is what the field should be returned to.
 
+Since #125 the field is **one line**. Everything it used to do lives in
+[`boot.sh`](boot.sh) — fetched, digest-checked against a dialog-recorded pair,
+and only then executed — so the body is reviewed, tested and gated in-repo, and
+the only hand-typed text left is a line that never changes:
+
 ```sh
-#!/usr/bin/env bash
-# bounded-systems session bootstrap.
-#
-# This stays a POINTER. All logic lives in bounded-systems/.github/.claude,
-# where it is reviewed, tested and gated. Anything added here is unreviewable
-# and ungateable — infra#122's failure mode.
-set -uo pipefail
-
-ROOT=/home/user                                    # where the repo checkouts land
-BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
-
-# --- the trust anchor -------------------------------------------------------
-# PIN is a COMMIT SHA (content-addressed, so the URL is immutable). The SHA-256s
-# are the second, independent check: pinning the URL only guarantees immutability
-# IF the endpoint is honest, because the SHA in the URL is a path component the
-# client never verifies. These digests are checked locally, so a wrong-bytes
-# response is refused whatever served it.
-#
-# They live HERE, in the one file that is not fetched. Putting them in the repo
-# would mean fetching the digests too, which verifies nothing.
-#
-# PIN and the digests are ONE PAIR — bump them together or the bootstrap refuses
-# a legitimate file. Do not hand-edit them; regenerate:
-#
-#   node .claude/gen-bootstrap-pin.mjs <commit>
-#
-# On main this is automatic: org-defaults.yml regenerates on push and opens the
-# bump PR, because the pin can only name a merge commit once that commit exists.
-# The equivalent by hand, against the endpoint rather than the git objects:
-#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
-#     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
-#   done
-PIN=9536835c92d4cdd8be02c93cc30b024455b7353d
-SUM_session_start_dispatch_mjs=4da7bb6e85bc0cdb48a5ca9243ce3154b36432a753927230a284dd39b6c6ffcb
-SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
-SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
-
-# Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
-# to a temp name and only moves it into place after the check, so an unverified
-# file never sits at a path something might execute.
-fetch_verified() {
-  local f="$1" want="$2" got
-  curl -fsSL --retry 2 \
-    "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
-    -o "$BOOT/$f.unverified" || { echo "bootstrap: WARN could not fetch $f"; return 1; }
-  got="$(sha256sum "$BOOT/$f.unverified" | cut -d' ' -f1)"
-  if [ "$got" != "$want" ]; then
-    echo "bootstrap: REFUSING $f — sha256 mismatch, not executing it"
-    echo "bootstrap:   expected $want"
-    echo "bootstrap:   got      $got"
-    rm -f "$BOOT/$f.unverified"
-    return 1
-  fi
-  mv "$BOOT/$f.unverified" "$BOOT/$f"
-}
-
-# The attached checkout is NOT digest-checked: it arrives over the session's git
-# proxy with git's own integrity, and it may legitimately be NEWER than PIN — so
-# comparing it against these digests would fail on every merge. Only the fetched
-# copy is verified, because only it is fetched.
-if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
-  echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
-  BOOT=/opt/bounded-boot
-  mkdir -p "$BOOT"
-  fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
-  fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
-  fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh"
-fi
-
-# Both scripts self-locate from their own path, which is correct in the attached
-# checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
-# the first case and load-bearing in the second.
-mkdir -p "$HOME/.claude"
-if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
-  cat > "$HOME/.claude/settings.json" <<JSON
-{
-  "hooks": {
-    "SessionStart": [
-      { "matcher": "", "hooks": [ { "type": "command",
-        "command": "CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" } ] }
-    ]
-  }
-}
-JSON
-else
-  echo "bootstrap: WARN no dispatcher — repo SessionStart hooks will not run"
-fi
-
-# Keep this call. The dispatcher re-runs register-mcp.mjs as a fallback (#84), but
-# only THIS one is ordered before Claude Code launches and reads the tool list.
-if [ -f "$BOOT/register-mcp.mjs" ]; then
-  CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
-else
-  echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
-fi
-
-# Replace the platform's Stop hook with the infra#112 fix. The stock one scopes
-# its check to `origin/<branch>..HEAD`, which after a squash merge includes
-# GitHub's own merge commit — so it warned "Unverified" after EVERY merge and
-# advised an --amend that would rewrite already-merged history. Copied rather than
-# executed here, but still digest-verified above when fetched, so the fallback
-# path installs the same bytes the attached checkout would.
-if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$HOME/.claude" ]; then
-  cp "$BOOT/stop-hook-git-check.sh" "$HOME/.claude/stop-hook-git-check.sh"
-  chmod +x "$HOME/.claude/stop-hook-git-check.sh"
-  echo "bootstrap: stop-hook patched (infra#112)"
-fi
-
-echo "bootstrap: ready — dispatcher at $BOOT"
+curl -fsSL "$ORG_BOOT_URL" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
 ```
 
-**The heredoc is deliberately unquoted** (`<<JSON`, not `<<'JSON'`) because `$ROOT`
-and `$BOOT` must interpolate. There is nothing else `$`-shaped in that JSON. If you
-add a field containing a literal `$`, escape it.
+`ORG_BOOT_URL` and `ORG_BOOT_SHA256` are environment-dialog variables, recorded
+in `.github-private` → `.claude/cloud-environment.json` alongside the other
+`ORG_`-prefixed pair — which puts them inside the `ORG_ENV_CONFIG` digest, the
+`env-record.yml` honesty gate, and `cloud-env-check.mjs`'s every-boot drift
+check. That is the point of the shape: the trust anchor moved from an ungated
+110-line field to two short values that are **written down, hashed, and
+machine-checked**. Get the current values with:
 
-**Bump `PIN` and both digests together whenever `.claude/` changes here.** A stale
-pin only affects the fallback path — an attached `.github` always wins — so the
-symptom is subtle: it works for you and not for a session without `.github`. This
-already bit once: #71 recorded the pin it branched from, which predated the file
-that PR exists to install, so the fallback fetched a 404 the moment it merged.
+```sh
+node .claude/gen-bootstrap-pin.mjs --outer origin/main
+```
 
-### Why two independent checks
+The URL half names a commit, so today it points at
+`raw.githubusercontent.com/bounded-systems/.github/<commit>/.claude/boot.sh`;
+when an org-owned endpoint exists (infra#245, `boot.bounded.tools`) the move is
+a dialog-var edit plus a record PR — the sha256 check makes the serving host
+non-trust-bearing, so the field line itself never changes.
 
-Pinning the URL to a commit SHA makes it immutable **if the endpoint is honest** —
+Every intermediate state fails safe: an unset variable, a 404, or wrong bytes
+all break the `&&` chain before `bash` runs, and the session starts with no
+hooks — the same posture the old field had when a fetch_verified refused a
+file. The `--status` flag keeps sha256sum quiet on success so the one loud
+path is the final `echo`.
+
+**Bump both layers together whenever `.claude/` changes here.** A boot.sh byte
+change — including the inner `PIN`/`SUM_*` rewrite a bump performs — moves
+`ORG_BOOT_SHA256`, so every pin bump implies a `.github-private` record PR and
+a dialog edit. The generator prints the implied pair on every bump, and a
+stale dialog pair is flagged at every session start by `cloud-env-check.mjs`
+rather than discovered by a failed probe. A stale pin still only affects the
+fallback path — an attached `.github` always wins — so the symptom stays
+subtle: it works for you and not for a session without `.github`. #71 recorded
+the pin it branched from, which predated the file that PR existed to install,
+so the fallback fetched a 404 the moment it merged.
+
+### Migration runbook (field → one line)
+
+The operator types the field by hand, so the order is arranged to fail safe at
+every step:
+
+1. Merge the #125 PR (boot.sh + retargeted generator/tests + this text).
+2. Let `org-defaults.yml` open and land the pin-bump PR naming the merge
+   commit; then run `node .claude/gen-bootstrap-pin.mjs --outer origin/main`
+   for the final pair.
+3. Merge the `.github-private` record PR (.github-private#314): the two
+   `ORG_BOOT_*` variables, the `raw.githubusercontent.com` domain entry, and
+   the recomputed `ORG_ENV_CONFIG` digest, placeholder-first.
+4. In **one** dialog visit: add `ORG_BOOT_URL` + `ORG_BOOT_SHA256`, update
+   `ORG_ENV_CONFIG`, and replace the setup-script field with the one line
+   above. (This is the deliberate restoration of the drifted field — the
+   reduced remnant is discarded, not patched.)
+5. Fresh session, then verify: `cloud-env-check` shows no stale-pair warning;
+   `~/.claude/settings.json` names the dispatcher; no
+   `WARN registered MCP server(s) the setup script did not` line; the Stop
+   hook is byte-equal to the repo copy. In a scratch environment, flip one hex
+   of `ORG_BOOT_SHA256` and confirm the REFUSED path installs nothing.
+
+Half-done states: variables missing → the chain fails closed; variables
+present but the old field still in place → old behavior, harmless.
+
+### Why the chain has three links
+
+Pinning a URL to a commit SHA makes it immutable **if the endpoint is honest** —
 the SHA is a path component the client never verifies, so a compromised or
 misconfigured host can serve anything under it. The SHA-256s are the check that
 does not require trusting the transport: they are compared locally, and a
 mismatch is refused whatever served the bytes.
 
-The digests live in the setup script, not in this repo, because the setup script
-is the one thing that is not fetched. Digests fetched alongside the files they
-describe verify nothing.
+A digest can only vouch for bytes it does not travel with — digests fetched
+alongside the files they describe verify nothing. So each link's digest lives
+one link closer to the operator than the bytes it verifies:
+
+1. **The dialog pair** (`ORG_BOOT_SHA256`, with `ORG_BOOT_URL`) — the root.
+   Never fetched: typed into the environment dialog, recorded in
+   `.github-private`'s `cloud-environment.json`, hashed into `ORG_ENV_CONFIG`,
+   gated by `env-record.yml`, drift-checked at every boot.
+2. **boot.sh's `PIN`/`SUM_*` block** — fetched, but only ever executed after
+   the field verified boot.sh against link 1, so the inner digests are
+   transitively anchored.
+3. **The three artifacts** — fetched by boot.sh, refused unless they hash to
+   link 2's digests, exactly as before.
+
+The old design had two links with the root in the field itself; the root is
+now *smaller* (two values instead of a script) and *gated* (the field never
+was). What it costs: every boot.sh byte change moves link 1, which is a record
+PR plus a dialog edit — the bump procedure above.
 
 Verification **fails closed**. A file that does not match is deleted rather than
 left at a path something might execute, and if the dispatcher fails to verify, no
@@ -255,7 +217,11 @@ done
 ```
 
 That compares the raw endpoint against git's own hash chain, which is the check
-that would catch a host serving something the commit does not contain.
+that would catch a host serving something the commit does not contain. The
+outer link is confirmed the same way:
+`node .claude/gen-bootstrap-pin.mjs --outer <commit>` prints what the dialog
+should say, and the dialog pair disagreeing with it is exactly what
+`cloud-env-check.mjs` flags at session start.
 
 The dispatcher locates the repos itself — it resolves the session root from its own
 path — so the command above only has to point at the file. Adjust it if the repos
@@ -273,10 +239,12 @@ without displacing the git-identity hook. If a session ever shows the dispatcher
 not running while `session-start-git-identity.sh` does, that merge is the thing to
 check first.
 
-**Keep that pointer a pointer.** It is the one piece of this machinery living outside
-version control, where no reviewer and no drift gate can see it. Logic added there is
-unreviewable — the failure mode infra#122 was filed about. Everything real belongs in
-this repo.
+**Keep that pointer a pointer.** The field (one line) and the two dialog
+variables are the only pieces of this machinery living outside version control
+— and the variables, unlike the field, are at least *recorded* and digest-gated
+via `.github-private`'s `cloud-environment.json`. Logic added to the field is
+unreviewable — the failure mode infra#122 was filed about. Everything real
+belongs in this repo, in `boot.sh` or behind it.
 
 ### Requires `.github` to be attached
 

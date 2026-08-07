@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { digestsAt, inspect, parseBootstrap, planBump, renderBootstrap, sha256 } from "./gen-bootstrap-pin.mjs";
+import { digestsAt, inspect, outerPair, parseBootstrap, parseSteps, planBump, renderBootstrap, sha256 } from "./gen-bootstrap-pin.mjs";
 
 const A = "a".repeat(40);
 const B = "b".repeat(40);
@@ -211,6 +211,33 @@ test("a broken digest is repaired even when no fetched file changed", () => {
 
 test("a document with no pin is an error, not a silent pass", () => {
   assert.throws(() => inspect("no pin here", { read }), /lost its pin/);
+});
+
+// ── The raw-script parse and the outer pair (.github#125) ────────────────────
+
+test("parseSteps reads a raw script the same as a fenced block", () => {
+  // boot.sh is a bare script (shebang first); fixtures and embedded docs still
+  // carry fences. Both must enumerate identically, or the gate silently stops
+  // reading the file the field actually fetches.
+  const body = '#!/usr/bin/env bash\ncp "$BOOT/thing.sh" "$HOME/.claude/thing.sh"\n';
+  const fenced = "```sh\n" + body + "```";
+  assert.deepEqual(
+    parseSteps(body).map((s) => s.artifact),
+    parseSteps(fenced).map((s) => s.artifact),
+  );
+});
+
+test("the outer pair names the commit and hashes its boot.sh", () => {
+  // The dialog pair the one-line field verifies against: the URL half is
+  // commit-addressed, the SHA half is content-addressed, and both come from
+  // the same commit — the same atomic-pair rule the inner PIN/SUM_* lives by.
+  const readBoot = (commit, file) => {
+    assert.equal(file, "boot.sh");
+    return Buffer.from(`boot@${commit}`);
+  };
+  const got = outerPair(A, { read: readBoot });
+  assert.equal(got.ORG_BOOT_URL, `https://raw.githubusercontent.com/bounded-systems/.github/${A}/.claude/boot.sh`);
+  assert.equal(got.ORG_BOOT_SHA256, sha256(`boot@${A}`));
 });
 
 test("a pin with nothing fetched is an error, not a silent pass", () => {
