@@ -25,7 +25,10 @@
 # Install is `cargo install path-cli`, not the vendor's `curl | bash`: the
 # registry index carries per-crate checksums that cargo verifies locally, which
 # keeps the same no-unverified-bytes posture the bootstrap's fetch_verified
-# enforces. The cost is a multi-minute compile, so the install runs in the
+# enforces. `--locked` builds the exact dependency set path-cli's own lockfile
+# pins, not whatever the registry resolves to at install time — an unlocked
+# install compiled zune-jpeg 0.5.15, broken as published, and failed
+# (.github#121). The cost is a multi-minute compile, so the install runs in the
 # BACKGROUND and session start never waits on it; the log is the record. A
 # digest-pinned prebuilt binary is the follow-up ratchet once egress is open
 # and a digest can be captured (.github#112's last checkbox).
@@ -150,7 +153,7 @@ fi
 mkdir -p "$(dirname "$LOG")"
 echo "toolpath: installing path-cli in the background — log: $LOG"
 nohup sh -c '
-  if cargo install path-cli; then
+  if cargo install path-cli --locked; then
     echo "toolpath-install: done — $(path --version 2>/dev/null || echo installed)"
   else
     echo "toolpath-install: FAILED — see the cargo output above"
