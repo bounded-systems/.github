@@ -33,20 +33,32 @@ set -uo pipefail
 
 LOG="${HOME:-/root}/.claude/toolpath-install.log"
 
-# ── Pathbase lease (.github#115 step 3: hook wiring) ─────────────────────────
-# If the environment carries the two lease levers, redeem them into the
+# ── Pathbase lease (.github#115 step 3 wiring; #119 grant flow) ──────────────
+# If the environment carries the two lease levers, turn them into the
 # credentials file a stock `path` reads. Both levers are environment-owner
 # config (the environment selector), and their absence is the normal case —
-# skip silently, not degraded. The lease endpoint is the broker's /lease/<name>
-# tier (infra), whose response IS credentials.json's shape ({url, token, user})
-# by design, so this block is a fetch and a 0600 write, no assembly.
+# skip silently, not degraded.
 #
-# Ordering: BEFORE the install/early-exit ladder, so a container whose `path`
-# is still compiling in the background redeems now and is authed the moment the
-# binary lands — and the already-installed branch below reports the auth state
-# this block just established. A REAL login always wins: an existing
-# credentials file is never overwritten (report it instead; `path auth logout`
-# is the release).
+# The broker's /lease/<name> tier answers in one of two shapes, and the hook
+# handles both because the registry — not this script — decides which:
+#   {url, code, expires_in}  GRANT mode (#119, the default for pathbase): a
+#                            short-lived single-use pairing code. The hook
+#                            redeems it at the vendor's public redeem endpoint
+#                            — unauthenticated by design, the code IS the auth
+#                            — and receives a token minted FOR THIS SESSION,
+#                            individually revocable at the vendor. Redeeming
+#                            via curl rather than `path auth login --code` is
+#                            deliberate: the binary may still be compiling in
+#                            the background, and a 10-minute code must not
+#                            wait on a 5-minute compile.
+#   {url, token, user}       VAULT mode: already credentials.json's shape;
+#                            written as-is.
+#
+# Ordering: BEFORE the install/early-exit ladder, so the container is authed
+# the moment the binary lands — and the already-installed branch below reports
+# the auth state this block just established. A REAL login always wins: an
+# existing credentials file is never overwritten (report it instead;
+# `path auth logout` is the release).
 CRED_DIR="${TOOLPATH_CONFIG_DIR:-${HOME:-/root}/.toolpath}"
 CRED_FILE="$CRED_DIR/credentials.json"
 if [ -n "${PATHBASE_LEASE_URL:-}" ] && [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
@@ -59,10 +71,42 @@ if [ -n "${PATHBASE_LEASE_URL:-}" ] && [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
       -H "Authorization: Bearer $PATHBASE_LEASE_KEY" \
       -H "X-Session-Id: ${CLAUDE_CODE_SESSION_ID:-unknown}" \
       "$PATHBASE_LEASE_URL" 2>/dev/null || true)"
-    if [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"token"'; then
+    # Grant shape → redeem the code for this session's own token. python3 is
+    # in the cloud image (this is a cloud-session hook); it does the JSON
+    # handling so the code and token never transit argv or a shell variable
+    # expansion inside a larger command line.
+    if [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"code"' && command -v python3 >/dev/null 2>&1; then
+      creds="$(printf '%s' "$lease" | python3 -c '
+import json, sys, urllib.request
+lease = json.load(sys.stdin)
+req = urllib.request.Request(
+    lease["url"] + "/api/v1/auth/cli/redeem",
+    data=json.dumps({"code": lease["code"]}).encode(),
+    headers={"content-type": "application/json"},
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=10) as r:
+        body = json.load(r)
+except Exception:
+    sys.exit(1)
+if not body.get("token"):
+    sys.exit(1)
+print(json.dumps({"url": lease["url"], "token": body["token"], "user": body.get("user", {})}))
+' 2>/dev/null || true)"
+      if [ -n "$creds" ]; then
+        mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
+        printf '%s' "$creds" > "$CRED_FILE" && chmod 600 "$CRED_FILE"
+        echo "toolpath: Pathbase grant redeemed — this session has its own token at $CRED_FILE (revoke just this one at the vendor, or \`path auth logout\`)"
+      else
+        # The code is single-use and 10-minute — a failed redeem burns it, and
+        # re-leasing mints a fresh one, so say WHICH leg failed.
+        echo "toolpath: Pathbase lease minted a code but the REDEEM failed — sharing will be anonymous. Vendor redeem endpoint unreachable or code rejected (.github#119)."
+      fi
+    elif [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"token"'; then
       mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
       printf '%s' "$lease" > "$CRED_FILE" && chmod 600 "$CRED_FILE"
-      echo "toolpath: Pathbase lease redeemed — credentials at $CRED_FILE (release: rotate the lease key, or \`path auth logout\`)"
+      echo "toolpath: Pathbase lease redeemed (vault mode — the shared credential) — credentials at $CRED_FILE (release: rotate the lease key, or \`path auth logout\`)"
     else
       # Fail soft and SAY so: a refused lease is an environment/broker state
       # the session cannot fix, but silence here is how #117's lesson repeats.
