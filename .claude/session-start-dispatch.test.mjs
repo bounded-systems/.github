@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyEntry,
   applyManifest,
+  childEnv,
   extractContext,
   findRepos,
   mcpDriftContext,
@@ -119,6 +120,27 @@ test("the session root is this repo's PARENT, not the process home directory", (
   // found nothing and exited 0 with "nothing to do".
   assert.equal(sessionRootFrom("file:///home/user/.github/.claude/session-start-dispatch.mjs"), "/home/user");
   assert.equal(sessionRootFrom("file:///srv/work/org-defaults/.claude/session-start-dispatch.mjs"), "/srv/work");
+});
+
+test("child hooks receive CLAUDE_SESSION_ROOT and a per-repo CLAUDE_PROJECT_DIR", () => {
+  // The contract .github-private's check-session-scope.sh gates on (2026-08-08):
+  // the variable must reach children even when the invoking command did not set
+  // it inline — cloud front-desk sessions rely on self-location, and the floor
+  // proved that gating a child hook on a platform variable instead leaves it
+  // silently dead. Dropping either substitution here would be equally silent,
+  // which is why the seam is pinned rather than trusted.
+  const env = childEnv("/root/infra", { base: { PATH: "/bin" }, sessionRoot: "/root" });
+  assert.equal(env.CLAUDE_SESSION_ROOT, "/root");
+  assert.equal(env.CLAUDE_PROJECT_DIR, "/root/infra");
+  assert.equal(env.PATH, "/bin"); // the parent environment still rides along
+});
+
+test("a stale inherited CLAUDE_SESSION_ROOT is overwritten, not passed through", () => {
+  // Being wrong about the session root is precisely the state the dispatcher
+  // corrects (see IRREDUCIBLE) — a child must never see a value the dispatcher
+  // itself has rejected.
+  const env = childEnv("/root/infra", { base: { CLAUDE_SESSION_ROOT: "/" }, sessionRoot: "/root" });
+  assert.equal(env.CLAUDE_SESSION_ROOT, "/root");
 });
 
 // ── Which repos get dispatched to ────────────────────────────────────────────
