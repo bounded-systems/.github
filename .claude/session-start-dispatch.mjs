@@ -564,13 +564,32 @@ export function syncStopHook({ sourceDir = HERE, targetDir = join(homedir(), ".c
   return result.state;
 }
 
+/**
+ * The environment contract every child hook runs under.
+ *
+ * CLAUDE_PROJECT_DIR is what each repo's hook expects to point at ITSELF. The
+ * session root's value (unset, or the root) is wrong for every child, so it is
+ * rebound per repo — this is the substitution that makes the existing hooks work
+ * unmodified.
+ *
+ * CLAUDE_SESSION_ROOT is exported unconditionally (2026-08-08): the dispatcher
+ * already knows the session root — env override or self-location, see
+ * `sessionRootFrom` — but children only saw it when the invoking command
+ * happened to set it inline, which the devcontainer floor's settings do and
+ * cloud front-desk sessions do not. That asymmetry is what let
+ * .github-private's check-session-scope.sh gate on CLAUDE_CODE_REMOTE instead —
+ * a platform variable the platform silently dropped on the floor, leaving the
+ * detector dead there. Passing the root down makes "was I fanned out by this
+ * dispatcher, and over what root" an org-owned fact a child can gate on and
+ * read, instead of a platform variable nothing here controls.
+ */
+export function childEnv(repoDir, { base = process.env, sessionRoot = SESSION_ROOT } = {}) {
+  return { ...base, CLAUDE_PROJECT_DIR: repoDir, CLAUDE_SESSION_ROOT: sessionRoot };
+}
+
 async function runHook(repoDir, command) {
   const label = `${command.split("/").pop()} (${repoDir.split("/").pop()})`;
-  // CLAUDE_PROJECT_DIR is what each repo's hook expects to point at ITSELF. The
-  // session root's value (unset, or the root) is wrong for every child, so it is
-  // rebound per repo — this is the substitution that makes the existing hooks work
-  // unmodified.
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: repoDir };
+  const env = childEnv(repoDir);
   try {
     const { stdout, stderr } = await pexecFile("bash", ["-lc", command], {
       cwd: repoDir,
