@@ -1,0 +1,11 @@
+.claude/session-start-dispatch.mjs
+  bdb61dc164e05588 567-589,592
+.claude/session-start-dispatch.test.mjs
+  bdb61dc164e05588 18,125-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8f22a483a19524d8f291afb0222e3723860890e9",
+  "prompts": {}
+}
