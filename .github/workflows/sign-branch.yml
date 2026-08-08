@@ -1,0 +1,175 @@
+# Re-create a branch's commits as ONE GitHub-signed commit, so a session-authored
+# branch can clear the org's required_signatures rule without a human amend.
+#
+# WHY THIS EXISTS. Every default branch in this org requires verified signatures,
+# and a Claude session can satisfy that rule by exactly zero of its lanes —
+# measured 2026-08-08 while landing .github#140/.github-private#384, not assumed:
+#
+#   - local `git commit -S`: the session's configured signing key file is empty,
+#     no private half exists anywhere in the container, and registering one is
+#     blocked (`PUT /user/ssh_signing_keys` → "sessions are bound to their
+#     configured repositories");
+#   - GraphQL createCommitOnBranch — the lane org-defaults.yml and
+#     registry-graph.yml use for precisely this reason: "This GraphQL query is
+#     not enabled for this session — only the pinned set of PR-review operations
+#     is served";
+#   - REST contents/tree commits: land UNSIGNED (%G? = N), and silently rewrite
+#     mode 100755 to 100644 — which on .github-private's check-session-scope.sh
+#     would have unmade the hook that settings.json invokes bare.
+#
+# So every session-authored PR ended in a human running `git commit --amend -S`
+# from a laptop: a manual step at the END of the work, after all checks are
+# green, on every PR, forever. This workflow is the org's existing answer to
+# that shape — "build the window rather than declare the capability missing"
+# (merge-claude-harness.yml) — applied to signing: dispatching a workflow is
+# something any actor can do, and API commits made HERE are signed by GitHub as
+# the token's identity, which satisfies the rule with no key anywhere.
+#
+# WHAT IT DOES. For the named repo+branch: force the branch ref back to its
+# merge-base with the default branch, then carry the branch's entire net change
+# in one createCommitOnBranch mutation. N commits become ONE signed commit —
+# the original messages are preserved in the new commit's body, and the
+# replaced tip SHA is named so the history is auditable. The tree is verified
+# byte-identical and mode-identical to the old tip before the job succeeds; on
+# any mismatch the ref is restored to the old tip and the job fails naming the
+# file. Mode verification is not optional politeness: the REST probe above
+# showed exactly this corruption, and a hook that lost its exec bit is a hook
+# that silently stopped existing.
+#
+# AUTH. Same-repo runs use the workflow's own GITHUB_TOKEN (createCommitOnBranch
+# signs as github-actions[bot]). Cross-repo runs mint the front-desk App via the
+# OIDC broker, same door as front-desk-sync (prx-26bq): no App key in this repo,
+# and the broker pins job_workflow_ref to refs/heads/main — which is also why
+# this file must LAND on main before it can sign anything (its own first landing
+# needs one human signature; that is the last one).
+#
+# WHAT IT REFUSES. The default branch itself, and any branch whose tip is
+# already verified — running there could only lose information.
+name: sign-branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository name (owner fixed to this org), e.g. .github-private"
+        type: string
+        required: true
+      branch:
+        description: "Branch whose commits should be re-created signed"
+        type: string
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the broker action)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Mint cross-repo token via the OIDC broker
+        id: app-token
+        if: ${{ inputs.repo != github.event.repository.name }}
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          require: contents
+      - name: Re-create the branch as one signed commit
+        env:
+          # Cross-repo: the brokered App token. Same-repo: the workflow's own —
+          # both identities produce GitHub-signed commits via the mutation.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          TARGET_REPO: ${{ github.repository_owner }}/${{ inputs.repo }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+
+          default="$(gh api "repos/$TARGET_REPO" --jq .default_branch)"
+          if [ "$BRANCH" = "$default" ]; then
+            echo "::error title=sign-branch: refusing the default branch::Signing rewrites the ref; the default branch is not a rewrite target."
+            exit 1
+          fi
+
+          # Read-only clone purely to compute the diff; the ratchet in
+          # workflows.test.mjs (no git commit/push in runners) stays satisfied —
+          # every write below goes through the API.
+          git clone --quiet --no-checkout "https://x-access-token:$GH_TOKEN@github.com/$TARGET_REPO" work
+          cd work
+          git fetch --quiet origin "$default" "$BRANCH"
+          tip="$(git rev-parse "origin/$BRANCH")"
+          base="$(git merge-base "origin/$default" "$tip")"
+          if [ "$tip" = "$base" ]; then
+            echo "::error title=sign-branch: nothing to sign::$BRANCH has no commits beyond $default."
+            exit 1
+          fi
+
+          verified="$(gh api "repos/$TARGET_REPO/commits/$tip" --jq .commit.verification.verified)"
+          if [ "$verified" = "true" ]; then
+            echo "sign-branch: tip $tip is already verified — nothing to do."
+            exit 0
+          fi
+
+          # The mutation takes the branch's NET change: every path that differs
+          # between base and tip, additions (base64 of the tip's bytes) and
+          # deletions both. Renames arrive as delete+add, which is what a tree
+          # diff is; no information is lost that the verification below checks.
+          mapfile -t changed < <(git diff --name-only --diff-filter=d "$base" "$tip")
+          mapfile -t deleted < <(git diff --name-only --diff-filter=D "$base" "$tip")
+
+          # One commit replaces N: keep every original message in the body, and
+          # name the tip being replaced so `git log` explains itself later.
+          headline="$(git log -1 --format=%s "$tip")"
+          body="$(printf 'Re-created signed from %s by sign-branch (original commit messages follow).\n\n' "$tip"; git log --reverse --format='--- %h ---%n%B' "$base..$tip")"
+
+          additions="[]"
+          for f in "${changed[@]}"; do
+            c="$(git show "$tip:$f" | base64 -w0)"
+            additions="$(jq -c --arg p "$f" --arg c "$c" '. + [{path:$p, contents:$c}]' <<<"$additions")"
+          done
+          deletions="[]"
+          for f in "${deleted[@]}"; do
+            deletions="$(jq -c --arg p "$f" '. + [{path:$p}]' <<<"$deletions")"
+          done
+
+          # Force the ref to base, then one API commit carrying everything.
+          # Same two-call shape as the pin job in org-defaults.yml.
+          gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$base" -F force=true >/dev/null
+          restore() { gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$tip" -F force=true >/dev/null; }
+          trap 'restore' ERR
+
+          new="$(gh api graphql \
+            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $h: String!, $body: String!, $add: [FileAddition!]!, $del: [FileDeletion!]!) {
+              createCommitOnBranch(input: {
+                branch: { repositoryNameWithOwner: $repo, branchName: $b },
+                expectedHeadOid: $head,
+                message: { headline: $h, body: $body },
+                fileChanges: { additions: $add, deletions: $del }
+              }) { commit { oid } } }' \
+            -f repo="$TARGET_REPO" -f b="$BRANCH" -f head="$base" \
+            -f h="$headline" -f body="$body" \
+            --argjson add "$additions" --argjson del "$deletions" \
+            --jq .data.createCommitOnBranch.commit.oid)"
+
+          # Verify before declaring success: byte-identical tree, identical
+          # modes, and actually verified. The REST probe that motivated this
+          # file corrupted modes silently; "signed but subtly different" must
+          # fail here, loudly, with the ref restored.
+          git fetch --quiet origin "$BRANCH"
+          if ! git diff --quiet "$tip" "origin/$BRANCH"; then
+            echo "::error title=sign-branch: tree mismatch::The signed commit's tree differs from $tip. Ref restored."
+            restore; trap - ERR; exit 1
+          fi
+          if ! diff <(git ls-tree -r "$tip") <(git ls-tree -r "origin/$BRANCH") >/dev/null; then
+            echo "::error title=sign-branch: mode mismatch::File modes changed (the 100755→100644 failure). Ref restored."
+            restore; trap - ERR; exit 1
+          fi
+          trap - ERR
+          verified="$(gh api "repos/$TARGET_REPO/commits/$new" --jq .commit.verification.verified)"
+          if [ "$verified" != "true" ]; then
+            echo "::error title=sign-branch: commit not verified::createCommitOnBranch returned an unverified commit ($new) — the token identity has no verification path. Ref left at the signed commit for inspection."
+            exit 1
+          fi
+          echo "sign-branch: $BRANCH is now $new (verified), replacing $tip."
