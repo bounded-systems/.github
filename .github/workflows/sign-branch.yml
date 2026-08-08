@@ -69,12 +69,20 @@ jobs:
     steps:
       - name: Checkout (for the broker action)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # Its own broker entry, per the doctrine claim-ticket.yml's header states:
+      # the fan-in `front-desk` entry must not grow a scope because one window
+      # needs it — and the first cross-repo dispatch (run 31233034996) proved it
+      # does not carry `contents` at all; the preflight failed at mint naming
+      # the gap, exactly as designed. Until the broker registry (infra) carries
+      # a `front-desk-sign` entry requesting `contents` and pinned to this
+      # workflow at refs/heads/main, cross-repo runs fail at that same line and
+      # SAME-REPO runs are unaffected (they use the workflow's own token).
       - name: Mint cross-repo token via the OIDC broker
         id: app-token
         if: ${{ inputs.repo != github.event.repository.name }}
         uses: ./.github/actions/broker-gh-token
         with:
-          app: front-desk
+          app: front-desk-sign
           broker-url: ${{ vars.CF_BROKER_URL }}
           require: contents
       - name: Re-create the branch as one signed commit
