@@ -36,8 +36,8 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
-PIN=ec84469401fbbd03e4019b1bc8f6b0e6707ee86c
-SUM_session_start_dispatch_mjs=0c145e502a32dcca7f9c368177d2af85cea0d261f82db5341ccf53684ff3505d
+PIN=9ee7da40d7d90625545af2702a2ad69b50a2850a
+SUM_session_start_dispatch_mjs=02156a613cae710588fcabaaba69bbbb38ec8dc2796022dbcb8c82795e4c63f0
 SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
 SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
 
