@@ -63,12 +63,18 @@ jobs:
     steps:
       - name: Checkout (for the broker action)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      # Its own broker entry, same reasoning as sign-branch.yml's mint step: the
+      # fan-in `front-desk` app is the board door and does not (and must not
+      # grow to) carry `contents`. Cross-repo sweeps fail at mint until the
+      # broker registry (infra) adds `front-desk-sweep` requesting `contents`,
+      # pinned to this workflow at refs/heads/main; same-repo sweeps run today
+      # on the workflow's own token.
       - name: Mint cross-repo token via the OIDC broker
         id: app-token
         if: ${{ inputs.repo != github.event.repository.name }}
         uses: ./.github/actions/broker-gh-token
         with:
-          app: front-desk
+          app: front-desk-sweep
           broker-url: ${{ vars.CF_BROKER_URL }}
           require: contents
       - name: Sweep
