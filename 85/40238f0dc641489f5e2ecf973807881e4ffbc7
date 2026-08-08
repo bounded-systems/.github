@@ -1,0 +1,11 @@
+.github/workflows/branch-sweep.yml
+  4a4f612cd9ec17f4 1-120
+.github/workflows/sign-branch.yml
+  4a4f612cd9ec17f4 1-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8540238f0dc641489f5e2ecf973807881e4ffbc7",
+  "prompts": {}
+}
