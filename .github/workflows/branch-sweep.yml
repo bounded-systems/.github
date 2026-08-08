@@ -1,0 +1,120 @@
+# Delete branches whose work is over, because nothing else ever will.
+#
+# WHY THIS EXISTS. delete_branch_on_merge is on for the org's repos, so MERGED
+# branches already clean up. Everything else accumulates forever: branches whose
+# PR was closed unmerged, branches that never got a PR, probe/scratch branches.
+# Measured 2026-08-08: .github-private carried 36 non-default branches, zero of
+# them merged-but-undeleted — i.e. all 36 are the kinds auto-delete never
+# touches. And a session cannot clean up after itself even when it wants to:
+# ref deletion is refused on BOTH lanes a session has (git protocol — four
+# attempts, connection dropped; REST — "Write access to this GitHub API path is
+# not permitted through this proxy"), measured the same day while trying to
+# remove this repo's own tmp/api-mode-probe. So deletion lives here, in the
+# lane that holds the credential: same doctrine as merge-claude-harness.yml,
+# build the window rather than declare the capability missing.
+#
+# WHAT COUNTS AS OVER. A branch is a candidate only if ALL of:
+#   - it is not the default branch and not protected;
+#   - it has NO open PR (open work is never touched, however old);
+#   - its tip commit is older than `stale_days` (default 30) — recency is a
+#     claim of intent, so a fresh branch survives even with its PR closed;
+#   - OR it matches `prefix` exactly when one is given (tmp/ probes and the
+#     like), where age is waived because the name already says throwaway.
+#
+# Merged-branch tips are ancestors of the default branch, so a merged branch
+# that auto-delete somehow missed is also swept — its history is on main.
+# Everything else in the candidate set is closed-unmerged or never-PR'd work:
+# deleting the ref discards those commits, which is exactly what "the work is
+# over" means, and why open PRs are the hard exclusion rather than one input
+# among several.
+#
+# DRY RUN IS THE DEFAULT. A real run must be asked for twice: dispatch the
+# workflow AND flip the input. The dry run prints the same table the real run
+# acts on, so what-would-happen is always one cheap dispatch away.
+name: branch-sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository name (owner fixed to this org), e.g. .github-private"
+        type: string
+        required: true
+      dry_run:
+        description: "Preview only (list candidates, delete nothing)"
+        type: boolean
+        default: true
+      stale_days:
+        description: "Tip age in days before a PR-less branch is a candidate"
+        type: string
+        default: "30"
+      prefix:
+        description: "Also sweep branches under this prefix regardless of age (e.g. tmp/)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for the broker action)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Mint cross-repo token via the OIDC broker
+        id: app-token
+        if: ${{ inputs.repo != github.event.repository.name }}
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          require: contents
+      - name: Sweep
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          TARGET_REPO: ${{ github.repository_owner }}/${{ inputs.repo }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+          PREFIX: ${{ inputs.prefix }}
+        run: |
+          set -euo pipefail
+
+          default="$(gh api "repos/$TARGET_REPO" --jq .default_branch)"
+          cutoff="$(date -u -d "$STALE_DAYS days ago" +%s)"
+
+          # Open PR head branches: the hard exclusion. Paginated so a repo with
+          # more than a page of open PRs does not silently widen the sweep —
+          # a truncated exclusion list is the one failure here that deletes
+          # something it should not.
+          open_heads="$(gh api --paginate "repos/$TARGET_REPO/pulls?state=open&per_page=100" --jq '.[].head.ref' | sort -u)"
+
+          swept=0 kept=0
+          while IFS=$'\t' read -r name protected; do
+            [ "$name" = "$default" ] && continue
+            [ "$protected" = "true" ] && { echo "keep   $name (protected)"; kept=$((kept+1)); continue; }
+            if grep -qxF "$name" <<<"$open_heads"; then
+              echo "keep   $name (open PR)"; kept=$((kept+1)); continue
+            fi
+            if [ -n "$PREFIX" ] && [[ "$name" == "$PREFIX"* ]]; then
+              reason="prefix $PREFIX"
+            else
+              tip_date="$(gh api "repos/$TARGET_REPO/branches/$name" --jq .commit.commit.committer.date)"
+              tip_epoch="$(date -u -d "$tip_date" +%s)"
+              if [ "$tip_epoch" -ge "$cutoff" ]; then
+                echo "keep   $name (tip ${tip_date%T*}, younger than ${STALE_DAYS}d)"; kept=$((kept+1)); continue
+              fi
+              reason="tip ${tip_date%T*}, no open PR"
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "WOULD DELETE  $name ($reason)"
+            else
+              gh api -X DELETE "repos/$TARGET_REPO/git/refs/heads/$name" >/dev/null
+              echo "deleted       $name ($reason)"
+            fi
+            swept=$((swept+1))
+          done < <(gh api --paginate "repos/$TARGET_REPO/branches?per_page=100" --jq '.[] | [.name, (.protected|tostring)] | @tsv')
+
+          verb="would sweep"; [ "$DRY_RUN" = "true" ] || verb="swept"
+          echo "branch-sweep: $verb $swept branch(es), kept $kept, in $TARGET_REPO."
