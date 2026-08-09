@@ -182,6 +182,47 @@ commands. It is not practised in code comments, which is where this one lived.
 `CONTRIBUTING.md`. A gate would have to distinguish an impossibility claim from
 ordinary prose, which is not worth the false positives.
 
+### Worked example: "this session cannot sign commits" (2026-08-08, false)
+
+**A session CAN produce verified commits.** `/root/.gitconfig` sets
+`gpg.format=ssh` and `gpg.ssh.program=/tmp/code-sign`, a harness shim present
+from container start that signs as the `claude` GitHub account. GitHub reports
+`verification.verified=true, reason=valid`. **Never pass
+`-c commit.gpgsign=false`** — it silently disables a working signer.
+
+Recorded because the opposite was claimed, with a method, and the method was
+wrong. The session found `user.signingkey` pointing at a **0-byte** file with no
+private half and concluded it could not sign. That file is not the signer; the
+`gpg.ssh.program` shim is, and it never reads it. Three further routes were then
+measured and correctly found closed — GraphQL `createCommitOnBranch` blocked for
+sessions, REST tree commits unsigned, `/user/ssh_signing_keys` 403 — which made
+the conclusion *look* thoroughly evidenced. Four rows, one of them false, and the
+false one was the only row that mattered.
+
+The cost is the asymmetry this invariant is about: three human `--amend -S`
+round-trips, and a detour through the OIDC broker and a proposed signing
+workflow, to rebuild a capability that already worked. It surfaced only when an
+unrelated empty-commit probe came back signed.
+
+**The method that would have settled it in one step** — and the one to use before
+recording any signing "cannot":
+
+```sh
+git commit --allow-empty -m probe && git cat-file commit HEAD | grep -c gpgsig
+# 1 = signed. Then check GitHub's verdict, which is the one that gates merges:
+#   gh api repos/{owner}/{repo}/commits/{sha} --jq .commit.verification
+```
+
+Note `git log --format='%G?'` prints `N` here even when the commit *is* signed —
+local verification needs `gpg.ssh.allowedSignersFile`, which is absent. Reading
+`%G?` as "unsigned" is the same mistake one layer down: it reports what this
+container can verify, not what GitHub will.
+
+Generalisation, which is the reason this sits under I4 rather than in a runbook:
+the failed check tested an **artifact the capability does not use**. Prefer
+exercising the capability over inspecting its presumed inputs — a test commit
+over a key file, a dispatch over a permissions table.
+
 ---
 
 ## I5 — A missing capability is reported, never worked around silently
