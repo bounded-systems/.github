@@ -69,19 +69,25 @@ CRED_FILE="$CRED_DIR/credentials.json"
 # This is what lets the cf-token-broker.titular-0-kicks.workers.dev entry leave
 # the allowlist: broker.bounded.tools is under *.bounded.tools, already granted,
 # and it fronts the same Worker (verified byte-identical on /lease/<name>). Still
-# overridable for a scratch/test broker. The KEY alone is the trigger now — a
-# session with no lease key shares anonymously, exactly as before. Removing the
-# KEY too is the next step (broker /lease github-auth via the session's GH_TOKEN,
-# the front-desk-lease pattern; infra#270), which retires the last dialog secret.
+# overridable for a scratch/test broker. THE BEARER (2026-08-10, infra#270): a
+# lease key if the dialog still carries one, else the session's own GH_TOKEN —
+# the broker's /lease tier verifies the latter against GitHub live (GET /user)
+# and matches the login against the entry's public allowlist, so no shared
+# secret needs to exist anywhere. The key path stays honored so an environment
+# that still sets PATHBASE_LEASE_KEY keeps working during the transition; once
+# the github-auth broker is deployed, the dialog can simply delete the key and
+# sessions authenticate as themselves. No bearer at all → anonymous sharing,
+# exactly as before.
 PATHBASE_LEASE_URL="${PATHBASE_LEASE_URL:-https://broker.bounded.tools/lease/pathbase}"
-if [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
+PATHBASE_LEASE_BEARER="${PATHBASE_LEASE_KEY:-${GH_TOKEN:-}}"
+if [ -n "$PATHBASE_LEASE_BEARER" ]; then
   if [ -f "$CRED_FILE" ]; then
     echo "toolpath: lease levers set but credentials already exist — keeping the existing login ($CRED_FILE)"
   else
     # The broker records x-session-id as CLAIMED provenance (explicitly
     # unverified there); send what this runtime knows about itself.
     lease="$(curl -fsS --max-time 10 -X POST \
-      -H "Authorization: Bearer $PATHBASE_LEASE_KEY" \
+      -H "Authorization: Bearer $PATHBASE_LEASE_BEARER" \
       -H "X-Session-Id: ${CLAUDE_CODE_SESSION_ID:-unknown}" \
       "$PATHBASE_LEASE_URL" 2>/dev/null || true)"
     # Grant shape → redeem the code for this session's own token. python3 is
@@ -123,7 +129,7 @@ print(json.dumps({"url": lease["url"], "token": body["token"], "user": body.get(
     else
       # Fail soft and SAY so: a refused lease is an environment/broker state
       # the session cannot fix, but silence here is how #117's lesson repeats.
-      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Check the broker's LEASE_KEYS entry and the environment's lease key (.github#115)."
+      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Bearer was ${PATHBASE_LEASE_KEY:+the lease key}${PATHBASE_LEASE_KEY:-the session GH_TOKEN}; check the broker's LEASE_KEYS entry — key slots, or githubLogins for the token path (.github#115, infra#270)."
     fi
   fi
 fi
