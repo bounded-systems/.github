@@ -52,15 +52,19 @@
  * So freshness is judged as a claim about content (`planBump`): an older pin
  * that still serves byte-identical files is correct, and correct is a no-op.
  *
- * ── The OUTER pair ───────────────────────────────────────────────────────────
+ * ── The OUTER value ──────────────────────────────────────────────────────────
  * The chain gained a link above this file (.github#125): the one-line field
- * verifies boot.sh itself against a dialog-recorded ORG_BOOT_URL/ORG_BOOT_SHA256
- * pair, recorded in `.github-private` → `.claude/cloud-environment.json` and
- * gated there by env-record.yml. Any change to boot.sh's BYTES — including the
- * inner PIN/SUM_* rewrite a bump performs — moves ORG_BOOT_SHA256, so every
- * bump implies a record PR + dialog edit. The same commit-after-merge argument
- * applies one level up: the URL's commit can only name the merge commit once it
- * exists, so `--outer` is run AFTER the bump lands, against main.
+ * verifies boot.sh itself against a dialog-recorded ORG_BOOT_SHA256, recorded
+ * in `.github-private` → `.claude/cloud-environment.json` and gated there by
+ * env-record.yml. Since 2026-08-10 the fetch URL is DERIVED from that digest in
+ * the field text itself (boot.bounded.tools/<sha256>.sh, content-addressed) —
+ * there is no separate URL variable, so the two halves cannot disagree. Any
+ * change to boot.sh's BYTES — including the inner PIN/SUM_* rewrite a bump
+ * performs — moves ORG_BOOT_SHA256, so every bump implies: publish the new
+ * payload (infra cloudflare/boot + boot-deploy), PROBE the derived URL for a
+ * 200 whose bytes hash to the new digest (step zero — the record's procedure),
+ * then the record PR + dialog edit. `--outer` is run AFTER the bump lands,
+ * against main, and prints both the digest and the derived URL to probe.
  *
  * ── Usage ────────────────────────────────────────────────────────────────────
  *   node .claude/gen-bootstrap-pin.mjs --check            # verify; exit 1 on drift
@@ -76,7 +80,6 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT = join(HERE, "boot.sh");
-const RAW_BASE = "https://raw.githubusercontent.com/bounded-systems/.github";
 
 export const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
@@ -300,9 +303,14 @@ export function inspect(source, { commit = "HEAD", read = fileAtCommit } = {}) {
  */
 export function outerPair(commit, { read = fileAtCommit } = {}) {
   const bytes = read(commit, "boot.sh");
+  const sha = sha256(bytes);
   return {
-    ORG_BOOT_URL: `${RAW_BASE}/${commit}/.claude/boot.sh`,
-    ORG_BOOT_SHA256: sha256(bytes),
+    // Derived, not stored: since 2026-08-10 the field text computes this from
+    // $ORG_BOOT_SHA256 itself, so only the SHA is a dialog variable. Printed
+    // here because step zero (probe BEFORE writing the record) needs the URL,
+    // and deriving it in two places is how the pair drifted apart before.
+    ORG_BOOT_URL: `https://boot.bounded.tools/${sha}.sh`,
+    ORG_BOOT_SHA256: sha,
   };
 }
 
@@ -387,8 +395,9 @@ function main(argv) {
   // final (it hashes the bytes just written), but the URL's commit can only be
   // the merge commit this bump lands as. `--outer` completes it after merge.
   console.log(
-    `bootstrap-pin: outer pair implied by this bump — ORG_BOOT_SHA256=${sha256(next)}; ` +
-      `ORG_BOOT_URL commit = the commit this lands as (run: node .claude/gen-bootstrap-pin.mjs --outer origin/main after merge)`,
+    `bootstrap-pin: outer value implied by this bump — ORG_BOOT_SHA256=${sha256(next)}; ` +
+      `the URL is derived (boot.bounded.tools/<sha>.sh). Publish the payload (infra cloudflare/boot + boot-deploy), ` +
+      `PROBE it per step zero, then update the record + dialog (run: node .claude/gen-bootstrap-pin.mjs --outer origin/main after merge)`,
   );
   return 0;
 }

@@ -97,29 +97,39 @@ Since #125 the field is **one line**. Everything it used to do lives in
 [`boot.sh`](boot.sh) — fetched, digest-checked against a dialog-recorded pair,
 and only then executed — so the body is reviewed, tested and gated in-repo, and
 the only hand-typed text left is a line that changes only when its own failure
-behaviour does (once so far, 2026-08-10, adding retries — see below):
+behaviour does (twice so far, both 2026-08-10: retries for the measured
+init-time failure, then deriving the URL from the digest — see below):
 
 ```sh
-curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "$ORG_BOOT_URL" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
+curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/$ORG_BOOT_SHA256.sh" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
 ```
 
-`ORG_BOOT_URL` and `ORG_BOOT_SHA256` are environment-dialog variables, recorded
+`ORG_BOOT_SHA256` is the **single** environment-dialog variable left, recorded
 in `.github-private` → `.claude/cloud-environment.json` alongside the other
-`ORG_`-prefixed pair — which puts them inside the `ORG_ENV_CONFIG` digest, the
+`ORG_`-prefixed values — which puts it inside the `ORG_ENV_CONFIG` digest, the
 `env-record.yml` honesty gate, and `cloud-env-check.mjs`'s every-boot drift
 check. That is the point of the shape: the trust anchor moved from an ungated
-110-line field to two short values that are **written down, hashed, and
-machine-checked**. Get the current values with:
+110-line field to one short value that is **written down, hashed, and
+machine-checked**. Get the current value with:
 
 ```sh
 node .claude/gen-bootstrap-pin.mjs --outer origin/main
 ```
 
-The URL half names a commit, so today it points at
-`raw.githubusercontent.com/bounded-systems/.github/<commit>/.claude/boot.sh`;
-when an org-owned endpoint exists (infra#245, `boot.bounded.tools`) the move is
-a dialog-var edit plus a record PR — the sha256 check makes the serving host
-non-trust-bearing, so the field line itself never changes.
+There used to be a second variable. `ORG_BOOT_URL` carried the fetch location
+(first `raw.githubusercontent.com/<commit>/.claude/boot.sh`, then the
+content-addressed `boot.bounded.tools/<sha256>.sh` after infra#245 shipped on
+2026-08-10) — but the content-addressed endpoint makes the URL a pure function
+of the digest, so storing both was one fact written down twice, and the
+2026-08-10 near-miss in `.github-private` (a pair written pointing at an
+unpublished URL, caught only by probing) is exactly the mismatch that
+derivation makes unrepresentable. The field text now derives it. The serving
+host is part of the field text rather than the hashed record; it is
+non-trust-bearing (the sha256 check refuses wrong bytes regardless of host),
+so moving hosts again is a field-text edit — a deliberate, org-wide re-paste —
+not a dialog-var edit. The payload store is append-only (infra
+`cloudflare/boot/`), so a dialog holding an older digest keeps booting its
+older payload; publish and paste stay decoupled.
 
 Every intermediate state fails safe: an unset variable, a 404, or wrong bytes
 all break the `&&` chain before `bash` runs, and the session starts with no
@@ -204,7 +214,8 @@ A digest can only vouch for bytes it does not travel with — digests fetched
 alongside the files they describe verify nothing. So each link's digest lives
 one link closer to the operator than the bytes it verifies:
 
-1. **The dialog pair** (`ORG_BOOT_SHA256`, with `ORG_BOOT_URL`) — the root.
+1. **The dialog digest** (`ORG_BOOT_SHA256`; the URL is derived from it in the
+   field text, so there is no second value to keep consistent) — the root.
    Never fetched: typed into the environment dialog, recorded in
    `.github-private`'s `cloud-environment.json`, hashed into `ORG_ENV_CONFIG`,
    gated by `env-record.yml`, drift-checked at every boot.
