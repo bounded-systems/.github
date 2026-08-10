@@ -227,17 +227,20 @@ test("parseSteps reads a raw script the same as a fenced block", () => {
   );
 });
 
-test("the outer pair names the commit and hashes its boot.sh", () => {
-  // The dialog pair the one-line field verifies against: the URL half is
-  // commit-addressed, the SHA half is content-addressed, and both come from
-  // the same commit — the same atomic-pair rule the inner PIN/SUM_* lives by.
+test("the outer pair is content-addressed and the URL is derived from the SHA", () => {
+  // Since 2026-08-10 the outer URL is a pure function of the digest
+  // (boot.bounded.tools/<sha256>.sh), so the two halves CANNOT disagree —
+  // the mismatch class that used to be possible (URL pointing at bytes the
+  // SHA doesn't describe) is unrepresentable. Only the SHA is dialog state;
+  // the URL is printed for step zero's probe.
   const readBoot = (commit, file) => {
     assert.equal(file, "boot.sh");
     return Buffer.from(`boot@${commit}`);
   };
   const got = outerPair(A, { read: readBoot });
-  assert.equal(got.ORG_BOOT_URL, `https://raw.githubusercontent.com/bounded-systems/.github/${A}/.claude/boot.sh`);
-  assert.equal(got.ORG_BOOT_SHA256, sha256(`boot@${A}`));
+  const sha = sha256(`boot@${A}`);
+  assert.equal(got.ORG_BOOT_SHA256, sha);
+  assert.equal(got.ORG_BOOT_URL, `https://boot.bounded.tools/${sha}.sh`);
 });
 
 test("a pin with nothing fetched is an error, not a silent pass", () => {

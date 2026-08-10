@@ -110,21 +110,26 @@ test("the documented regenerate and confirm loops cover every fetched file", () 
 
 // ── The one-line field: the only text an operator still hand-types ───────────
 
-test("README's canonical field is one line, driven by the recorded pair", () => {
-  // The field's whole job is: fetch by $ORG_BOOT_URL, refuse unless it hashes
-  // to $ORG_BOOT_SHA256, only then execute. A field text that loses either
-  // variable, or grows a second line of logic, is the infra#122 failure mode
-  // returning — logic where no reviewer and no gate can see it.
-  const line = README.split("\n").find((l) => l.includes("$ORG_BOOT_URL"));
-  assert.ok(line, "README's canonical field text no longer references $ORG_BOOT_URL");
-  assert.ok(line.includes("$ORG_BOOT_SHA256"), "the field line does not check $ORG_BOOT_SHA256");
+test("README's canonical field is one line, driven by the recorded digest", () => {
+  // The field's whole job is: fetch the content-addressed URL derived from
+  // $ORG_BOOT_SHA256, refuse unless the bytes hash to that same variable, only
+  // then execute. Since 2026-08-10 the URL is derived IN the field text
+  // (boot.bounded.tools/$ORG_BOOT_SHA256.sh) — a field that reintroduces a
+  // separate $ORG_BOOT_URL reintroduces the representable-mismatch class the
+  // derivation removed, and a field that grows a second line of logic is the
+  // infra#122 failure mode returning.
+  const line = README.split("\n").find((l) => l.includes("boot.bounded.tools/$ORG_BOOT_SHA256.sh"));
+  assert.ok(line, "README's canonical field text no longer derives the URL from $ORG_BOOT_SHA256");
+  assert.ok(!line.includes("$ORG_BOOT_URL"), "the field line reintroduced $ORG_BOOT_URL — the URL must stay derived");
+  const checks = line.split("$ORG_BOOT_SHA256").length - 1;
+  assert.ok(checks >= 2, "the field must use $ORG_BOOT_SHA256 twice — once to derive the URL, once to verify the bytes");
   assert.ok(!line.trim().includes("\n"), "the canonical field text is no longer one line");
 });
 
 test("the field verifies before it executes", () => {
   // Ordering is the security property: curl → sha256sum -c → bash, joined by
   // `&&` so an unset variable, a 404 or wrong bytes all stop before execution.
-  const line = README.split("\n").find((l) => l.includes("$ORG_BOOT_URL")) ?? "";
+  const line = README.split("\n").find((l) => l.includes("boot.bounded.tools/$ORG_BOOT_SHA256.sh")) ?? "";
   const curl = line.indexOf("curl");
   const check = line.indexOf("sha256sum -c");
   const run = line.indexOf("bash");

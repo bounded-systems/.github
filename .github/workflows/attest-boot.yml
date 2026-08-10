@@ -1,0 +1,80 @@
+name: attest-boot
+
+# Sigstore provenance for the bootstrap chain (the follow-on to infra#270's
+# "retire stored secrets" thread, measured 2026-08-10 in a live session).
+#
+# WHAT THIS ADDS AND WHAT IT DOES NOT. The digest chain already decides what
+# EXECUTES: the field text refuses boot.sh unless it hashes to the dialog's
+# ORG_BOOT_SHA256, and fetch_verified refuses the three artifacts unless they
+# hash to boot.sh's pinned SUM_*. What no digest can say is WHO PRODUCED the
+# bytes — "matches the number in the dialog" is not "came from this repo's
+# main". This lane signs that second claim: keyless Sigstore provenance off
+# the workflow's own Actions OIDC identity, binding each artifact's sha256 to
+# repo/ref/workflow. Nothing at session boot consumes it YET (and nothing has
+# to — the digest chain stands alone); it exists so verification is POSSIBLE:
+#   - today: `gh attestation verify <file> --repo bounded-systems/.github`
+#     from CI or a laptop, and a drift lane can do it continuously;
+#   - later, if ever worth the boot-path cost: sessions can fetch the bundle
+#     from api.github.com (this repo is PUBLIC, so no token — measured: the
+#     endpoint answers unauthenticated) and verify with the pure-JS sigstore
+#     client from registry.npmjs.org (allowlisted; measured installable).
+# Provenance cannot be created retroactively, which is why this lands before
+# any consumer: the trail has to start when the artifacts move, not when the
+# verifier arrives.
+#
+# WHY on push to main, not on the bump PR: the artifacts that matter are the
+# bytes AT main — the fetch set serves from a main commit (inner PIN) and the
+# payload store carries main's boot.sh. Attesting branch bytes would sign
+# things that may never ship.
+#
+# Subjects are exactly boot.sh + its fetch set (the three files
+# fetch_verified installs). If the fetch set grows, add the path here — the
+# path filter and the subject list are deliberately the same list.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .claude/boot.sh
+      - .claude/session-start-dispatch.mjs
+      - .claude/register-mcp.mjs
+      - .claude/stop-hook-git-check.sh
+      - .github/workflows/attest-boot.yml
+  workflow_dispatch: {}
+
+permissions:
+  # id-token gives the run its OIDC identity (what the signature binds);
+  # attestations:write stores the bundle; contents:read is the checkout.
+  id-token: write
+  attestations: write
+  contents: read
+
+concurrency:
+  group: attest-boot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned per org policy. `# vX.Y.Z` records what the SHA was at the
+      # time, so a reviewer can tell an intentional bump from a drifted one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Attest the bootstrap chain (boot.sh + the fetch_verified set)
+        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: |
+            .claude/boot.sh
+            .claude/session-start-dispatch.mjs
+            .claude/register-mcp.mjs
+            .claude/stop-hook-git-check.sh
+      - name: Name the attested digests in the run summary
+        run: |
+          {
+            echo "### Attested subjects"
+            echo
+            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh; do
+              echo "- \`$f\` — \`$(sha256sum "$f" | cut -d' ' -f1)\`"
+            done
+            echo
+            echo "Verify: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
