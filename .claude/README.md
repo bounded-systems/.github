@@ -96,10 +96,11 @@ this file is what the field should be returned to.
 Since #125 the field is **one line**. Everything it used to do lives in
 [`boot.sh`](boot.sh) — fetched, digest-checked against a dialog-recorded pair,
 and only then executed — so the body is reviewed, tested and gated in-repo, and
-the only hand-typed text left is a line that never changes:
+the only hand-typed text left is a line that changes only when its own failure
+behaviour does (once so far, 2026-08-10, adding retries — see below):
 
 ```sh
-curl -fsSL "$ORG_BOOT_URL" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
+curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "$ORG_BOOT_URL" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
 ```
 
 `ORG_BOOT_URL` and `ORG_BOOT_SHA256` are environment-dialog variables, recorded
@@ -125,6 +126,35 @@ all break the `&&` chain before `bash` runs, and the session starts with no
 hooks — the same posture the old field had when a fetch_verified refused a
 file. The `--status` flag keeps sha256sum quiet on success so the one loud
 path is the final `echo`.
+
+Which link breaks depends on the failure, and it is worth knowing which:
+`-f` makes curl exit non-zero and write **nothing** on a 404, so the chain
+stops at the curl link and the digest gate is never reached; only a 200
+carrying the wrong bytes gets as far as `sha256sum`. Both refuse, but the
+first refuses earlier and leaves no file behind.
+
+`-f` is therefore load-bearing and must **not** be swapped for
+`--fail-with-body`, whatever a general "strict curl" recipe says. This is a
+fetch-then-execute call site: the body of a failed response must never land at
+a path something might run. (Diagnostic fetches want the opposite —
+`.github-private` → `docs/agent-cli-tooling-survey.md` splits the recipe by
+call-site class.) `--fail-with-body` is also the one flag in that recipe that
+would break a bullseye-era curl 7.74 with unknown-option exit 2; everything
+here clears that floor — `--retry-connrefused` is 7.52, `--retry-max-time`
+7.12.
+
+The retry flags were added 2026-08-10 for a measured failure, not on
+principle. `cloud-environment.json` caveat 3 records this field running at
+container init and exiting 0 in **~28ms** — far too fast for a TLS fetch —
+leaving no `/tmp/boot.sh` and a hookless session, while the identical fetch
+from the running session succeeded and hashed correctly. The egress path is
+not guaranteed usable that early, and `--retry-connrefused` is the flag that
+covers it: plain `--retry` does not retry a refused connection, which is
+exactly the init-time symptom. `--retry-max-time 60` bounds the worst case, so
+a genuinely unreachable host costs a minute before failing safe rather than
+hanging. That trade is right here and wrong for `status-probe.sh`, which stays
+retry-free by design: a missing status line is nobody's emergency, a hookless
+session is.
 
 **Bump both layers together whenever `.claude/` changes here.** A boot.sh byte
 change — including the inner `PIN`/`SUM_*` rewrite a bump performs — moves
