@@ -64,7 +64,17 @@ LOG="${HOME:-/root}/.claude/toolpath-install.log"
 # `path auth logout` is the release).
 CRED_DIR="${TOOLPATH_CONFIG_DIR:-${HOME:-/root}/.toolpath}"
 CRED_FILE="$CRED_DIR/credentials.json"
-if [ -n "${PATHBASE_LEASE_URL:-}" ] && [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
+# The pathbase lease endpoint defaults to the broker's own custom domain, so the
+# environment dialog no longer needs to carry PATHBASE_LEASE_URL (2026-08-10).
+# This is what lets the cf-token-broker.titular-0-kicks.workers.dev entry leave
+# the allowlist: broker.bounded.tools is under *.bounded.tools, already granted,
+# and it fronts the same Worker (verified byte-identical on /lease/<name>). Still
+# overridable for a scratch/test broker. The KEY alone is the trigger now — a
+# session with no lease key shares anonymously, exactly as before. Removing the
+# KEY too is the next step (broker /lease github-auth via the session's GH_TOKEN,
+# the front-desk-lease pattern; infra#270), which retires the last dialog secret.
+PATHBASE_LEASE_URL="${PATHBASE_LEASE_URL:-https://broker.bounded.tools/lease/pathbase}"
+if [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
   if [ -f "$CRED_FILE" ]; then
     echo "toolpath: lease levers set but credentials already exist — keeping the existing login ($CRED_FILE)"
   else
