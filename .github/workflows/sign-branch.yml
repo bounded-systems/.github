@@ -8,28 +8,49 @@
 #   - local `git commit -S`: the session's configured signing key file is empty,
 #     no private half exists anywhere in the container, and registering one is
 #     blocked (`PUT /user/ssh_signing_keys` → "sessions are bound to their
-#     configured repositories");
+#     configured repositories").
+#     RE-MEASURED 2026-08-11: EXPIRED. A session's `git push` lands commits
+#     carrying `gpgsig -----BEGIN SSH SIGNATURE-----` that GitHub reports as
+#     verified — this workflow, dispatched at a session-authored branch, replied
+#     "tip is already verified — nothing to do" (run 31455664654). The session
+#     lane signs. This is the bullet that had been read as current and was not.
 #   - GraphQL createCommitOnBranch — the lane org-defaults.yml and
 #     registry-graph.yml use for precisely this reason: "This GraphQL query is
 #     not enabled for this session — only the pinned set of PR-review operations
-#     is served";
+#     is served".
+#     RE-MEASURED 2026-08-11: STILL TRUE, byte-identical message, and broader
+#     than recorded — `POST /graphql` with `{ viewer { login } }` is refused 403
+#     the same way, so it is not that this one mutation is withheld: GraphQL is
+#     not served to sessions at all.
 #   - REST contents/tree commits: land UNSIGNED (%G? = N), and silently rewrite
 #     mode 100755 to 100644 — which on .github-private's check-session-scope.sh
 #     would have unmade the hook that settings.json invokes bare.
+#     RE-MEASURED 2026-08-11: CONCLUSION HOLDS, MECHANISM CHANGED. The lane no
+#     longer lands anything to be unsigned: `POST /git/refs` and `PUT /contents`
+#     both return 403 "Write access to this GitHub API path is not permitted
+#     through this proxy." The mode-corruption hazard is now unreachable rather
+#     than latent — worth knowing, because a future proxy change that reopens
+#     these paths reopens the corruption with them, and nothing would announce
+#     that. (Write via the pinned PR operations is unaffected; that is how a
+#     session still opens and merges PRs.)
 #
 # So every session-authored PR ended in a human running `git commit --amend -S`
 # from a laptop: a manual step at the END of the work, after all checks are
 # green, on every PR, forever.
 #
-# THAT PREMISE NO LONGER HOLDS, as of 2026-08-11 — measured, not assumed. A
-# cloud session's `git push` now lands commits carrying an SSH signature that
-# GitHub reports as verified: dispatched at this very branch, this workflow
-# answered "tip is already verified — nothing to do" (run 31455664654), and the
-# commit object shows `gpgsig -----BEGIN SSH SIGNATURE-----` over
-# `Claude <noreply@anthropic.com>`. Whatever the 2026-08-08 measurement found,
-# the session lane signs today. Do NOT read the list above as current: it is
-# kept because the reasoning is still why this file exists, not because all
-# three lanes are still shut.
+# THAT PREMISE NO LONGER HOLDS. One of the three lanes reopened, and the whole
+# list had been read as current for three days after it did — which is how this
+# session came to tell its user that four already-mergeable PRs needed an admin
+# bypass merge. Every bullet now carries its own re-measurement and date, so the
+# next reader can see per-claim what was checked and when, instead of inferring
+# currency from one date at the top. See [[capability-shelf-life]] in
+# .github-private's knowledge graph for the general form.
+#
+# All three were re-probed on 2026-08-11: one EXPIRED, one STILL TRUE and in
+# fact broader than recorded, one whose CONCLUSION HOLDS by a different
+# mechanism than the one written down. That spread is the argument for dating
+# claims individually — a single "measured 2026-08-08" over the set would have
+# been wrong about all three in three different ways.
 #
 # WHAT STILL NEEDS THIS. Branches that arrive unsigned from something that is
 # not a session — above all the github-actions[bot] drift PRs, which commit
