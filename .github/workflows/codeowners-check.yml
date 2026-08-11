@@ -1,0 +1,135 @@
+name: codeowners-check
+
+# Is `.github/CODEOWNERS` actually routing anything?
+#
+# WHAT WAS MISSING
+# ----------------
+# That file ends by telling a human to check it:
+#
+#   "Validity is not self-evident: a team is only a valid owner if it has write access to
+#    this repo. Check .../codeowners after any change — an invalid entry is silently
+#    ignored, which looks exactly like a file that works."
+#
+# Nothing did. The file has been in place since 2026-08-01 and its validity was never verified
+# once, so the record said ownership routes on the strength of the file EXISTING. Adding it was
+# measured; whether it works was not. Reasoning in `.github-private` docs/merge-gate.md, as the
+# CODEOWNERS header itself points out.
+#
+# NO CREDENTIAL IS MINTED HERE.
+# `GET /repos/{owner}/{repo}/codeowners/errors` needs repository read, which the default
+# GITHUB_TOKEN already has. No App token, no OIDC, nothing privileged — which is exactly why
+# detection can go continuous. Granting a team access still needs admin and stays manual.
+#
+# ## WHAT A CLEAN RESULT DOES *NOT* PROVE — stated plainly, because it is the trap
+#
+# This endpoint reports whether GitHub can PARSE the file and RESOLVE its owners. That is a
+# different question from "can this team be requested as a reviewer", which on 2026-08-11
+# returned, on every repo tried including this one:
+#
+#   422 Reviews may only be requested from collaborators
+#
+# The two probes can disagree, and the disagreement is the finding:
+#
+#   errors reported + 422  -> consistent. The team holds no write access, so the entry is
+#                             invalid, silently ignored, and routing nothing.
+#   CLEAN          + 422  -> contradiction. The entry is valid and the team still cannot be
+#                             requested, which means the cause is something else and the
+#                             record needs another measurement.
+#
+# A green run here means "the file parses and its owners resolve." It does not mean review is
+# routable. Do not let this lane's green stand in for that.
+#
+# Note the local nuance: merges here are gated by the required `schema` check
+# (`ci-green-dot-github`), not by code-owner approval. So an invalid CODEOWNERS costs routing
+# and notification, not the merge gate — which is precisely why it could sit unnoticed.
+
+on:
+  schedule:
+    - cron: "29 9 * * 1-5" # weekday, offset from the sibling lane in .github-private
+  workflow_dispatch:
+  # A CODEOWNERS edit is exactly when validity changes, and exactly when the header says to
+  # look. Checked against the PR's own ref, so a breaking edit is caught before it merges.
+  pull_request:
+    paths:
+      - ".github/CODEOWNERS"
+  push:
+    branches: [main]
+    paths:
+      - ".github/CODEOWNERS"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeowners-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # THREE OUTCOMES, THREE DIFFERENT EXITS. "Could not check" must never be reachable as a
+      # pass — this lane exists because a silently-ignored entry looks like a working one, and
+      # a silently-skipped check would look like a passing one. Same defect, one level up.
+      - name: Resolve CODEOWNERS validity
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ github.event_name == 'pull_request' && github.head_ref || '' }}
+        run: |
+          set -uo pipefail
+
+          url="https://api.github.com/repos/${GITHUB_REPOSITORY}/codeowners/errors"
+          [ -n "${REF:-}" ] && url="${url}?ref=${REF}"
+
+          body="$(mktemp)"
+          code="$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$url" 2>/dev/null || echo "000")"
+
+          if [ "$code" != "200" ]; then
+            echo "::error::could not read CODEOWNERS validity — API returned ${code}. This is NOT a pass: the check did not run, and an unverified CODEOWNERS is the state this lane exists to end."
+            { echo "## codeowners-check"; echo; echo "**Could not check** — \`GET /codeowners/errors\` returned \`${code}\`."; echo; echo '```'; head -c 1000 "$body"; echo; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$body"; exit 1
+          fi
+
+          n="$(jq '.errors | length' "$body" 2>/dev/null || echo "unparseable")"
+          if [ "$n" = "unparseable" ]; then
+            echo "::error::200 with a body this lane cannot parse — treat as could-not-check, not as clean."
+            { echo "## codeowners-check"; echo; echo "**Unparseable 200.**"; echo '```'; head -c 1000 "$body"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$body"; exit 1
+          fi
+
+          {
+            echo "## codeowners-check"
+            echo
+            echo "\`GET /repos/${GITHUB_REPOSITORY}/codeowners/errors\`${REF:+ (ref \`${REF}\`)} → **${n}** error(s)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$n" != "0" ]; then
+            {
+              echo
+              echo "| line | kind | message | suggestion |"
+              echo "|---|---|---|---|"
+              jq -r '.errors[] | "| \(.line // "?") | \(.kind // "?") | \(.message // "?") | \(.suggestion // "—") |"' "$body"
+              echo
+              echo "An invalid entry is **silently ignored** — the file looks like it works and routes nothing."
+            } >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.errors[] | "::error title=CODEOWNERS \(.kind // "error")::line \(.line // "?"): \(.message // "?")"' "$body"
+            echo "::error::CODEOWNERS has ${n} error(s) — the owners it names do not resolve, so this file routes nothing."
+            rm -f "$body"; exit 1
+          fi
+
+          # Clean. Say exactly what that buys, and no more.
+          {
+            echo
+            echo "The file parses and its owners resolve."
+            echo
+            echo "> **This does not mean review is routable.** Requesting \`@bounded-systems/maintainers\`"
+            echo "> returned \`422 Reviews may only be requested from collaborators\` on every repo tried"
+            echo "> on 2026-08-11, this one included. A clean result here *alongside* that 422 is a"
+            echo "> **contradiction**, and means the cause is something other than an invalid entry."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::CODEOWNERS parses and its owners resolve (0 errors) — which is not the same as review being requestable."
+          rm -f "$body"
