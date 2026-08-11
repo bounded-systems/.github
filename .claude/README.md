@@ -137,6 +137,60 @@ hooks — the same posture the old field had when a fetch_verified refused a
 file. The `--status` flag keeps sha256sum quiet on success so the one loud
 path is the final `echo`.
 
+### The field is skipped entirely on a RESUMED session (measured 2026-08-11)
+
+Every failure mode described above assumes the field **runs**. On a resumed
+session it does not run at all, and nothing above detects that.
+
+The environment manager's own log (`/tmp/env-manager.log`) records both boots of
+one container. On creation, `"session_mode": "setup-only"`, the field ran and
+succeeded — `Running initialization script {"script_length": 342}` against 340
+bytes for the canonical line above, a trailing newline apart — and the platform
+then fired each repo's SessionStart hooks with `claude --init-only`, once per
+repo, which is the only context in which a project-scoped `.claude/settings.json`
+is ever discovered. On resume, `"session_mode": "resume-cached"`:
+
+```
+Wrote launcher settings file  {"path": "/root/.claude/launcher-settings.json"}
+Wrote hook script             {"path": "/root/.claude/stop-hook-git-check.sh"}
+Fast resume: Environment already configured
+              {"message": "Skipping initialization script for faster startup"}
+```
+
+`has_init_script: true` — the field is configured, and skipped as an
+optimisation. `~/.claude` does not survive the resume. So the platform re-writes
+**its own** artifacts and skips **ours**, and the net effect is worse than a
+missing install: its stock `stop-hook-git-check.sh` lands and is never overwritten
+by the bootstrap, so **every resume silently reverts the infra#112 scope fix.**
+`~/.claude/settings.json` is simply never re-created.
+
+This supersedes the two causes proposed in `.github-private` #314 (an empty
+`$ORG_BOOT_URL`, and an init-time egress race). Both are ruled out by this log:
+the variable no longer exists, and the script succeeded in 532 ms rather than
+fail-safing in 28 ms.
+
+**Repair, from inside any session** — the canonical field text above is runnable
+verbatim and fully repairs the session; verified 2026-08-11, yielding
+`bootstrap: ready` plus a byte-restored Stop hook. Follow it with:
+
+```sh
+CLAUDE_SESSION_ROOT=/home/user node /home/user/.github/.claude/session-start-dispatch.mjs
+```
+
+**Detector.** A resumed session cannot use a SessionStart hook to discover it had
+no SessionStart hooks — the same irreducibility recorded above for the
+`settings.json` write. But the condition has an exact signature, because the
+platform's stock Stop hook and this repo's copy differ by construction:
+
+```sh
+cmp -s ~/.claude/stop-hook-git-check.sh .claude/stop-hook-git-check.sh \
+  || echo "org bootstrap NOT in effect — resumed session; run the repair above"
+```
+
+Full forensics, including the consequences for the claim convention and for
+`.github-private` #75's telemetry acceptance test, are in `.github-private` →
+`docs/handoffs/front-desk-dialog-verify.md`.
+
 Which link breaks depends on the failure, and it is worth knowing which:
 `-f` makes curl exit non-zero and write **nothing** on a 404, so the chain
 stops at the curl link and the digest gate is never reached; only a 200
