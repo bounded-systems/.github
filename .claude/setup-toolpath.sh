@@ -69,17 +69,23 @@ CRED_FILE="$CRED_DIR/credentials.json"
 # This is what lets the cf-token-broker.titular-0-kicks.workers.dev entry leave
 # the allowlist: broker.bounded.tools is under *.bounded.tools, already granted,
 # and it fronts the same Worker (verified byte-identical on /lease/<name>). Still
-# overridable for a scratch/test broker. THE BEARER (2026-08-10, infra#270): a
-# lease key if the dialog still carries one, else the session's own GH_TOKEN —
-# the broker's /lease tier verifies the latter against GitHub live (GET /user)
-# and matches the login against the entry's public allowlist, so no shared
-# secret needs to exist anywhere. The key path stays honored so an environment
-# that still sets PATHBASE_LEASE_KEY keeps working during the transition; once
-# the github-auth broker is deployed, the dialog can simply delete the key and
-# sessions authenticate as themselves. No bearer at all → anonymous sharing,
-# exactly as before.
+# overridable for a scratch/test broker. THE BEARER: the dialog's lease key, and
+# ONLY that. No bearer → anonymous sharing, exactly as before.
+#
+# The GH_TOKEN fallback added here on 2026-08-10 (#149, infra#270) is REMOVED as
+# of 2026-08-11: a session cannot authenticate as itself, measured and reverted
+# in infra#282. GH_TOKEN and GITHUB_TOKEN in a cloud session are the SAME
+# 14-character placeholder (prefix "prox"), not credentials — the session's
+# egress proxy authenticates to GitHub on its behalf, and the broker calls
+# api.github.com from OUTSIDE that proxy, so a session bearer always 401s.
+# This is documented platform design (Claude Code on the web, "Security and
+# isolation": credentials "are never inside the sandbox"), so the fallback could
+# never have worked and no future one can. Keeping it would have been worse than
+# dead code: the moment the dialog's key is absent, it sends a placeholder that
+# 401s and reports a refusal that looks like a broker misconfiguration rather
+# than a missing key.
 PATHBASE_LEASE_URL="${PATHBASE_LEASE_URL:-https://broker.bounded.tools/lease/pathbase}"
-PATHBASE_LEASE_BEARER="${PATHBASE_LEASE_KEY:-${GH_TOKEN:-}}"
+PATHBASE_LEASE_BEARER="${PATHBASE_LEASE_KEY:-}"
 if [ -n "$PATHBASE_LEASE_BEARER" ]; then
   if [ -f "$CRED_FILE" ]; then
     echo "toolpath: lease levers set but credentials already exist — keeping the existing login ($CRED_FILE)"
@@ -129,7 +135,18 @@ print(json.dumps({"url": lease["url"], "token": body["token"], "user": body.get(
     else
       # Fail soft and SAY so: a refused lease is an environment/broker state
       # the session cannot fix, but silence here is how #117's lesson repeats.
-      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Bearer was ${PATHBASE_LEASE_KEY:+the lease key}${PATHBASE_LEASE_KEY:-the session GH_TOKEN}; check the broker's LEASE_KEYS entry — key slots, or githubLogins for the token path (.github#115, infra#270)."
+      # Name the LIKELIEST cause first, and make the two states distinguishable:
+      # a 401 means the dialog's key no longer matches either slot (the expected
+      # state after a burn_both_slots rotation whose paste has not landed yet);
+      # a 500 means a slot secret is missing entirely and the broker is failing
+      # closed before authentication. Pointing at githubLogins here would send
+      # the reader down the path infra#282 measured as impossible.
+      if [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
+        bearer_desc="the dialog PATHBASE_LEASE_KEY"
+      else
+        bearer_desc="ABSENT -- no PATHBASE_LEASE_KEY in this environment"
+      fi
+      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Bearer was $bearer_desc. Most likely the dialog key is stale after a rotation: decrypt the newest rotate-lease-key run blob and paste it (docs/handoffs/lease-key-rotation.md in .github-private). 401 = key matches neither slot; 500 = a slot secret is missing (.github#115, infra#283)."
     fi
   fi
 fi
