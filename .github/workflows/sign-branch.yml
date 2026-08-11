@@ -25,16 +25,21 @@
 # something any actor can do, and API commits made HERE are signed by GitHub as
 # the token's identity, which satisfies the rule with no key anywhere.
 #
-# WHAT IT DOES. For the named repo+branch: force the branch ref back to its
-# merge-base with the default branch, then carry the branch's entire net change
-# in one createCommitOnBranch mutation. N commits become ONE signed commit —
-# the original messages are preserved in the new commit's body, and the
-# replaced tip SHA is named so the history is auditable. The tree is verified
-# byte-identical and mode-identical to the old tip before the job succeeds; on
-# any mismatch the ref is restored to the old tip and the job fails naming the
-# file. Mode verification is not optional politeness: the REST probe above
-# showed exactly this corruption, and a hook that lost its exec bit is a hook
-# that silently stopped existing.
+# WHAT IT DOES. For the named repo+branch: carry the branch's entire net change
+# against its merge-base into one createCommitOnBranch mutation, on a SCRATCH
+# ref, and move the branch onto the result only once every check has passed. N
+# commits become ONE signed commit — the original messages are preserved in the
+# new commit's body, and the replaced tip SHA is named so the history is
+# auditable. The tree is verified byte-identical and mode-identical to the old
+# tip first; on any mismatch the job fails naming the file, with the branch
+# never having moved. Mode verification is not optional politeness: the REST
+# probe above showed exactly this corruption, and a hook that lost its exec bit
+# is a hook that silently stopped existing.
+#
+# The scratch ref is not ceremony. Committing in place means resetting the
+# branch to base first, and a branch equal to base is a PR with no commits,
+# which GitHub closes on its own — it closed infra#268 mid-run on 2026-08-11.
+# The branch must never pass through that state.
 #
 # AUTH. Same-repo runs use the workflow's own GITHUB_TOKEN (createCommitOnBranch
 # signs as github-actions[bot]). Cross-repo runs mint the front-desk App via the
@@ -73,10 +78,13 @@ jobs:
       # the fan-in `front-desk` entry must not grow a scope because one window
       # needs it — and the first cross-repo dispatch (run 31233034996) proved it
       # does not carry `contents` at all; the preflight failed at mint naming
-      # the gap, exactly as designed. Until the broker registry (infra) carries
-      # a `front-desk-sign` entry requesting `contents` and pinned to this
-      # workflow at refs/heads/main, cross-repo runs fail at that same line and
-      # SAME-REPO runs are unaffected (they use the workflow's own token).
+      # the gap, exactly as designed.
+      #
+      # That gap is CLOSED: infra's broker registry now carries `front-desk-sign`
+      # with contents:write, pinned to this workflow at refs/heads/main
+      # (cloudflare/broker/wrangler.jsonc). Cross-repo runs mint and work —
+      # first proven 2026-08-11 signing infra cloudflare/state-drift. Same-repo
+      # runs never needed it (they use the workflow's own token).
       - name: Mint cross-repo token via the OIDC broker
         id: app-token
         if: ${{ inputs.repo != github.event.repository.name }}
@@ -159,11 +167,30 @@ jobs:
             jq -n --arg p "$f" '{path: $p}' >>"$dels"
           done
 
-          # Force the ref to base, then one API commit carrying everything.
-          # Same two-call shape as the pin job in org-defaults.yml.
-          gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$base" -F force=true >/dev/null
-          restore() { gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$tip" -F force=true >/dev/null; }
-          trap 'restore' ERR
+          # Build the commit on a SCRATCH ref, then move the branch onto it in one
+          # step. The obvious shape — reset the branch to base, commit on top —
+          # leaves the branch momentarily EQUAL to base, which is a PR with zero
+          # commits, and GitHub closes such a PR by itself. Measured 2026-08-11:
+          # signing infra's status/fixture-drift closed infra#268 mid-run
+          # (closed_at 03:19:49, head frozen at the base SHA). Its sibling
+          # cloudflare/state-drift survived the identical sequence minutes
+          # earlier purely because three small files upload faster than 275 KB —
+          # the window was shorter, not absent. Racing a remote actor is not a
+          # fix, so the branch no longer passes through the empty state at all.
+          #
+          # The branch is therefore untouched until every check below has passed,
+          # which is strictly safer than the restore-on-failure it replaces:
+          # there is now no failure mode that leaves the branch needing repair,
+          # so the ERR trap and its restore() are gone with the window that made
+          # them necessary.
+          scratch="sign-branch-tmp/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if ! gh api -X POST "repos/$TARGET_REPO/git/refs" \
+                 -f ref="refs/heads/$scratch" -f sha="$base" >/dev/null 2>&1; then
+            # A re-run of the same attempt, or a leftover from a killed job.
+            gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$scratch" -f sha="$base" -F force=true >/dev/null
+          fi
+          cleanup() { gh api -X DELETE "repos/$TARGET_REPO/git/refs/heads/$scratch" >/dev/null 2>&1 || true; }
+          trap 'cleanup' EXIT
 
           # `--argjson` is JQ's flag, not gh's — `gh api` rejects it outright
           # ("unknown flag: --argjson"), so this mutation had never once run.
@@ -177,9 +204,8 @@ jobs:
           # and -F guesses scalar types — so the request goes as a body gh does
           # not interpret: jq builds {query, variables} and gh posts it on
           # stdin. --slurpfile turns each NDJSON file into its array (an empty
-          # file yields [], which is the no-deletions case). The ERR trap still
-          # covers this (pipefail makes a gh failure fail the pipeline), so a
-          # refused mutation restores the ref.
+          # file yields [], which is the no-deletions case). A refused mutation
+          # fails the step (pipefail) with the target branch never having moved.
           mutation='mutation($repo: String!, $b: String!, $head: GitObjectID!, $h: String!, $body: String!, $add: [FileAddition!]!, $del: [FileDeletion!]!) {
             createCommitOnBranch(input: {
               branch: { repositoryNameWithOwner: $repo, branchName: $b },
@@ -189,7 +215,7 @@ jobs:
             }) { commit { oid } } }'
           new="$(jq -n \
               --arg query "$mutation" \
-              --arg repo "$TARGET_REPO" --arg b "$BRANCH" --arg head "$base" \
+              --arg repo "$TARGET_REPO" --arg b "$scratch" --arg head "$base" \
               --arg h "$headline" --arg body "$body" \
               --slurpfile add "$adds" --slurpfile del "$dels" \
               '{query: $query, variables: {repo: $repo, b: $b, head: $head,
@@ -197,23 +223,27 @@ jobs:
                                            add: $add, del: $del}}' \
             | gh api graphql --input - --jq .data.createCommitOnBranch.commit.oid)"
 
-          # Verify before declaring success: byte-identical tree, identical
+          # Verify before touching the branch: byte-identical tree, identical
           # modes, and actually verified. The REST probe that motivated this
           # file corrupted modes silently; "signed but subtly different" must
-          # fail here, loudly, with the ref restored.
-          git fetch --quiet origin "$BRANCH"
-          if ! git diff --quiet "$tip" "origin/$BRANCH"; then
-            echo "::error title=sign-branch: tree mismatch::The signed commit's tree differs from $tip. Ref restored."
-            restore; trap - ERR; exit 1
-          fi
-          if ! diff <(git ls-tree -r "$tip") <(git ls-tree -r "origin/$BRANCH") >/dev/null; then
-            echo "::error title=sign-branch: mode mismatch::File modes changed (the 100755→100644 failure). Ref restored."
-            restore; trap - ERR; exit 1
-          fi
-          trap - ERR
-          verified="$(gh api "repos/$TARGET_REPO/commits/$new" --jq .commit.verification.verified)"
-          if [ "$verified" != "true" ]; then
-            echo "::error title=sign-branch: commit not verified::createCommitOnBranch returned an unverified commit ($new) — the token identity has no verification path. Ref left at the signed commit for inspection."
+          # fail here, loudly. Every check below runs against the SCRATCH ref,
+          # so a failure leaves $BRANCH exactly where it started.
+          git fetch --quiet origin "$scratch"
+          if ! git diff --quiet "$tip" "origin/$scratch"; then
+            echo "::error title=sign-branch: tree mismatch::The signed commit's tree differs from $tip. $BRANCH untouched."
             exit 1
           fi
+          if ! diff <(git ls-tree -r "$tip") <(git ls-tree -r "origin/$scratch") >/dev/null; then
+            echo "::error title=sign-branch: mode mismatch::File modes changed (the 100755→100644 failure). $BRANCH untouched."
+            exit 1
+          fi
+          verified="$(gh api "repos/$TARGET_REPO/commits/$new" --jq .commit.verification.verified)"
+          if [ "$verified" != "true" ]; then
+            echo "::error title=sign-branch: commit not verified::createCommitOnBranch returned an unverified commit ($new) — the token identity has no verification path. $BRANCH untouched."
+            exit 1
+          fi
+
+          # Everything checked. ONE move, old tip straight to the signed commit,
+          # never through base — this is the line the PR's head follows.
+          gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$new" -F force=true >/dev/null
           echo "sign-branch: $BRANCH is now $new (verified), replacing $tip."
