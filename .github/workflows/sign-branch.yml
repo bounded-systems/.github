@@ -148,18 +148,35 @@ jobs:
           restore() { gh api -X PATCH "repos/$TARGET_REPO/git/refs/heads/$BRANCH" -f sha="$tip" -F force=true >/dev/null; }
           trap 'restore' ERR
 
-          new="$(gh api graphql \
-            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $h: String!, $body: String!, $add: [FileAddition!]!, $del: [FileDeletion!]!) {
-              createCommitOnBranch(input: {
-                branch: { repositoryNameWithOwner: $repo, branchName: $b },
-                expectedHeadOid: $head,
-                message: { headline: $h, body: $body },
-                fileChanges: { additions: $add, deletions: $del }
-              }) { commit { oid } } }' \
-            -f repo="$TARGET_REPO" -f b="$BRANCH" -f head="$base" \
-            -f h="$headline" -f body="$body" \
-            --argjson add "$additions" --argjson del "$deletions" \
-            --jq .data.createCommitOnBranch.commit.oid)"
+          # `--argjson` is JQ's flag, not gh's — `gh api` rejects it outright
+          # ("unknown flag: --argjson"), so this mutation had never once run.
+          # It read as working because the only dispatch before 2026-08-11 hit
+          # the already-verified early exit above and never reached this line;
+          # the first real attempt (infra cloudflare/state-drift) died here.
+          # The same shape this repo keeps finding: a lane reporting success
+          # without ever exercising the call it exists to make.
+          #
+          # gh has no way to pass a JSON ARRAY as a variable — -f is a string
+          # and -F guesses scalar types — so the request goes as a body gh does
+          # not interpret: jq builds {query, variables} and gh posts it on
+          # stdin. The ERR trap still covers this (pipefail makes a gh failure
+          # fail the pipeline), so a refused mutation restores the ref.
+          mutation='mutation($repo: String!, $b: String!, $head: GitObjectID!, $h: String!, $body: String!, $add: [FileAddition!]!, $del: [FileDeletion!]!) {
+            createCommitOnBranch(input: {
+              branch: { repositoryNameWithOwner: $repo, branchName: $b },
+              expectedHeadOid: $head,
+              message: { headline: $h, body: $body },
+              fileChanges: { additions: $add, deletions: $del }
+            }) { commit { oid } } }'
+          new="$(jq -n \
+              --arg query "$mutation" \
+              --arg repo "$TARGET_REPO" --arg b "$BRANCH" --arg head "$base" \
+              --arg h "$headline" --arg body "$body" \
+              --argjson add "$additions" --argjson del "$deletions" \
+              '{query: $query, variables: {repo: $repo, b: $b, head: $head,
+                                           h: $h, body: $body,
+                                           add: $add, del: $del}}' \
+            | gh api graphql --input - --jq .data.createCommitOnBranch.commit.oid)"
 
           # Verify before declaring success: byte-identical tree, identical
           # modes, and actually verified. The REST probe that motivated this
