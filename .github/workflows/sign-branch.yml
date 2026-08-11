@@ -132,14 +132,31 @@ jobs:
           headline="$(git log -1 --format=%s "$tip")"
           body="$(printf 'Re-created signed from %s by sign-branch (original commit messages follow).\n\n' "$tip"; git log --reverse --format='--- %h ---%n%B' "$base..$tip")"
 
-          additions="[]"
+          # File CONTENT never travels through argv. `--arg c "$base64"` dies with
+          # "Argument list too long" on any file whose encoding exceeds
+          # MAX_ARG_STRLEN — 128 KiB per SINGLE argument on Linux, which is a much
+          # lower ceiling than ARG_MAX and is not raised by having few files. infra's
+          # 206 KB cloudflare.summary.json fixture encodes to ~275 KB and killed this
+          # step (run 31454511698) immediately after the --argjson fix let it run at
+          # all; the three small files on cloudflare/state-drift had gone through
+          # moments earlier, which is exactly how a size ceiling hides.
+          #
+          # So the bytes go through FILES in both directions: --rawfile reads each
+          # encoding in, one NDJSON object per changed path, and --slurpfile collects
+          # them into the array. This also drops the accumulator that re-serialized
+          # the whole array once per file.
+          adds="$(mktemp)"
+          dels="$(mktemp)"
           for f in "${changed[@]}"; do
-            c="$(git show "$tip:$f" | base64 -w0)"
-            additions="$(jq -c --arg p "$f" --arg c "$c" '. + [{path:$p, contents:$c}]' <<<"$additions")"
+            b64="$(mktemp)"
+            # -w0 must not wrap, and any trailing newline would corrupt the
+            # encoding once --rawfile carries it through verbatim.
+            git show "$tip:$f" | base64 -w0 | tr -d '\n' >"$b64"
+            jq -n --arg p "$f" --rawfile c "$b64" '{path: $p, contents: $c}' >>"$adds"
+            rm -f "$b64"
           done
-          deletions="[]"
           for f in "${deleted[@]}"; do
-            deletions="$(jq -c --arg p "$f" '. + [{path:$p}]' <<<"$deletions")"
+            jq -n --arg p "$f" '{path: $p}' >>"$dels"
           done
 
           # Force the ref to base, then one API commit carrying everything.
@@ -159,8 +176,10 @@ jobs:
           # gh has no way to pass a JSON ARRAY as a variable — -f is a string
           # and -F guesses scalar types — so the request goes as a body gh does
           # not interpret: jq builds {query, variables} and gh posts it on
-          # stdin. The ERR trap still covers this (pipefail makes a gh failure
-          # fail the pipeline), so a refused mutation restores the ref.
+          # stdin. --slurpfile turns each NDJSON file into its array (an empty
+          # file yields [], which is the no-deletions case). The ERR trap still
+          # covers this (pipefail makes a gh failure fail the pipeline), so a
+          # refused mutation restores the ref.
           mutation='mutation($repo: String!, $b: String!, $head: GitObjectID!, $h: String!, $body: String!, $add: [FileAddition!]!, $del: [FileDeletion!]!) {
             createCommitOnBranch(input: {
               branch: { repositoryNameWithOwner: $repo, branchName: $b },
@@ -172,7 +191,7 @@ jobs:
               --arg query "$mutation" \
               --arg repo "$TARGET_REPO" --arg b "$BRANCH" --arg head "$base" \
               --arg h "$headline" --arg body "$body" \
-              --argjson add "$additions" --argjson del "$deletions" \
+              --slurpfile add "$adds" --slurpfile del "$dels" \
               '{query: $query, variables: {repo: $repo, b: $b, head: $head,
                                            h: $h, body: $body,
                                            add: $add, del: $del}}' \
