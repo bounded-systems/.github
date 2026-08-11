@@ -19,8 +19,26 @@
 #
 # So every session-authored PR ended in a human running `git commit --amend -S`
 # from a laptop: a manual step at the END of the work, after all checks are
-# green, on every PR, forever. This workflow is the org's existing answer to
-# that shape — "build the window rather than declare the capability missing"
+# green, on every PR, forever.
+#
+# THAT PREMISE NO LONGER HOLDS, as of 2026-08-11 — measured, not assumed. A
+# cloud session's `git push` now lands commits carrying an SSH signature that
+# GitHub reports as verified: dispatched at this very branch, this workflow
+# answered "tip is already verified — nothing to do" (run 31455664654), and the
+# commit object shows `gpgsig -----BEGIN SSH SIGNATURE-----` over
+# `Claude <noreply@anthropic.com>`. Whatever the 2026-08-08 measurement found,
+# the session lane signs today. Do NOT read the list above as current: it is
+# kept because the reasoning is still why this file exists, not because all
+# three lanes are still shut.
+#
+# WHAT STILL NEEDS THIS. Branches that arrive unsigned from something that is
+# not a session — above all the github-actions[bot] drift PRs, which commit
+# from a RUNNER and are unsigned by construction. infra#268 and #269 sat
+# unmergeable for a day on exactly that, and this workflow is what cleared
+# them. So the lane is not obsolete; its main user just changed.
+#
+# This workflow is the org's existing answer to that shape — "build the window
+# rather than declare the capability missing"
 # (merge-claude-harness.yml) — applied to signing: dispatching a workflow is
 # something any actor can do, and API commits made HERE are signed by GitHub as
 # the token's identity, which satisfies the rule with no key anywhere.
