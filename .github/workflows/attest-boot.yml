@@ -12,8 +12,11 @@ name: attest-boot
 # the workflow's own Actions OIDC identity, binding each artifact's sha256 to
 # repo/ref/workflow. Nothing at session boot consumes it YET (and nothing has
 # to — the digest chain stands alone); it exists so verification is POSSIBLE:
-#   - today: `gh attestation verify <file> --repo bounded-systems/.github`
-#     from CI or a laptop, and a drift lane can do it continuously;
+#   - today: by hand from CI or a laptop, and a drift lane can do it
+#     continuously. The predicate to verify AGAINST — signer workflow, repo,
+#     ref, issuer, and what happens on failure — is docs/boot-attestation-
+#     policy.md, not `--owner`/`--repo` alone, which accept far more signers
+#     than intended;
 #   - later, if ever worth the boot-path cost: sessions can fetch the bundle
 #     from api.github.com (this repo is PUBLIC, so no token — measured: the
 #     endpoint answers unauthenticated) and verify with the pure-JS sigstore
@@ -76,5 +79,16 @@ jobs:
               echo "- \`$f\` — \`$(sha256sum "$f" | cut -d' ' -f1)\`"
             done
             echo
-            echo "Verify: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`"
+            echo "Verify — the policy predicate (docs/boot-attestation-policy.md):"
+            echo
+            echo '```'
+            echo "gh attestation verify <file> \\"
+            echo "  --repo ${GITHUB_REPOSITORY} \\"
+            echo "  --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/attest-boot.yml \\"
+            echo "  --cert-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --predicate-type https://slsa.dev/provenance/v1"
+            echo '```'
+            echo
+            echo "\`--owner\` or \`--repo\` alone is NOT the policy — both accept"
+            echo "signers this chain does not trust."
           } >> "$GITHUB_STEP_SUMMARY"
