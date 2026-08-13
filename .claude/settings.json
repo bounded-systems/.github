@@ -11,6 +11,11 @@
         { "type": "command", "command": "bash .claude/status-probe.sh" },
         { "type": "command", "command": "bash .claude/setup-toolpath.sh" }
       ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "bash .claude/stop-hook-findings-check.sh" }
+      ] }
     ]
   }
 }

@@ -47,6 +47,13 @@ jobs:
       # name a merge commit that does not exist yet, so no PR touching a fetched
       # file can satisfy it. INTEGRITY stays hard on both.
       - run: node --test .claude/bootstrap-pin.test.mjs
+      # The findings buffer and its Stop gate (#162). Listed here for the reason
+      # the step below spells out, and the omission was live: the first push of
+      # that PR left this line out, so `schema` went green having never executed
+      # the suite — including the two negative tests that are the only evidence
+      # the gate refuses at all. A gate whose tests do not run in CI is back to
+      # being an author's assertion about their own work.
+      - run: node --test .claude/stop-hook-findings-check.test.mjs
       # The GitHub App permission reconciliation (#104). Fixture-only, so a
       # docs.github.com or raw.githubusercontent outage cannot turn it red for
       # reasons unrelated to the claim. Named explicitly like every step above:
