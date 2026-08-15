@@ -7,10 +7,20 @@ name: site-deploy
 #   preview  — pull + cosign-verify the artifact, upload an un-served Cloudflare version, and
 #              CRYPTOGRAPHICALLY VERIFY that version's own stable preview URL (deterministic: the
 #              <version>-<worker>.workers.dev URL serves exactly that version, so there is no edge
-#              propagation race — no retry needed). A failed verify means no promotion.
+#              propagation race — no retry needed). A failed verify means no promotion. Runs under
+#              the caller's `site-preview` Environment — NOT a reviewer gate (leave it unprotected;
+#              it auto-creates on first run), but the pin the broker's Workers-deploy tier requires:
+#              workersDeployAuthorized demands an environment claim, fail-closed, so an ungated
+#              preview mint needs an environment of its own (infra#336).
 #   promote  — gated behind the caller's `site-promote` Environment (set required reviewers there).
 #              On approval, deploy the SAME reviewed version to 100% prod, then confirm prod ROUTES
 #              to that verified version (manifest equality) + an RFC 9110 probe.
+#
+# Because the two jobs enter DIFFERENT environments, they cannot share one broker registry entry:
+# each job appends its role to `cf_broker_path` and POSTs <path>-preview / <path>-promote, two
+# entries per worker pinned to the matching environment. (Contract change from the original single
+# path, safe because no caller could ever complete a broker-path run before it — preview had no
+# environment, so its mint was unauthorized by construction.)
 #
 # The heavy cryptographic check runs once, deterministically, in preview; promote only proves prod
 # now serves the already-verified bytes. The caller keeps its own (site-specific) build job.
@@ -44,15 +54,19 @@ on:
         type: string
         default: ""
       cf_broker_path:
-        description: "Broker route that mints a Workers-deploy token, e.g. /cloudflare/<worker>."
+        description: >-
+          Broker route PREFIX for the Workers-deploy mints. Each job appends its role:
+          preview POSTs <prefix>-preview, promote POSTs <prefix>-promote — so the broker's
+          WORKERS_DEPLOY registry needs two entries per worker, one pinned to each
+          environment. E.g. /deploy/<worker> → /deploy/<worker>-preview + /deploy/<worker>-promote.
         required: false
         type: string
         default: ""
       cf_broker_audience:
-        description: "OIDC audience the broker pins."
+        description: "OIDC audience the broker's WORKERS_DEPLOY entries pin."
         required: false
         type: string
-        default: cf-oidc-token-broker
+        default: cloudflare-workers-deploy-broker
     secrets:
       CLOUDFLARE_API_TOKEN:
         description: >-
@@ -68,6 +82,13 @@ permissions:
 jobs:
   preview:
     runs-on: ubuntu-latest
+    env:
+      ROLE: preview # suffix for the per-role broker route — must match this job's environment
+    # A pin, not a gate — see the header. Keep `site-preview` unprotected in the caller repo;
+    # required reviewers belong on `site-promote` only.
+    environment:
+      name: site-preview
+      url: ${{ steps.upload.outputs.preview_url }}
     outputs:
       version_id: ${{ steps.upload.outputs.version_id }}
       preview_url: ${{ steps.upload.outputs.preview_url }}
@@ -77,6 +98,7 @@ jobs:
 
       # Pull the SIGNED artifact, verify its keyless signature against this repo's identity, unpack
       # exactly those bytes. Verify failure → no upload.
+      # role: preview — mints against <cf_broker_path>-preview, pinned to `site-preview`.
       # ── the Cloudflare credential ──────────────────────────────────────────
       # A STORED token is a standing capability: it sits in repo settings, is as
       # long-lived as whoever last rotated it, and is valid whether or not any
@@ -111,17 +133,20 @@ jobs:
             jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
             [ -n "${jwt:-}" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+            # Per-role registry entry — preview and promote enter different environments, so
+            # each mints against its own pinned route (see the cf_broker_path input).
+            route="${BROKER_PATH}-${ROLE}"
             # NOT `curl -f`: it discards the response body on an HTTP error, and
             # the broker's error body is the whole diagnosis. Observed against the
             # live broker, a mint failure returns cf_errors + token_check, and the
             # pair is what separates "my request was wrong" from "the broker's own
             # credential cannot grant this". `-f` would leave only "502".
             code="$(curl -sS -o /tmp/cfbroker.json -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${BROKER_PATH}" || echo 000)"
+              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${route}" || echo 000)"
             body="$(cat /tmp/cfbroker.json 2>/dev/null || true)"
             tok="$(jq -r '.token // empty' <<<"$body" 2>/dev/null || true)"
             if [ "$code" != "200" ] || [ -z "${tok:-}" ]; then
-              echo "::error::broker returned HTTP ${code} for ${BROKER_PATH}"
+              echo "::error::broker returned HTTP ${code} for ${route}"
               echo "::error::  response: ${body:0:900}"
               if grep -q '"ok":true' <<<"$body" && grep -q '9109' <<<"$body"; then
                 echo "::error::  → token_check ok + cf_error 9109 means the broker's OWN token cannot"
@@ -217,6 +242,8 @@ jobs:
   promote:
     needs: preview
     runs-on: ubuntu-latest
+    env:
+      ROLE: promote # suffix for the per-role broker route — must match this job's environment
     if: github.ref == 'refs/heads/main' && needs.preview.outputs.version_id != ''
     environment:
       name: site-promote
@@ -227,6 +254,7 @@ jobs:
 
       # Re-establish trust at promote time: pull + cosign-verify the signed artifact again, unpack
       # (needed by the prod-routes check below).
+      # role: promote — mints against <cf_broker_path>-promote, pinned to `site-promote`.
       # ── the Cloudflare credential ──────────────────────────────────────────
       # A STORED token is a standing capability: it sits in repo settings, is as
       # long-lived as whoever last rotated it, and is valid whether or not any
@@ -261,17 +289,20 @@ jobs:
             jwt="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
               "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value // empty')"
             [ -n "${jwt:-}" ] || { echo "::error::failed to obtain an OIDC token"; exit 1; }
+            # Per-role registry entry — preview and promote enter different environments, so
+            # each mints against its own pinned route (see the cf_broker_path input).
+            route="${BROKER_PATH}-${ROLE}"
             # NOT `curl -f`: it discards the response body on an HTTP error, and
             # the broker's error body is the whole diagnosis. Observed against the
             # live broker, a mint failure returns cf_errors + token_check, and the
             # pair is what separates "my request was wrong" from "the broker's own
             # credential cannot grant this". `-f` would leave only "502".
             code="$(curl -sS -o /tmp/cfbroker.json -w '%{http_code}' -X POST \
-              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${BROKER_PATH}" || echo 000)"
+              -H "Authorization: Bearer ${jwt}" "${BROKER_URL%/}${route}" || echo 000)"
             body="$(cat /tmp/cfbroker.json 2>/dev/null || true)"
             tok="$(jq -r '.token // empty' <<<"$body" 2>/dev/null || true)"
             if [ "$code" != "200" ] || [ -z "${tok:-}" ]; then
-              echo "::error::broker returned HTTP ${code} for ${BROKER_PATH}"
+              echo "::error::broker returned HTTP ${code} for ${route}"
               echo "::error::  response: ${body:0:900}"
               if grep -q '"ok":true' <<<"$body" && grep -q '9109' <<<"$body"; then
                 echo "::error::  → token_check ok + cf_error 9109 means the broker's OWN token cannot"
