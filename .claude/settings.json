@@ -6,16 +6,38 @@
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "", "hooks": [
-        { "type": "command", "command": "bash .claude/inject-org-context.sh" },
-        { "type": "command", "command": "bash .claude/status-probe.sh" },
-        { "type": "command", "command": "bash .claude/setup-toolpath.sh" }
-      ] }
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/inject-org-context.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/status-probe.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/setup-toolpath.sh"
+          }
+        ]
+      }
     ],
     "Stop": [
-      { "hooks": [
-        { "type": "command", "command": "bash .claude/stop-hook-findings-check.sh" }
-      ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/stop-hook-findings-check.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bash .claude/org-repair.sh)"
     ]
   }
 }
