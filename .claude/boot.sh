@@ -8,7 +8,16 @@
 # logic in the field is unreviewable and ungateable, infra#122's failure mode.
 set -uo pipefail
 
-ROOT=/home/user                                    # where the repo checkouts land
+# Where the repo checkouts land. Not a constant: HOME and the session root are
+# unrelated trees on some runners (HOME=/root with checkouts under /home/user was
+# measured 2026-08-15), and a self-hosted runner puts checkouts under its own base
+# directory. The caller may say (CLAUDE_SESSION_ROOT); otherwise probe, with the
+# historical layout as the last resort. Guards + assignments only — parseSteps in
+# gen-bootstrap-pin.mjs has no verb for loops, and needs none for this.
+ROOT="${CLAUDE_SESSION_ROOT:-}"
+[ -d "$ROOT/.github/.claude" ] || ROOT="$PWD"
+[ -d "$ROOT/.github/.claude" ] || ROOT="${PWD%/*}"
+[ -d "$ROOT/.github/.claude" ] || ROOT=/home/user
 BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
 
 # --- the trust anchor -------------------------------------------------------
@@ -81,9 +90,10 @@ fi
 # interpolate, and nothing else in that JSON is $-shaped. Escape any literal $
 # you add. (Spelled out in prose because a literal here-doc operator in this
 # comment would trip parseSteps' heredoc detection in gen-bootstrap-pin.mjs.)
-mkdir -p "$HOME/.claude"
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"          # where the harness reads settings
+mkdir -p "$CFG"
 if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
-  cat > "$HOME/.claude/settings.json" <<JSON
+  cat > "$CFG/settings.json" <<JSON
 {
   "hooks": {
     "SessionStart": [
@@ -111,9 +121,9 @@ fi
 # advised an --amend that would rewrite already-merged history. Copied rather than
 # executed here, but still digest-verified above when fetched, so the fallback
 # path installs the same bytes the attached checkout would.
-if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$HOME/.claude" ]; then
-  cp "$BOOT/stop-hook-git-check.sh" "$HOME/.claude/stop-hook-git-check.sh"
-  chmod +x "$HOME/.claude/stop-hook-git-check.sh"
+if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$CFG" ]; then
+  cp "$BOOT/stop-hook-git-check.sh" "$CFG/stop-hook-git-check.sh"
+  chmod +x "$CFG/stop-hook-git-check.sh"
   echo "bootstrap: stop-hook patched (infra#112)"
 fi
 

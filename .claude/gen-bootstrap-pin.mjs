@@ -186,7 +186,10 @@ export function parseSteps(source) {
 
     // Flatten `$( … )` command substitutions into fragments of their own, then
     // split compound lines; each fragment is classified by its first word.
-    for (let frag of line.replace(/\$\(/g, "; ").split(/&&|\|\||[;|{}]/)) {
+    // `${…}` parameter expansions are masked first: their braces are syntax
+    // inside a word, not compound-command delimiters, and splitting on them
+    // turns `ROOT="${CLAUDE_SESSION_ROOT:-}"` into a phantom fragment.
+    for (let frag of line.replace(/\$\{[^}]*\}/g, "$X").replace(/\$\(/g, "; ").split(/&&|\|\||[;|{}]/)) {
       frag = frag.replace(/^\s*(?:if|then|elif|else|fi|do|done|while|until)\b/, "").trim();
       if (!frag.replace(/["')]/g, "").trim()) continue;
       if (frag.startsWith("[")) continue; // guards observe; they do not install
