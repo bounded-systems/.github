@@ -75,9 +75,16 @@ on:
           which is the point of the broker. Kept for callers that have not migrated.
         required: false
 
+# id-token here is NOT a grant to callers — a called workflow's declared permissions can only
+# DOWNGRADE what the caller passes, and a declared block sets every unlisted scope to none. So
+# without id-token listed HERE, even a caller granting `id-token: write` had it stripped and the
+# broker path could never mint (bdelanghe/site run 31901488737 — the #171 gap). With it listed,
+# a caller that grants id-token keeps it, and one that doesn't intersects down to none and gets
+# the credential step's clear failure, exactly as before.
 permissions:
   contents: read
   packages: read
+  id-token: write
 
 jobs:
   preview:
@@ -125,7 +132,7 @@ jobs:
           if [ -n "${BROKER_URL:-}" ] && [ -n "${BROKER_PATH:-}" ]; then
             if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
               echo "::error::broker inputs are set but no OIDC token is available."
-              echo "::error::Add `permissions: id-token: write` to the CALLING job. Falling back to"
+              echo "::error::Grant 'id-token: write' in the CALLING workflow (the callee already declares it). Falling back to"
               echo "::error::the stored secret here would silently keep the credential you are"
               echo "::error::trying to eliminate, so this fails instead."
               exit 1
@@ -281,7 +288,7 @@ jobs:
           if [ -n "${BROKER_URL:-}" ] && [ -n "${BROKER_PATH:-}" ]; then
             if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
               echo "::error::broker inputs are set but no OIDC token is available."
-              echo "::error::Add `permissions: id-token: write` to the CALLING job. Falling back to"
+              echo "::error::Grant 'id-token: write' in the CALLING workflow (the callee already declares it). Falling back to"
               echo "::error::the stored secret here would silently keep the credential you are"
               echo "::error::trying to eliminate, so this fails instead."
               exit 1
