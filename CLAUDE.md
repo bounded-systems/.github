@@ -13,16 +13,25 @@ Keep it **short** — it costs context every session.
 ## 1. Check the bootstrap, and repair it if it is not in effect
 
 ```sh
-cmp -s ~/.claude/stop-hook-git-check.sh .claude/stop-hook-git-check.sh \
+R="${CLAUDE_SESSION_ROOT:-}"                     # resolve the checkout root — never assume /home/user
+[ -f "$R/.github/.claude/boot.sh" ] || R="$PWD"
+[ -f "$R/.github/.claude/boot.sh" ] || R="${PWD%/*}"
+[ -f "$R/.github/.claude/boot.sh" ] || R=/home/user
+C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+cmp -s "$C/stop-hook-git-check.sh" "$R/.github/.claude/stop-hook-git-check.sh" \
   && echo "bootstrap in effect" || {
-  B=/home/user/.github/.claude/boot.sh   # attached checkout — same bytes, no egress
+  B="$R/.github/.claude/boot.sh"   # attached checkout — same bytes, no egress
   echo "$ORG_BOOT_SHA256  $B" | sha256sum -c --status - 2>/dev/null || {
   B=""
   curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 \
     --max-time 30 "https://boot.bounded.tools/$ORG_BOOT_SHA256.sh" -o /tmp/boot.sh \
     && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && B=/tmp/boot.sh; }
-  [ -n "$B" ] && bash "$B" || echo "bootstrap: REFUSED — no copy matched \$ORG_BOOT_SHA256"
-  CLAUDE_SESSION_ROOT=/home/user node /home/user/.github/.claude/session-start-dispatch.mjs
+  if [ -n "$B" ]; then
+    CLAUDE_SESSION_ROOT="$R" bash "$B"
+    D="$R/.github/.claude/session-start-dispatch.mjs"
+    [ -f "$D" ] || D=/opt/bounded-boot/session-start-dispatch.mjs
+    CLAUDE_SESSION_ROOT="$R" node "$D"
+  else echo "bootstrap: REFUSED — no copy matched \$ORG_BOOT_SHA256"; fi
 }
 ```
 

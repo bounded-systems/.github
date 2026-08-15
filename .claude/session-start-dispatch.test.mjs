@@ -83,6 +83,15 @@ function resolveShellVars(value, source) {
   for (const [, k, v] of source.matchAll(/^\s*(\w+)=["']?([^"'\s#]+)["']?\s*(?:#.*)?$/gm)) {
     if (!(k in vars)) vars[k] = v;
   }
+  // A probe chain — `[ -d … ] || VAR=value`, repeated — resolves in file order,
+  // and its LAST fallback is what a shell produces in the no-env historical
+  // layout (`${CLAUDE_SESSION_ROOT:-}` of an unset variable is empty, and the
+  // earlier $PWD probes equal the last resort in that layout anyway). The pin
+  // below describes exactly that layout, so the last fallback overrides the
+  // chain's empty primary.
+  for (const [, k, v] of source.matchAll(/\]\s*\|\|\s*(\w+)=["']?([^"'\s#]+)["']?/g)) {
+    vars[k] = v;
+  }
   let out = value;
   for (let i = 0; i < 5 && /\$/.test(out); i++) {
     out = out.replace(/\$\{(\w+)\}|\$(\w+)/g, (m, a, b) => vars[a ?? b] ?? m);
