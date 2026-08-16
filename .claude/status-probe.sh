@@ -33,23 +33,28 @@
 #      sessions need exactly ONE owned host allowlisted instead of every
 #      vendor's, and it can serve MOCK incidents for testing outage handling.
 #      A parseable AND FRESH snapshot ends the probe, healthy or not.
-#   2. Direct Statuspage APIs. Anthropic's page MOVED 2026-08-07 (infra#224):
-#      status.anthropic.com now 302s to status.claude.com, and fetch() below
-#      does not follow redirects, so the pre-move default was silently dead —
-#      jq failed on the redirect HTML and the probe said nothing. The default
-#      now names the new host. NOTE: in cloud sessions the direct probes stay
-#      unreachable until the environment's network policy allowlists the
-#      hosts (measured 2026-08-06, re-measured for the new host 2026-08-07):
-#        - www.githubstatus.com — denied at CONNECT (proxy answers 403 to the
-#          tunnel).
-#        - status.claude.com — same mechanism, denied at CONNECT. The
-#          PRE-move host was the interesting one: it bypassed the proxy
-#          (`.anthropic.com` is on NO_PROXY) and was refused by the egress
-#          filter itself (`HTTP/2 403, x-deny-reason: host_not_allowed`) —
-#          bypassing the proxy is NOT the same as being allowed out.
-#      Source 1 is the fix: one owned host to allowlist instead of one per
-#      vendor. Elsewhere (local dev, CI runners) the direct probes work
-#      normally.
+#   2. Statuspage summaries via the status Worker's scoped relay —
+#      https://status.bounded.tools/upstream/<provider>/api/v2/summary.json
+#      (infra cloudflare/status, .github-private#534) — since 2026-08-16, when
+#      the direct-host defaults were retired along with their dialog grants
+#      (status.claude.com, *.githubstatus.com). The relay serves the vendor
+#      body VERBATIM from Cloudflare's network, so the jq below behaves
+#      exactly as it did against the vendor: a non-JSON 200 fails the parse
+#      and skips silently, a Worker 502 fails curl -f and skips silently.
+#      Both fallbacks now ride the SAME owned host as source 1 — one grant
+#      (*.bounded.tools) covers the whole probe, and what source 2 still adds
+#      is the case where the SNAPSHOT is stale/broken while the Worker and
+#      vendor are both fine. Worker fully down takes snapshot and relay
+#      together; that residual case is accepted (the probe fails open and
+#      says an absent warning is not proof of health). History that shaped
+#      this: the pre-2026-08-16 defaults named the vendor hosts directly,
+#      reachable in cloud sessions only through two dialog grants (#316);
+#      before THAT, Anthropic's page moved (status.anthropic.com 302 →
+#      status.claude.com, infra#224) and the stale default died silently —
+#      fetch() does not follow redirects, by design. Vendor page moves are
+#      now the Worker's PROVIDERS map's problem, fixed in one place.
+#      Elsewhere (local dev, CI runners) the relay works the same — it is a
+#      public read on the public internet.
 set -uo pipefail
 command -v curl >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
@@ -63,8 +68,8 @@ fetch() { curl -fsS --connect-timeout 1 --max-time 3 "$1" 2>/dev/null; }
 # status-probe.test.mjs can point every source at a file:// fixture and
 # exercise each path with no network. They are not a redirection mechanism —
 # pointing sessions somewhere else is what BOUNDED_STATUS_URL is for.
-: "${BOUNDED_STATUS_GITHUB_URL:=https://www.githubstatus.com}"
-: "${BOUNDED_STATUS_ANTHROPIC_URL:=https://status.claude.com}"
+: "${BOUNDED_STATUS_GITHUB_URL:=https://status.bounded.tools/upstream/github}"
+: "${BOUNDED_STATUS_ANTHROPIC_URL:=https://status.bounded.tools/upstream/anthropic}"
 
 warnings=""
 add_warning() { warnings="${warnings}${1}"$'\n'; }
