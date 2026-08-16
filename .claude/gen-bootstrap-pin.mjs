@@ -80,6 +80,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT = join(HERE, "boot.sh");
+const README_MD = join(HERE, "README.md");
 
 export const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
 
@@ -348,6 +349,44 @@ export function planBump(source, { commit, read = fileAtCommit } = {}) {
   return { write: true, next, reason: `pinned ${commit.slice(0, 12)} (${fetches.length} digest(s) re-recorded)` };
 }
 
+/**
+ * The canonical field line in README — the one text an operator hand-types.
+ *
+ * Matched on `curl` + the host rather than by line number, the same way
+ * bootstrap-pin.test.mjs finds it, so both agree on which line is the field.
+ */
+const fieldLine = (readme) => readme.split("\n").find((l) => l.includes("curl") && l.includes("boot.bounded.tools/"));
+
+/** The 64-hex literal the field currently names, or null if it carries none. */
+export function fieldDigestOf(readme) {
+  return fieldLine(readme)?.match(/boot\.bounded\.tools\/([0-9a-f]{64})\.sh/)?.[1] ?? null;
+}
+
+/**
+ * Point the field at `digest`, on that line only.
+ *
+ * ── Why the bump has to do this (#184 → #185) ────────────────────────────────
+ * Until #506 the field derived its URL from `$ORG_BOOT_SHA256`, so README named
+ * no digest and a bump touching only boot.sh was complete. #506 made the digest a
+ * LITERAL — the init phase has no dialog variables, so a field that reads the
+ * variable fetches "…/.sh" and 404s into a hookless session. That made README's
+ * field a second copy of boot.sh's identity, and the bump was never taught about
+ * it: the first bump after #506 rewrote boot.sh, left the field naming the
+ * pre-bump payload, and went red on its own gate. Every later bump would have.
+ *
+ * Scoped to the field line because README legitimately quotes other digests in
+ * prose (worked examples, the old value in a bump note); a file-wide replace
+ * would rewrite the documentation along with the instruction.
+ *
+ * No fixpoint problem: README is deliberately outside the fetch set and is not
+ * hashed into boot.sh, so rewriting it cannot invalidate the digest just written.
+ */
+export function renderField(readme, digest) {
+  const line = fieldLine(readme);
+  if (!line) return readme;
+  return readme.replace(line, line.replace(/[0-9a-f]{64}/g, digest));
+}
+
 function main(argv) {
   const source = readFileSync(BOOT, "utf8");
   const check = argv.includes("--check");
@@ -386,6 +425,20 @@ function main(argv) {
       console.error(`bootstrap-pin: STALE — the pin ${pin.slice(0, 12)} predates ${stale.join(", ")}.`);
       return 2; // distinct from 1: expected on a PR, actionable only after merge
     }
+    // The outer half of the same question. INTEGRITY above asks whether the
+    // pinned files match the pin; this asks whether the field names the payload
+    // an operator would actually be told to fetch. A field pointing at a digest
+    // no longer on disk fails closed at boot — sha256sum -c refuses and the
+    // session starts hookless — so it is exit 1 with the others, not a warning.
+    const named = fieldDigestOf(readFileSync(README_MD, "utf8"));
+    if (named !== sha256(source)) {
+      console.error(
+        `bootstrap-pin: FIELD — README names ${named?.slice(0, 12) ?? "no digest"} but boot.sh hashes to ` +
+          `${sha256(source).slice(0, 12)}. The one-line field would fetch a payload it then refuses. ` +
+          `Regenerate: node .claude/gen-bootstrap-pin.mjs ${pin}`,
+      );
+      return 1;
+    }
     console.log(`bootstrap-pin: ok — ${pin.slice(0, 12)} serves what this tree contains`);
     return 0;
   }
@@ -399,6 +452,15 @@ function main(argv) {
   }
   writeFileSync(BOOT, next);
   console.log(`bootstrap-pin: ${reason}`);
+  // The field names the payload by digest, and the bytes just changed. Written
+  // in the same run as boot.sh so the pair cannot land half-updated — that split
+  // is exactly what left #185 red.
+  const readme = readFileSync(README_MD, "utf8");
+  const rendered = renderField(readme, sha256(next));
+  if (rendered !== readme) {
+    writeFileSync(README_MD, rendered);
+    console.log(`bootstrap-pin: field digest re-pointed — ${sha256(next).slice(0, 12)}…`);
+  }
   // The outer half, stated as far as it can be stated today: the SHA-256 is
   // final (it hashes the bytes just written), but the URL's commit can only be
   // the merge commit this bump lands as. `--outer` completes it after merge.
