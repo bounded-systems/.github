@@ -8,9 +8,11 @@
 # Best-effort SessionStart hook (third in settings.json; the dispatcher fans it
 # out to cloud sessions like the other two): a session without `path` is
 # degraded, not broken, so every precondition is probed rather than assumed and
-# every early exit is quiet and 0. The preconditions live OUTSIDE this script —
-# the environment's network allowlist and a Pathbase token are environment-owner
-# levers, documented in `.github-private` → docs/handoffs/toolpath-pathbase.md.
+# every early exit is quiet and 0. The one precondition lives OUTSIDE this
+# script — the environment's network allowlist (crates.io, for the install) —
+# documented in `.github-private` → docs/handoffs/toolpath-pathbase.md. There
+# is NO token lever anymore: sharing goes through the pathbase door, which
+# keeps every credential server-side (.github#180).
 #
 # Every status line goes to STDOUT, and that is load-bearing: SessionStart
 # injects a hook's stdout into the session's context, while stderr goes only to
@@ -36,137 +38,30 @@ set -uo pipefail
 
 LOG="${HOME:-/root}/.claude/toolpath-install.log"
 
-# ── Pathbase lease (.github#115 step 3 wiring; #119 grant flow) ──────────────
-# If the environment carries the two lease levers, turn them into the
-# credentials file a stock `path` reads. Both levers are environment-owner
-# config (the environment selector), and their absence is the normal case —
-# skip silently, not degraded.
+# ── The pathbase DOOR (.github#180) — how a session shares its transcript ────
+# The lease-key apparatus that lived here (2026-08-07 → 2026-08-16) is GONE,
+# and deliberately: PATHBASE_LEASE_KEY was retired from the dialog outright
+# (.github#179 — the redeem host was never on the egress allowlist, so the key
+# could not produce a login in any session; rotating it would have replaced one
+# exposed shared secret with another). Nothing replaced it IN THE SESSION,
+# which is the point of the door: no credential reaches a session in any form.
 #
-# The broker's /lease/<name> tier answers in one of two shapes, and the hook
-# handles both because the registry — not this script — decides which:
-#   {url, code, expires_in}  GRANT mode (#119, the default for pathbase): a
-#                            short-lived single-use pairing code. The hook
-#                            redeems it at the vendor's public redeem endpoint
-#                            — unauthenticated by design, the code IS the auth
-#                            — and receives a token minted FOR THIS SESSION,
-#                            individually revocable at the vendor. Redeeming
-#                            via curl rather than `path auth login --code` is
-#                            deliberate: the binary may still be compiling in
-#                            the background, and a 10-minute code must not
-#                            wait on a 5-minute compile.
-#   {url, token, user}       VAULT mode: already credentials.json's shape;
-#                            written as-is.
+# Sharing now goes through the pathbase-door Worker on pathbase.bounded.tools
+# (infra cloudflare/pathbase-door — write-only gateway, claim-gated, the pat
+# stays vaulted in the Worker). The claim rides in the base URL, so the recipe
+# is per-claim, printed here for the session to use once it holds one:
 #
-# Ordering: BEFORE the install/early-exit ladder, so the container is authed
-# the moment the binary lands — and the already-installed branch below reports
-# the auth state this block just established. A REAL login always wins: an
-# existing credentials file is never overwritten (report it instead;
-# `path auth logout` is the release).
-CRED_DIR="${TOOLPATH_CONFIG_DIR:-${HOME:-/root}/.toolpath}"
-CRED_FILE="$CRED_DIR/credentials.json"
-# The pathbase lease endpoint defaults to the broker's own custom domain, so the
-# environment dialog no longer needs to carry PATHBASE_LEASE_URL (2026-08-10).
-# This is what lets the cf-token-broker.titular-0-kicks.workers.dev entry leave
-# the allowlist: broker.bounded.tools is under *.bounded.tools, already granted,
-# and it fronts the same Worker (verified byte-identical on /lease/<name>). Still
-# overridable for a scratch/test broker. THE BEARER: the dialog's lease key, and
-# ONLY that. No bearer → anonymous sharing, exactly as before.
+#   path p import claude --project "$PWD" --session "<session-id>"
+#   PATHBASE_URL="https://pathbase.bounded.tools/c/<repo>/<issue>" \
+#     path p export pathbase --anon --input <doc-id>
 #
-# The GH_TOKEN fallback added here on 2026-08-10 (#149, infra#270) is REMOVED as
-# of 2026-08-11: a session cannot authenticate as itself, measured and reverted
-# in infra#282. GH_TOKEN and GITHUB_TOKEN in a cloud session are the SAME
-# 14-character placeholder (prefix "prox"), not credentials — the session's
-# egress proxy authenticates to GitHub on its behalf, and the broker calls
-# api.github.com from OUTSIDE that proxy, so a session bearer always 401s.
-# This is documented platform design (Claude Code on the web, "Security and
-# isolation": credentials "are never inside the sandbox"), so the fallback could
-# never have worked and no future one can. Keeping it would have been worse than
-# dead code: the moment the dialog's key is absent, it sends a placeholder that
-# 401s and reports a refusal that looks like a broker misconfiguration rather
-# than a missing key.
-PATHBASE_LEASE_URL="${PATHBASE_LEASE_URL:-https://broker.bounded.tools/lease/pathbase}"
-PATHBASE_LEASE_BEARER="${PATHBASE_LEASE_KEY:-}"
-if [ -n "$PATHBASE_LEASE_BEARER" ]; then
-  if [ -f "$CRED_FILE" ]; then
-    echo "toolpath: lease levers set but credentials already exist — keeping the existing login ($CRED_FILE)"
-  else
-    # The broker records x-session-id as CLAIMED provenance (explicitly
-    # unverified there); send what this runtime knows about itself.
-    lease="$(curl -fsS --max-time 10 -X POST \
-      -H "Authorization: Bearer $PATHBASE_LEASE_BEARER" \
-      -H "X-Session-Id: ${CLAUDE_CODE_SESSION_ID:-unknown}" \
-      "$PATHBASE_LEASE_URL" 2>/dev/null || true)"
-    # Grant shape → redeem the code for this session's own token. python3 is
-    # in the cloud image (this is a cloud-session hook); it does the JSON
-    # handling so the code and token never transit argv or a shell variable
-    # expansion inside a larger command line.
-    if [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"code"' && command -v python3 >/dev/null 2>&1; then
-      creds="$(printf '%s' "$lease" | python3 -c '
-import json, sys, urllib.request
-lease = json.load(sys.stdin)
-req = urllib.request.Request(
-    lease["url"] + "/api/v1/auth/cli/redeem",
-    data=json.dumps({"code": lease["code"]}).encode(),
-    headers={"content-type": "application/json"},
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(req, timeout=10) as r:
-        body = json.load(r)
-except Exception:
-    sys.exit(1)
-if not body.get("token"):
-    sys.exit(1)
-print(json.dumps({"url": lease["url"], "token": body["token"], "user": body.get("user", {})}))
-' 2>/dev/null || true)"
-      if [ -n "$creds" ]; then
-        mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
-        printf '%s' "$creds" > "$CRED_FILE" && chmod 600 "$CRED_FILE"
-        echo "toolpath: Pathbase grant redeemed — this session has its own token at $CRED_FILE (revoke just this one at the vendor, or \`path auth logout\`)"
-      else
-        # The code is single-use and 10-minute — a failed redeem burns it, and
-        # re-leasing mints a fresh one, so say WHICH leg failed — and, since
-        # .github#179, which SIDE failed. This line used to say "Vendor redeem
-        # endpoint unreachable or code rejected", naming the vendor first for
-        # what was measured on 2026-08-16 to be an egress-allowlist gap of our
-        # own: pathbase.dev was never granted, so the redeem could not open a
-        # socket, while the reader was pointed at a service that was working
-        # the whole time. Splitting the two costs one probe on a path that has
-        # already failed. The discriminator is the one cloud-environment.json's
-        # knownCaveats defines: no HTTP status at all (000, a refused CONNECT)
-        # means NOT GRANTED; any status means the host answered and the vendor
-        # is the one that said no.
-        redeem_host="$(printf '%s' "$lease" | sed -n 's|.*"url":"https\{0,1\}://\([^"/]*\).*|\1|p')"
-        redeem_host="${redeem_host:-pathbase.dev}"
-        probe="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$redeem_host/" 2>/dev/null || true)"
-        if [ "${probe:-000}" = "000" ]; then
-          echo "toolpath: Pathbase lease minted a code but the REDEEM HOST $redeem_host IS UNREACHABLE (refused CONNECT, no HTTP status) — sharing will be anonymous. This is an EGRESS ALLOWLIST gap on our side, NOT a vendor fault: grant the host in the environment dialog and record it in .github-private/.claude/cloud-environment.json — which also moves ORG_ENV_CONFIG, so it is two dialog edits (.github#179)."
-        else
-          echo "toolpath: Pathbase lease minted a code but the vendor REJECTED the redeem ($redeem_host answered HTTP $probe) — sharing will be anonymous. Egress to the host is fine; the grant code was refused or had already expired (single-use, 10 minutes) (.github#119)."
-        fi
-      fi
-    elif [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"token"'; then
-      mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
-      printf '%s' "$lease" > "$CRED_FILE" && chmod 600 "$CRED_FILE"
-      echo "toolpath: Pathbase lease redeemed (vault mode — the shared credential) — credentials at $CRED_FILE (release: rotate the lease key, or \`path auth logout\`)"
-    else
-      # Fail soft and SAY so: a refused lease is an environment/broker state
-      # the session cannot fix, but silence here is how #117's lesson repeats.
-      # Name the LIKELIEST cause first, and make the two states distinguishable:
-      # a 401 means the dialog's key no longer matches either slot (the expected
-      # state after a burn_both_slots rotation whose paste has not landed yet);
-      # a 500 means a slot secret is missing entirely and the broker is failing
-      # closed before authentication. Pointing at githubLogins here would send
-      # the reader down the path infra#282 measured as impossible.
-      if [ -n "${PATHBASE_LEASE_KEY:-}" ]; then
-        bearer_desc="the dialog PATHBASE_LEASE_KEY"
-      else
-        bearer_desc="ABSENT -- no PATHBASE_LEASE_KEY in this environment"
-      fi
-      echo "toolpath: Pathbase lease REFUSED or unreachable ($PATHBASE_LEASE_URL) — sharing will be anonymous. Bearer was $bearer_desc. Most likely the dialog key is stale after a rotation: decrypt the newest rotate-lease-key run blob and paste it (docs/handoffs/lease-key-rotation.md in .github-private). 401 = key matches neither slot; 500 = a slot secret is missing (.github#115, infra#283)."
-    fi
-  fi
-fi
+# --anon is what makes the STOCK CLI hit the door's one route; the door
+# upgrades the call with the org credential server-side and the upload lands
+# unlisted in the org pathstash — NOT on the vendor's public anonymous
+# endpoint. No live Front Desk claim on <repo>#<issue> → 403. The door posts
+# the share URL back on the claim thread itself (its own testimony).
+PATHBASE_DOOR_URL="${PATHBASE_DOOR_URL:-https://pathbase.bounded.tools}"
+echo "toolpath: share through the door — PATHBASE_URL=\"$PATHBASE_DOOR_URL/c/<repo>/<issue>\" path p export pathbase --anon --input <doc-id> (needs a live claim; .github#180)"
 
 # Already present — attached image, a prior container hook, or a future baked
 # image. Report rather than reinstall; auth state is the useful part.
