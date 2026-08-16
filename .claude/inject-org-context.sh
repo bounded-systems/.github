@@ -56,5 +56,23 @@ if [ -z "$ctx" ]; then
   echo "org context NOT loaded — all sources failed (public raw, gh api, git clone, curl+token). Degraded mode: see the org stanza in CLAUDE.md."
   exit 0
 fi
+
+# One session start injects this block ONCE (#508, measured 2026-08-16): the
+# attached repo's own SessionStart hook and the boot-installed dispatcher both
+# run this script, in separate envelopes no in-process merge can reach — so the
+# second run detects the first through a short-lived marker and stays silent.
+# The predicate is "already INJECTED", never "other hook installed" — installed
+# is not fired (#427, #506). Keyed by session id and aged 90s: sibling hooks in
+# one start fire seconds apart, while distinct starts (create → resume, or the
+# snapshot's --init-only pass → the first real session) are minutes apart or
+# carry a different id. Marker only on SUCCESS: a degraded run writes nothing,
+# so a later sibling that can reach the context still injects it.
+m="/tmp/.bounded-org-context.${CLAUDE_CODE_SESSION_ID:-any}"
+now="$(date +%s)"
+mt="$(stat -c %Y "$m" 2>/dev/null || stat -f %m "$m" 2>/dev/null || echo 0)"
+if [ -f "$m" ] && [ $((now - mt)) -lt 90 ]; then
+  exit 0
+fi
+touch "$m" 2>/dev/null || true
 jq -n --arg c "$ctx" \
   '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$c}}'
