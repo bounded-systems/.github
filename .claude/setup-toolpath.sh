@@ -96,8 +96,12 @@ fi
 # prebuilt recorded yet" and the script goes straight to the compile — the
 # arrival state this file ships in. Dispatch `toolpath-prebuild.yml`, then record
 # the pair it prints. VERSION and SHA256 are ONE PAIR — move them together.
-TOOLPATH_VERSION=0.16.1
-TOOLPATH_SHA256=
+# A 4th version component counts republishes of the same path-cli version:
+# .github has immutable releases, so a tag that published wrong is burned
+# forever and the fix is a fresh tag (0.16.1.2 = second publish of 0.16.1;
+# toolpath-v0.16.1 is the standing tombstone — see toolpath-prebuild.yml).
+TOOLPATH_VERSION=0.16.1.2
+TOOLPATH_SHA256=92587827c244751209a7d193ac054bbcd0a7c3741932292a316812c669cd8809
 TOOLPATH_TRIPLE=x86_64-unknown-linux-gnu
 # ~/.local/bin, not ~/.cargo/bin: the prebuilt path must not depend on cargo
 # existing, and this directory is already first on the front-desk image's PATH
