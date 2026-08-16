@@ -96,37 +96,48 @@ this file is what the field should be returned to.
 Since #125 the field is **one line**. Everything it used to do lives in
 [`boot.sh`](boot.sh) — fetched, digest-checked, and only then executed — so the
 body is reviewed, tested and gated in-repo, and the only hand-typed text left
-is a line that changes only when its own failure behaviour does (three times
+is a line that changes only when its own failure behaviour does (four times
 so far: retries for the measured init-time failure and deriving the URL from
 the digest, both 2026-08-10; embedding the digest literally and logging the
-run, 2026-08-16 — see below):
+run, 2026-08-16 morning; going channel-based and WRITE-ONCE the same evening,
+#192 — see below):
 
 ```sh
-{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/980c95e2d66b3201d9caf60e7ba9e09ef034680f7795c6651faeed59978bdf5a.sh" -o /tmp/boot.sh && echo "980c95e2d66b3201d9caf60e7ba9e09ef034680f7795c6651faeed59978bdf5a  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
+{ B=https://boot.bounded.tools; S=$(curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "$B/channel/front-desk.json" | sed -n 's/.*"boot":"\([0-9a-f]\{64\}\)".*/\1/p') && [ -n "$S" ] && curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "$B/$S.sh" -o /tmp/boot.sh && echo "$S  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
 ```
 
-The digest in the field is a **literal, not `$ORG_BOOT_SHA256`**, and that is a
-measured constraint, not a style choice: the init phase runs the setup script
-**without the dialog's environment variables** (`sha=UNSET` printed from inside
-the init run, while every probe from the session's own process sees the
-variable — `.github-private`#506, 2026-08-16). The var-derived field expanded
-its URL to `…/.sh`, 404'd in under a second through perfectly healthy egress,
-and the fail-open tail hid it; on all evidence in the record, the derived
-field never once completed at init. Do not "simplify" the literal back to the
-variable — `bootstrap-pin.test.mjs` pins the field's literal to the sha256 of
-this repo's own `boot.sh`, so the text and the payload cannot drift apart.
+The field is **WRITE-ONCE since #192** (2026-08-16 evening): it names no
+digest at all. It reads the **channel manifest**
+(`boot.bounded.tools/channel/front-desk.json`), extracts the payload digest
+with `sed` (compact `"boot":"<hex64>"` is the Worker-side contract, pinned by
+infra `cloudflare/boot`'s suite), fetches `/<sha256>.sh`, `sha256sum -c`s it
+against the manifest's value, and only then executes. The manifest is written
+solely by `boot-manifest.yml` on main, authenticated by its own **OIDC**
+identity against GitHub's JWKS (no secret anywhere in the lane); the Worker
+refuses digests absent from the payload store and non-monotonic versions. So a
+`boot.sh` release is: publish the payload (infra), merge here, done — the lane
+flips the channel, **no dialog visit, ever**. `bootstrap-pin.test.mjs` now
+holds the field to the channel form and refuses any reappearing digest
+literal. The #506 constraint stands unchanged underneath: the init phase has
+**no dialog environment variables** (`sha=UNSET`, measured), which is exactly
+why the pre-#192 field embedded its digest as a literal — the interim form
+that this one supersedes; a legacy field that still names a digest is held to
+the old must-match-boot.sh rule so a stale paste stays caught. The trust
+statement, plainly: the channel surface makes "what merged to main" the root
+of trust, mediated by the OIDC pin — the host is no longer merely
+non-trust-bearing for the channel read; the accepted delta and its detection
+lane (`attest-boot`) are recorded in `.github`#192 and the Worker's header.
 
-`ORG_BOOT_SHA256` the **variable** stays in the dialog for the consumers that
-run where variables exist: `cloud-env-check.mjs`, `org-repair.sh`, and the
-CLAUDE.md step-1 gate all verify against it in-session. It is recorded in
-`.github-private` → `.claude/cloud-environment.json` alongside the other
-`ORG_`-prefixed values — which puts it inside the `ORG_ENV_CONFIG` digest, the
-`env-record.yml` honesty gate, and `cloud-env-check.mjs`'s every-boot drift
-check. A digest bump therefore moves **three dialog things together, in one
-sitting**: re-paste the field text (new literal), set the `ORG_BOOT_SHA256`
-variable, and recompute `ORG_ENV_CONFIG` (`node
-.claude/hooks/cloud-env-check.mjs --print-digest` in `.github-private`, after
-writing the new value). Get the current digest with:
+`ORG_BOOT_SHA256` the **variable** is RETIRING (#192 part 2): `org-repair.sh`
+already resolves channel-first and honors the variable only while it exists (a
+dialog pin is a deliberate hold on a version, so it wins over the channel until
+deleted); the CLAUDE.md step-1 snippets and the `.github-private` record swap
+complete the retirement, after which the dialog's only variables are
+`BS_ROUTES_CONFIG` and nothing boot-related at all. Until that toggle, a bump
+needs no dialog edit for NEW boots (the channel serves them) while sessions
+created with the variable keep their pinned digest. What `--outer` prints is
+now the value `channel/front-desk.json` should carry — compare with
+`curl -s https://boot.bounded.tools/channel/front-desk.json`:
 
 ```sh
 node .claude/gen-bootstrap-pin.mjs --outer origin/main
