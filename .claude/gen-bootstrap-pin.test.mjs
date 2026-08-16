@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { digestsAt, inspect, outerPair, parseBootstrap, parseSteps, planBump, renderBootstrap, sha256 } from "./gen-bootstrap-pin.mjs";
+import { digestsAt, fieldDigestOf, inspect, outerPair, parseBootstrap, parseSteps, planBump, renderBootstrap, renderField, sha256 } from "./gen-bootstrap-pin.mjs";
 
 const A = "a".repeat(40);
 const B = "b".repeat(40);
@@ -244,6 +244,53 @@ test("a bash invocation with no script is an error, not an unnamed step", () => 
   // The `|| true` fragment parses on its own, so a bare verb must not quietly
   // claim an artifact of `undefined`.
   assert.throws(() => parseSteps("#!/usr/bin/env bash\nbash\n"), /"bash" with no script/);
+});
+
+// ── The field digest follows the payload (#184 → #185) ───────────────────────
+
+const FIELD = (d) =>
+  `# Setup\n\n` +
+  `{ curl -fsSL "https://boot.bounded.tools/${d}.sh" -o /tmp/boot.sh && echo "${d}  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh; }\n\n` +
+  `Earlier this was ${"a".repeat(64)}, quoted here on purpose.\n`;
+
+const NEW = "b".repeat(64);
+
+test("a bump re-points the field at the payload it just wrote", () => {
+  // The gap that opened #185 red: until #506 the field derived its URL from
+  // $ORG_BOOT_SHA256 and named no digest, so a bump touching only boot.sh was
+  // complete. #506 made it a literal and nothing taught the bump about it.
+  const out = renderField(FIELD("c".repeat(64)), NEW);
+  assert.equal(fieldDigestOf(out), NEW);
+  assert.equal(out.split(NEW).length - 1, 2, "the field must carry the digest twice — URL and sha256sum check");
+});
+
+test("only the field line is rewritten, so quoted digests survive", () => {
+  // README documents old values and worked examples. A file-wide replace would
+  // rewrite the documentation along with the instruction.
+  const out = renderField(FIELD("c".repeat(64)), NEW);
+  assert.match(out, new RegExp(`Earlier this was ${"a".repeat(64)}`));
+});
+
+test("re-pointing an already-correct field changes nothing", () => {
+  // The bump runs on every push; a no-op must stay a no-op or it opens a PR
+  // with an empty diff forever — the loop "Why this terminates" argues against.
+  const already = FIELD(NEW);
+  assert.equal(renderField(already, NEW), already);
+});
+
+test("a field with no digest is left alone rather than corrupted", () => {
+  const prose = "no canonical field here\n";
+  assert.equal(renderField(prose, NEW), prose);
+  assert.equal(fieldDigestOf(prose), null);
+});
+
+test("THE FIXPOINT: after a bump, the field names the boot.sh actually on disk", () => {
+  // The property, stated end to end rather than as two half-checks: whatever the
+  // bump writes to boot.sh, the field must name THAT. This is the assertion that
+  // would have caught #185 before it opened.
+  const bumped = renderBootstrap(fixture({ pin: A }), { pin: B, digests: digestsAt(B, parseBootstrap(fixture({})).fetches, { read }) });
+  const readme = renderField(FIELD("c".repeat(64)), sha256(bumped));
+  assert.equal(fieldDigestOf(readme), sha256(bumped));
 });
 
 test("the outer pair is content-addressed and the URL is derived from the SHA", () => {

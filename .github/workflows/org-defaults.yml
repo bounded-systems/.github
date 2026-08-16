@@ -165,17 +165,28 @@ jobs:
             gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/heads/$b" -f sha="$GITHUB_SHA" >/dev/null
           fi
+          # BOTH files, always. The bump moves boot.sh's bytes, and README's
+          # one-line field names that payload by literal digest since #506 — so a
+          # commit carrying boot.sh alone lands a field pointing at the PREVIOUS
+          # payload, which fails its own gate (`README's canonical field embeds
+          # this repo's boot.sh digest, literally`) and would fail closed at boot.
+          # That is exactly how #185, the first bump after #506, opened red.
+          # The generator writes both; this must commit both, or it re-splits them.
           gh api graphql \
-            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) {
+            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!, $r: Base64String!) {
               createCommitOnBranch(input: {
                 branch: { repositoryNameWithOwner: $repo, branchName: $b },
                 expectedHeadOid: $head,
                 message: { headline: $msg },
-                fileChanges: { additions: [{ path: ".claude/boot.sh", contents: $c }] }
+                fileChanges: { additions: [
+                  { path: ".claude/boot.sh", contents: $c },
+                  { path: ".claude/README.md", contents: $r }
+                ] }
               }) { commit { oid } } }' \
             -f repo="$GITHUB_REPOSITORY" -f b="$b" -f head="$GITHUB_SHA" \
             -f msg="chore(bootstrap): pin ${GITHUB_SHA:0:12} and re-record digests" \
-            -f c="$(base64 -w0 .claude/boot.sh)"
+            -f c="$(base64 -w0 .claude/boot.sh)" \
+            -f r="$(base64 -w0 .claude/README.md)"
           gh pr view "$b" --json state --jq .state 2>/dev/null | grep -q OPEN && { echo "bump PR already open — updated it"; exit 0; }
           # --body-file, never an inline --body. Prose wants blank lines, a `---`
           # rule and a leading `_`, and inside a `run: |` block scalar every one
