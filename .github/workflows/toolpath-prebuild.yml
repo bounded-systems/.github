@@ -128,6 +128,13 @@ jobs:
           # it is uploaded — not re-derived afterwards from a download.
           sum="$(sha256sum "$RUNNER_TEMP/$ASSET" | cut -d' ' -f1)"
 
+          # Say the digest BEFORE touching the network. Run 31969324450 created
+          # the release, lost the asset upload, and printed nothing — so a
+          # four-minute compile produced neither bytes nor a number, and the
+          # failure could not be diagnosed from the log at all. What a step has
+          # already established should not be contingent on what it does next.
+          echo "toolpath-prebuild: built $ASSET sha256=$sum"
+
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --title "toolpath $VERSION" \
@@ -136,7 +143,38 @@ jobs:
           Sessions fetch this asset and REFUSE it unless it hashes to the digest recorded in
           \`.claude/setup-toolpath.sh\`. This asset is immutable — see that workflow's header."
           fi
-          gh release upload "$TAG" "$RUNNER_TEMP/$ASSET"
+
+          # `uploads.github.com` is a different endpoint from the API and fails
+          # independently of it — run 31969324450 reached it one second after a
+          # successful `release create` and still left the release empty. So the
+          # upload is retried, and each attempt re-checks presence first: that
+          # makes a partial success idempotent instead of a 422, and makes the
+          # whole step safe to re-run over a release that already exists.
+          #
+          # NOT `--clobber`, ever: replacing published bytes would make every
+          # session pinned to the old digest refuse the download. The preflight
+          # already refuses a published asset, so the only thing being retried
+          # here is getting the FIRST copy up.
+          for attempt in 1 2 3; do
+            if gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$ASSET"; then
+              break
+            fi
+            echo "toolpath-prebuild: upload attempt $attempt"
+            gh release upload "$TAG" "$RUNNER_TEMP/$ASSET" \
+              || echo "toolpath-prebuild: attempt $attempt failed"
+            sleep 5
+          done
+
+          # Fail-closed read-back, the claim-ticket.yml backstop applied here:
+          # green means the asset is READABLE, not that a write returned 2xx.
+          # Without this the lane reports success and every session then falls
+          # back to the compile, which is the silent non-ratchet #116 is about.
+          if ! gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx "$ASSET"; then
+            echo "::error title=toolpath-prebuild: asset did not land::$TAG has no asset named $ASSET" \
+              "after three upload attempts. The release may exist and be empty — re-running this" \
+              "workflow at the same version is safe and will retry the upload."
+            exit 1
+          fi
 
           # The pair a maintainer records in setup-toolpath.sh. Printed rather
           # than committed by this lane: the digest can only exist after the
