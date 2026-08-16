@@ -181,11 +181,27 @@ fi
 # static.crates.io, so either one being shut is fatal — while probing only the
 # index says "open". That is not hypothetical: when the crates pair was retired
 # from the cloud-environment dialog on 2026-08-16, static.crates.io went dark
-# and index.crates.io DID NOT, because the environment sets
-# `includeDefaultPackageManagers: true` and the sparse index is in that default
-# layer. A one-host probe passed and launched a compile that could not finish.
-# The asymmetry is permanent while that setting is on, so it is designed for
-# rather than waited out.
+# and index.crates.io DID NOT. A one-host probe passed and launched a compile
+# that could not finish.
+#
+# WHY THEY DIVERGED IS NOT WHY THIS PROBES BOTH. The first explanation written
+# here — that the sparse index survived via `includeDefaultPackageManagers` —
+# was WRONG, and the control that killed it is worth repeating rather than
+# re-deriving: pypi.org and proxy.golang.org, default-package-manager hosts the
+# dialog does not grant, are both refused with the egress filter's own body, so
+# no default layer is in play (.github-private#560, and infra#386 fixed the
+# record that taught the wrong reason). Every package host reachable here is
+# reachable because the dialog grants it. The real cause is enforcement lag
+# between the CONNECT and HTTP layers (#441/#448); the index is expected to
+# close, though the one prior data point stayed stale for two days, so no
+# timeline is claimed.
+#
+# That is exactly why this probes both rather than encoding a cause: the
+# divergence needed no explanation to be fatal, and a probe built on the
+# mechanism-of-the-week would have to be revisited every time the mechanism is
+# restated. If index.crates.io is still answering 200 long after the grant is
+# gone, that is the lag, not a grant — and this still refuses to compile,
+# correctly, because static.crates.io is what serves the crates.
 #
 # Reachability is judged by whether the host ANSWERS, not by the status it
 # returns: a blocked host fails at CONNECT and curl reports 000, whereas a live
