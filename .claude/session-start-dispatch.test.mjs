@@ -570,13 +570,39 @@ test("an installed path is healthy, and costs no further probing", async () => {
   assert.deepEqual(seen, ["command -v path"], "kept probing after already finding `path`");
 });
 
-test("a compile still running is healthy — not a missing tool", async () => {
-  // The multi-minute build is the normal case, not a fault. Reporting it as
-  // missing would train the reader to ignore the warning that matters.
-  const probeFn = async (cmd) => ({ ok: cmd.startsWith("pgrep"), stdout: "" });
-  const r = await TOOLPATH.compare({ sourceDir: HERE, probeFn });
-  assert.equal(r.ok, true);
-  assert.equal(r.state, "installing");
+test("compare asks ONE question, and never scans the process table", async () => {
+  // REGRESSION. compare used to ask `pgrep -f "cargo install path-cli"` to spot
+  // an in-flight build. `probe` wraps commands in `sh -c`, so the wrapper's own
+  // command line carried the pattern and pgrep matched ITSELF — compare returned
+  // a healthy "installing" on every session, the repair never ran, and the #522
+  // warning could not fire at all. The tests missed it because every one of them
+  // injected probeFn. Asserting the probe SET, not just the outcome, is what
+  // makes that unrepresentable rather than merely fixed.
+  const asked = [];
+  const probeFn = async (cmd) => (asked.push(cmd), { ok: false, stdout: "" });
+  await TOOLPATH.compare({ sourceDir: HERE, probeFn, exists: () => true });
+  assert.deepEqual(asked, ["command -v path"]);
+  assert.ok(
+    !asked.some((c) => /pgrep|ps\b/.test(c)),
+    "compare scans the process table again — a self-matching probe is how this broke",
+  );
+});
+
+test("the REAL probe runs, and compare never reports an in-flight build", async () => {
+  // The bug above survived because no test ever exercised the real `probe`.
+  // This one does, with no injection at all. The assertion is machine
+  // independent: "installing" is not a state compare can legitimately reach —
+  // whether `path` is installed here or not — so seeing it means a process scan
+  // came back, which is precisely the self-match.
+  const empty = mkdtempSync(join(tmpdir(), "toolpath-real-"));
+  try {
+    const r = await TOOLPATH.compare({ sourceDir: empty });
+    assert.notEqual(r.state, "installing", "compare reported an in-flight build it has no way to observe");
+    assert.ok(["installed", "absent"].includes(r.state), `unexpected state ${r.state}`);
+    if (r.state === "absent") assert.equal(r.repairable, false);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
 });
 
 test("THE #522 CASE: no script beside the dispatcher is reported, and NOT retried", async () => {
