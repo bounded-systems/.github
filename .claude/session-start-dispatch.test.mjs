@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  MANIFEST,
   applyEntry,
   applyManifest,
   childEnv,
@@ -25,6 +26,8 @@ import {
   sessionStartCommands,
   stopHookAction,
   syncStopHook,
+  toolpathContext,
+  toolpathOutcome,
 } from "./session-start-dispatch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -541,4 +544,106 @@ test("this repo's own hook is what would be installed, byte for byte", () => {
   // test above would still pass against its fixture while the real sync found
   // nothing. That is precisely how the setup script's copy failed.
   assert.equal(stopHookAction(readFileSync(join(HERE, "stop-hook-git-check.sh")), null), "copy");
+});
+
+// ── Toolpath: provenance sharing, and SAYING when it is unavailable (#522) ────
+//
+// The measured failure these cover: a cloud session with no `setup-toolpath.sh`
+// on disk, no install log and no `path` — while cargo was present and
+// index.crates.io answered 200, so both of the hook's own guards would have
+// passed. Nothing reported it, because the thing that would report it is the
+// script that is missing.
+
+const TOOLPATH = MANIFEST.find((e) => e.artifact === "setup-toolpath.sh");
+const never = async () => ({ ok: false, stdout: "" });
+
+test("the toolpath entry is in the manifest, so it runs at every session start", () => {
+  assert.ok(TOOLPATH, "no setup-toolpath.sh entry — the #522 signal would never fire");
+});
+
+test("an installed path is healthy, and costs no further probing", async () => {
+  const seen = [];
+  const probeFn = async (cmd) => (seen.push(cmd), { ok: cmd.includes("command -v path"), stdout: "" });
+  const r = await TOOLPATH.compare({ sourceDir: HERE, probeFn });
+  assert.equal(r.ok, true);
+  assert.equal(r.state, "installed");
+  assert.deepEqual(seen, ["command -v path"], "kept probing after already finding `path`");
+});
+
+test("a compile still running is healthy — not a missing tool", async () => {
+  // The multi-minute build is the normal case, not a fault. Reporting it as
+  // missing would train the reader to ignore the warning that matters.
+  const probeFn = async (cmd) => ({ ok: cmd.startsWith("pgrep"), stdout: "" });
+  const r = await TOOLPATH.compare({ sourceDir: HERE, probeFn });
+  assert.equal(r.ok, true);
+  assert.equal(r.state, "installing");
+});
+
+test("THE #522 CASE: no script beside the dispatcher is reported, and NOT retried", async () => {
+  const r = await TOOLPATH.compare({ sourceDir: HERE, probeFn: never, exists: () => false });
+  assert.equal(r.ok, false);
+  assert.equal(r.state, "absent");
+  assert.equal(r.repairable, false, "a script nothing fetched cannot be repaired by retrying it");
+  assert.match(r.missing[0], /boot\.sh/, "the reason must name the fetch set that omits the script");
+});
+
+test("a script that IS present is repairable, not reported as absent", async () => {
+  const r = await TOOLPATH.compare({ sourceDir: HERE, probeFn: never, exists: () => true });
+  assert.equal(r.ok, false);
+  assert.equal(r.state, "not-installed");
+  assert.notEqual(r.repairable, false);
+});
+
+test("the installer's own words decide the outcome, not a second copy of its guards", () => {
+  assert.deepEqual(toolpathOutcome("toolpath: installing path-cli in the background — log: /x"), {
+    ok: true,
+    state: "installing",
+  });
+  assert.equal(toolpathOutcome("toolpath: install already running — log: /x").ok, true);
+  assert.equal(toolpathOutcome("toolpath: path 0.16.1 — auth: none").state, "installed");
+  assert.equal(toolpathOutcome("toolpath: no cargo in this image — skipping install").state, "no-cargo");
+  assert.equal(toolpathOutcome("toolpath: crates.io egress blocked — not installing.").state, "egress-blocked");
+  assert.equal(toolpathOutcome("").state, "unknown");
+});
+
+test("every unavailable outcome carries a reason a session can actually read", () => {
+  // "Unavailable" with no why is the state #522 was already in.
+  for (const out of ["toolpath: no cargo in this image", "toolpath: crates.io egress blocked", ""]) {
+    const seen = toolpathOutcome(out);
+    assert.equal(seen.ok, false);
+    assert.ok(seen.why?.length > 20, `no usable reason for ${JSON.stringify(out)}`);
+  }
+});
+
+test("repair reports blocked egress as unavailable-with-a-reason, not as a retryable failure", async () => {
+  const probeFn = async () => ({ ok: true, stdout: "toolpath: crates.io egress blocked — not installing." });
+  const r = await TOOLPATH.repair({ sourceDir: HERE, probeFn });
+  assert.equal(r.ok, false);
+  assert.equal(r.state, "egress-blocked");
+  assert.match(r.missing[0], /allowlist/);
+});
+
+test("repair treats a backgrounded compile as success — session start never waits on it", async () => {
+  const probeFn = async () => ({ ok: true, stdout: "toolpath: installing path-cli in the background — log: /x" });
+  const r = await TOOLPATH.repair({ sourceDir: HERE, probeFn });
+  assert.equal(r.ok, true);
+});
+
+test("a healthy session pays nothing for the warning", () => {
+  assert.equal(toolpathContext([]), null);
+  assert.equal(toolpathContext(undefined), null);
+});
+
+test("the warning names the reason, and forbids inventing a share URL", () => {
+  const ctx = toolpathContext(["crates.io egress is blocked"]);
+  assert.match(ctx, /crates\.io egress is blocked/);
+  assert.match(ctx, /do not invent a Pathbase URL/i);
+  assert.ok(!ctx.includes("hookSpecificOutput"), "the warning is a context block, not an envelope");
+});
+
+test("an absent script surfaces as an injected context block, end to end", async () => {
+  const { contexts } = await applyManifest([TOOLPATH], { sourceDir: HERE, probeFn: never, exists: () => false });
+  assert.equal(contexts.length, 1);
+  assert.match(contexts[0], /provenance sharing/i);
+  assert.match(contexts[0], /boot\.sh/);
 });

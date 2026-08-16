@@ -116,7 +116,9 @@ export function sessionRootFrom(fileUrl) {
 const SESSION_ROOT = process.env.CLAUDE_SESSION_ROOT || sessionRootFrom(import.meta.url);
 
 /** Where this file and its siblings actually live — the attached checkout, or the
- *  bootstrap's fetch cache. Both hold the same three files. */
+ *  bootstrap's fetch cache. NOT the same set: the cache holds the three files
+ *  boot.sh fetches, while the checkout also carries `setup-toolpath.sh`. The
+ *  toolpath manifest entry below is what notices the difference (#522). */
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const log = (msg) => process.stderr.write(`session-start-dispatch: ${msg}\n`);
@@ -247,6 +249,44 @@ export function mcpDriftContext(missing) {
     "",
     "`bounded-systems/.github` → `.claude/README.md` documents the registration path and",
     "the setup-script text it is driven from.",
+  ].join("\n");
+}
+
+/**
+ * Say that provenance sharing is unavailable, and WHY (#522 step 4).
+ *
+ * The gap this closes: `path` missing was indistinguishable from `path` still
+ * compiling was indistinguishable from `setup-toolpath.sh` never having reached
+ * the session at all. Measured 2026-08-16 on a cloud session — no script on the
+ * filesystem, no install log, no `path`, and nothing anywhere saying so, while
+ * `cargo` was present and `index.crates.io` answered 200. Both of the hook's own
+ * guards would have passed; only its ABSENCE stopped the install, and absence is
+ * the one state a best-effort hook cannot report, because it is not running to
+ * report it. So the report has to come from here instead.
+ *
+ * Worth a context block on the `mcpDriftContext` test above — the cost is paid
+ * only when something IS wrong, and the failure it prevents is a session
+ * asserting it shared its provenance when no such URL exists.
+ */
+export function toolpathContext(reasons) {
+  const why = reasons?.[0];
+  if (!why) return null;
+  return [
+    "## Session capability warning: provenance sharing (`path`) is NOT available",
+    "",
+    `Reason: ${why}`,
+    "",
+    "`path share` turns this session into a stable URL a PR can carry — the",
+    "conversation, the tool calls and the dead ends, everything the diff cannot show",
+    "(`.github#112`). It is unavailable in THIS session, so:",
+    "",
+    "- **Do not claim a session was shared, and do not invent a Pathbase URL.** Say",
+    "  provenance sharing was unavailable and give the reason above.",
+    "- The recipe needs a live Front Desk claim and goes through the pathbase door",
+    "  (`.github#180`); no credential reaches a session in any form.",
+    "",
+    "`bounded-systems/.github` → `.claude/setup-toolpath.sh` is the installer, and",
+    "`.github-private` → `docs/handoffs/toolpath-pathbase.md` is the hand-off.",
   ].join("\n");
 }
 
@@ -498,7 +538,91 @@ const MCP_ENTRY = {
   context: (missing) => mcpDriftContext(missing),
 };
 
-export const MANIFEST = [MCP_ENTRY, STOP_HOOK_ENTRY];
+/** Run one shell probe, never throw. `ok` is the exit status, not the output. */
+async function probe(command, timeout = 15_000) {
+  try {
+    const { stdout } = await pexecFile("sh", ["-c", command], { timeout, encoding: "utf8" });
+    return { ok: true, stdout: stdout ?? "" };
+  } catch (e) {
+    return { ok: false, stdout: e?.stdout ?? "" };
+  }
+}
+
+/**
+ * What the installer's own stdout says happened.
+ *
+ * Classified from the script's lines rather than re-probed, so `setup-toolpath.sh`
+ * stays the single source of truth about its own preconditions — a second copy of
+ * "is cargo here, is the registry open" in this file is a second copy that can
+ * disagree with the first, and the disagreement would surface as a session being
+ * told the opposite of what the log says.
+ */
+export function toolpathOutcome(stdout = "") {
+  if (/install already running|installing path-cli in the background/.test(stdout))
+    return { ok: true, state: "installing" };
+  if (/^toolpath: path\b|— auth:/m.test(stdout)) return { ok: true, state: "installed" };
+  if (/no cargo in this image/.test(stdout))
+    return { ok: false, state: "no-cargo", why: "no `cargo` toolchain in this image, so `cargo install path-cli` cannot run" };
+  if (/crates\.io egress blocked/.test(stdout))
+    return { ok: false, state: "egress-blocked", why: "crates.io egress is blocked by the environment's network allowlist — the fix is the allowlist, not the script (`.github#112`)" };
+  return { ok: false, state: "unknown", why: "the installer ran but reported nothing this dispatcher recognises — see `~/.claude/toolpath-install.log`" };
+}
+
+/**
+ * Install `path`, or say why this session cannot share its provenance (#522).
+ *
+ * The third SessionStart hook, unlike the other two, is NOT reachable on the
+ * fallback path: `setup-toolpath.sh` is declared in this repo's
+ * `.claude/settings.json`, so it runs only when `.github` is attached and that
+ * settings file exists to declare it. A session that fetched its dispatcher
+ * instead has no settings file, no script, and — until this entry — no way to
+ * notice either. That is the same shape as the MCP entry above: a step of the
+ * canonical startup that silently stops happening, reported by nothing.
+ *
+ * Repairable only when the script is actually beside this file. Fetching it is
+ * boot.sh's job and is digest-gated there; this entry never downloads anything,
+ * so the no-unverified-bytes posture is unchanged.
+ */
+const TOOLPATH_ENTRY = {
+  artifact: "setup-toolpath.sh",
+  what: "toolpath provenance sharing",
+
+  // `probeFn` and `exists` are injected rather than closed over because every
+  // branch below is a statement about the MACHINE, and a test that has to install
+  // cargo — or wait out a real compile — to reach a branch is a test nobody runs.
+  async compare({ sourceDir = HERE, probeFn = probe, exists = existsSync } = {}) {
+    // Cheap probes first: the healthy session must not pay for a subprocess that
+    // would only tell it what `command -v` already did.
+    if ((await probeFn("command -v path")).ok) return { ok: true, state: "installed" };
+    if ((await probeFn('pgrep -f "cargo install path-cli"')).ok) return { ok: true, state: "installing" };
+
+    // THE #522 CASE. Not repairable from here and deliberately loud: the script
+    // is missing because nothing fetched it, which is a defect in the pinned set
+    // rather than anything this session can retry.
+    if (!exists(join(sourceDir, "setup-toolpath.sh"))) {
+      const why =
+        "`setup-toolpath.sh` never reached this session — it is declared in " +
+        "`bounded-systems/.github` → `.claude/settings.json`, which exists only when that repo " +
+        "is attached, and it is not among the files `boot.sh` fetches on the fallback path";
+      return { ok: false, repairable: false, state: "absent", missing: [why], log: `WARN ${why}` };
+    }
+    return { ok: false, state: "not-installed" };
+  },
+
+  async repair({ sourceDir = HERE, probeFn = probe } = {}) {
+    // The install itself is backgrounded by the script, so this waits only for
+    // its precondition probes — session start never blocks on a multi-minute
+    // compile. Timeout is the script's own egress probe (5s) with headroom.
+    const { stdout } = await probeFn(`bash ${JSON.stringify(join(sourceDir, "setup-toolpath.sh"))}`, 30_000);
+    const seen = toolpathOutcome(stdout);
+    if (seen.ok) return { ok: true, state: seen.state, log: `toolpath: ${seen.state}` };
+    return { ok: false, state: seen.state, missing: [seen.why], log: `WARN toolpath unavailable — ${seen.why}` };
+  },
+
+  context: (reasons) => toolpathContext(reasons),
+};
+
+export const MANIFEST = [MCP_ENTRY, STOP_HOOK_ENTRY, TOOLPATH_ENTRY];
 
 /**
  * Should the repairer run, given what the detector saw?
