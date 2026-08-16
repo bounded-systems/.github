@@ -591,10 +591,25 @@ const TOOLPATH_ENTRY = {
   // branch below is a statement about the MACHINE, and a test that has to install
   // cargo — or wait out a real compile — to reach a branch is a test nobody runs.
   async compare({ sourceDir = HERE, probeFn = probe, exists = existsSync } = {}) {
-    // Cheap probes first: the healthy session must not pay for a subprocess that
+    // Cheap probe first: the healthy session must not pay for a subprocess that
     // would only tell it what `command -v` already did.
     if ((await probeFn("command -v path")).ok) return { ok: true, state: "installed" };
-    if ((await probeFn('pgrep -f "cargo install path-cli"')).ok) return { ok: true, state: "installing" };
+
+    // There is deliberately NO "is a compile already running" probe here. The
+    // first version asked `pgrep -f "cargo install path-cli"`, and because
+    // `probe` wraps every command in `sh -c`, that wrapper's OWN command line
+    // contained the pattern — so `pgrep -f` matched itself, every time. The
+    // entry then reported a healthy in-flight install on every session, the
+    // repair never ran, and the warning this whole entry exists to emit could
+    // not fire. Measured 2026-08-16, after the unit tests missed it: they inject
+    // `probeFn` and so never ran the real one.
+    //
+    // Restoring it with the `[p]ath-cli` bracket trick would work and would
+    // still be wrong: `setup-toolpath.sh` already makes exactly this check, in a
+    // context where it is correct, and the comment on `toolpathOutcome` above
+    // says a second copy of that script's guards is a copy that can disagree.
+    // So the in-flight case is answered where it belongs — by running the
+    // script and reading what it says.
 
     // THE #522 CASE. Not repairable from here and deliberately loud: the script
     // is missing because nothing fetched it, which is a defect in the pinned set
