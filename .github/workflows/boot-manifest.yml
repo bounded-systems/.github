@@ -1,0 +1,94 @@
+# Flips the boot channel manifest to the current main boot.sh digest — the write half of the
+# stage-0 indirection (.github#192).
+#
+# ── What this replaces ───────────────────────────────────────────────────────────────────────
+# Before #192 a boot.sh release ended in a THREE-move dialog sitting (re-paste the field with
+# a new digest literal, set the boot variable, recompute the handshake digest) — and when the
+# sitting lagged, the fleet silently booted stale; that exact state was found live on
+# 2026-08-16 (main at d7bc4889…, dialog serving 4d4e3a70…). After #192 a release ends HERE:
+# this job PUTs {version, boot} to boot.bounded.tools/channel/front-desk, and stage-0 reads
+# it back at every container init. No dialog visit, ever.
+#
+# ── Why the Worker can trust this call ───────────────────────────────────────────────────────
+# There is no secret anywhere in this lane. The job requests its own GitHub Actions OIDC token
+# (audience bounded-boot-manifest) and the Worker verifies it against GitHub's JWKS with the
+# broker's pin discipline: repository bounded-systems/.github, job_workflow_ref THIS FILE
+# @refs/heads/main, ref refs/heads/main (infra cloudflare/boot, verifyManifestWriter). Renaming
+# or moving this file breaks the pin ON PURPOSE — that is the trust boundary working; update
+# the Worker pin and this file together.
+#
+# ── Ordering with the payload store ──────────────────────────────────────────────────────────
+# The Worker refuses (409) a digest the committed payload store does not carry, so this lane
+# can never point sessions at a 404 — the 2026-08-10 publish-race class is unrepresentable.
+# The consequence: a boot.sh change lands in TWO merges, first infra (gen-payloads --add +
+# boot-deploy publishes the payload), then this repo (the boot.sh change itself), and this
+# job's failure text says exactly that when it happens in the wrong order.
+name: boot-manifest
+
+on:
+  push:
+    branches: [main]
+    paths: [.claude/boot.sh]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # OIDC -> boot Worker channel write
+
+# One flip at a time; never cancel a write in flight.
+concurrency:
+  group: boot-manifest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Flip the channel manifest to main's boot.sh
+        env:
+          CHANNEL: front-desk
+          BOOT_HOST: https://boot.bounded.tools
+        run: |
+          set -euo pipefail
+          digest="$(sha256sum .claude/boot.sh | cut -d' ' -f1)"
+
+          jwt="$(curl -sf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=bounded-boot-manifest" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value // empty')"
+          [ -n "$jwt" ] || { echo "::error::could not obtain an OIDC token for bounded-boot-manifest"; exit 1; }
+
+          # Version is read-increment rather than a timestamp: the Worker enforces strict
+          # monotonicity, and deriving from the current manifest keeps a re-run after a
+          # partial failure honest instead of racing the clock.
+          version=1
+          current="$(curl -fs "$BOOT_HOST/channel/$CHANNEL.json" || true)"
+          if [ -n "$current" ]; then
+            cur_v="$(jq -r '.version' <<<"$current")"
+            cur_boot="$(jq -r '.boot' <<<"$current")"
+            if [ "$cur_boot" = "$digest" ]; then
+              echo "::notice::channel $CHANNEL already serves $digest (v$cur_v) — nothing to do"
+              exit 0
+            fi
+            version=$((cur_v + 1))
+          fi
+
+          body="$(jq -nc --arg b "$digest" --argjson v "$version" '{version: $v, boot: $b}')"
+          out="$(curl -sS -X PUT "$BOOT_HOST/channel/$CHANNEL" \
+            -H "Authorization: Bearer $jwt" -H "content-type: application/json" \
+            -d "$body" -w '\n%{http_code}')"
+          code="${out##*$'\n'}"
+          resp="${out%$'\n'*}"
+          if [ "$code" != "200" ]; then
+            echo "::error::channel write refused (HTTP $code): $resp"
+            case "$resp" in (*"unknown payload"*)
+              echo "::error::the payload store does not carry $digest yet. Publish it FIRST:" \
+                   "infra gen-payloads.mjs --add + boot-deploy, then re-run this workflow." ;;
+            esac
+            exit 1
+          fi
+          echo "::notice::channel $CHANNEL -> boot $digest ($resp)"
+
+          # Read-back through the public route — what a session will actually see.
+          served="$(curl -fs "$BOOT_HOST/channel/$CHANNEL.json" | jq -r '.boot')"
+          [ "$served" = "$digest" ] || { echo "::error::read-back mismatch: served $served"; exit 1; }
+          echo "read-back ✓ $served"
