@@ -355,7 +355,7 @@ export function planBump(source, { commit, read = fileAtCommit } = {}) {
  * Matched on `curl` + the host rather than by line number, the same way
  * bootstrap-pin.test.mjs finds it, so both agree on which line is the field.
  */
-const fieldLine = (readme) => readme.split("\n").find((l) => l.includes("curl") && l.includes("boot.bounded.tools/"));
+const fieldLine = (readme) => readme.split("\n").find((l) => l.includes("curl") && l.includes("boot.bounded.tools"));
 
 /** The 64-hex literal the field currently names, or null if it carries none. */
 export function fieldDigestOf(readme) {
@@ -430,10 +430,25 @@ function main(argv) {
     // an operator would actually be told to fetch. A field pointing at a digest
     // no longer on disk fails closed at boot — sha256sum -c refuses and the
     // session starts hookless — so it is exit 1 with the others, not a warning.
-    const named = fieldDigestOf(readFileSync(README_MD, "utf8"));
-    if (named !== sha256(source)) {
+    const readmeText = readFileSync(README_MD, "utf8");
+    const named = fieldDigestOf(readmeText);
+    // Since #192 the canonical field is CHANNEL-BASED and names no digest at
+    // all — the digest rides channel/front-desk.json, written by the
+    // OIDC-pinned boot-manifest lane on merge. A digest-free field is
+    // therefore the correct steady state, checked for its channel URL; a field
+    // that DOES name a digest is the pre-#192 form and is held to the old rule
+    // (it must name this tree's boot.sh) so a stale legacy paste stays caught.
+    if (named === null) {
+      if (!readmeText.includes("channel/front-desk.json")) {
+        console.error(
+          "bootstrap-pin: FIELD — README's field names no digest AND no channel manifest; " +
+            "it fetches nothing verifiable. Restore the canonical channel-based field (#192).",
+        );
+        return 1;
+      }
+    } else if (named !== sha256(source)) {
       console.error(
-        `bootstrap-pin: FIELD — README names ${named?.slice(0, 12) ?? "no digest"} but boot.sh hashes to ` +
+        `bootstrap-pin: FIELD — README names ${named.slice(0, 12)} but boot.sh hashes to ` +
           `${sha256(source).slice(0, 12)}. The one-line field would fetch a payload it then refuses. ` +
           `Regenerate: node .claude/gen-bootstrap-pin.mjs ${pin}`,
       );
@@ -465,9 +480,10 @@ function main(argv) {
   // final (it hashes the bytes just written), but the URL's commit can only be
   // the merge commit this bump lands as. `--outer` completes it after merge.
   console.log(
-    `bootstrap-pin: outer value implied by this bump — ORG_BOOT_SHA256=${sha256(next)}; ` +
-      `the URL is derived (boot.bounded.tools/<sha>.sh). Publish the payload (infra cloudflare/boot + boot-deploy), ` +
-      `PROBE it per step zero, then update the record + dialog (run: node .claude/gen-bootstrap-pin.mjs --outer origin/main after merge)`,
+    `bootstrap-pin: this bump's payload digest — ${sha256(next)}. Publish it (infra ` +
+      `cloudflare/boot gen-payloads --add + boot-deploy) BEFORE merging here; on merge, ` +
+      `boot-manifest.yml flips channel/front-desk to it (and 409s, naming the fix, if the ` +
+      `payload is missing — no dialog edit at any step since #192)`,
   );
   return 0;
 }
