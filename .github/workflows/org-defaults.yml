@@ -54,6 +54,12 @@ jobs:
       # the gate refuses at all. A gate whose tests do not run in CI is back to
       # being an author's assertion about their own work.
       - run: node --test .claude/stop-hook-findings-check.test.mjs
+      # The OTHER Stop hook, which had no suite at all until .github-private#536
+      # — three faults that each present as silence, and this job enumerating its
+      # files is why the new suite needs a line of its own. Omitting it would
+      # repeat, on the very PR that fixes a silent check, the exact failure the
+      # paragraph above records.
+      - run: node --test .claude/stop-hook-git-check.test.mjs
       # The GitHub App permission reconciliation (#104). Fixture-only, so a
       # docs.github.com or raw.githubusercontent outage cannot turn it red for
       # reasons unrelated to the claim. Named explicitly like every step above:
