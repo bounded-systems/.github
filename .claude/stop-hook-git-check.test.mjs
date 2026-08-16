@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +32,31 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = join(HERE, "stop-hook-git-check.sh");
 
-const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+/**
+ * Git environment for a fixture — HERMETIC, and that is not incidental.
+ *
+ * The first version of this suite inherited the ambient config and passed 12/12
+ * locally while failing 3 in CI. This container has `commit.gpgsign=true` set
+ * GLOBALLY by the harness; a bare runner does not, so the signature check the
+ * suite exists to test was simply skipped there and the hook fell through to its
+ * unpushed-commits message. The tests were agreeing with my machine rather than
+ * asserting behaviour — the same shape as the injected-probe tests that let a
+ * dead code path ship under 160 green cases.
+ *
+ * So the fixture supplies its own global config, mirroring the real shape:
+ * signing on GLOBALLY, which is what makes a repo-local `false` the anomaly that
+ * fault A is about. GIT_CONFIG_SYSTEM is nulled so a system-wide setting cannot
+ * reach in either. The file lives OUTSIDE the work tree — inside it, it would
+ * show up as an untracked file and trip the hook's own untracked check.
+ */
+const hermetic = (root) => ({
+  ...process.env,
+  GIT_CONFIG_GLOBAL: join(root, "gitconfig"),
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  HOME: root,
+});
+
+const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: hermetic(dirname(cwd)) }).trim();
 
 /**
  * Run the hook. Returns { code, stderr }.
@@ -45,6 +69,7 @@ function runHook(cwd, { active = false } = {}) {
   try {
     execFileSync("bash", [HOOK], {
       cwd,
+      env: hermetic(dirname(cwd)),
       input: JSON.stringify({ stop_hook_active: active }),
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -78,7 +103,12 @@ function commitRaw(cwd, { message = "c", parent = null, email = "noreply@anthrop
   }
   const body = armourInMessage ? `${message}\n\n${SSH_ARMOUR.join("\n")}` : message;
   const raw = `${lines.join("\n")}\n\n${body}\n`;
-  const sha = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], { cwd, input: raw, encoding: "utf8" }).trim();
+  const sha = execFileSync("git", ["hash-object", "-t", "commit", "-w", "--stdin"], {
+    cwd,
+    env: hermetic(dirname(cwd)),
+    input: raw,
+    encoding: "utf8",
+  }).trim();
   git(cwd, "update-ref", "HEAD", sha);
   return sha;
 }
@@ -89,7 +119,12 @@ function commitRaw(cwd, { message = "c", parent = null, email = "noreply@anthrop
  * interesting case rather than a normal one.
  */
 function repo({ localGpgsign = null, withOriginHead = true, sign = "ssh", email = "noreply@anthropic.com" } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "stophook-"));
+  const root = mkdtempSync(join(tmpdir(), "stophook-"));
+  // Signing on GLOBALLY, as the harness configures it — so a repo-local `false`
+  // is the anomaly fault A is about, rather than the only source of truth.
+  writeFileSync(join(root, "gitconfig"), "[commit]\n\tgpgsign = true\n");
+  const dir = join(root, "repo");
+  mkdirSync(dir);
   git(dir, "init", "-q", "-b", "main");
   git(dir, "config", "user.email", "noreply@anthropic.com");
   git(dir, "config", "user.name", "Claude");
@@ -103,10 +138,10 @@ function repo({ localGpgsign = null, withOriginHead = true, sign = "ssh", email 
   // individual tests opt into the shallow shape rather than every test carrying it.
   if (withOriginHead) git(dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
   if (localGpgsign !== null) git(dir, "config", "--local", "commit.gpgsign", localGpgsign);
-  return { dir, base, add: (opts) => commitRaw(dir, { parent: git(dir, "rev-parse", "HEAD"), sign, email, ...opts }) };
+  return { root, dir, base, add: (opts) => commitRaw(dir, { parent: git(dir, "rev-parse", "HEAD"), sign, email, ...opts }) };
 }
 
-const clean = (r) => rmSync(r.dir, { recursive: true, force: true });
+const clean = (r) => rmSync(r.root, { recursive: true, force: true });
 
 // ── The recursion guard and the bail-outs ────────────────────────────────────
 
