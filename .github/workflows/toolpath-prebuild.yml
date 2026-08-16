@@ -1,0 +1,156 @@
+# toolpath-prebuild — build `path` ONCE on a runner, serve it to every session.
+#
+# ── Why this exists ──────────────────────────────────────────────────────────
+# `.claude/setup-toolpath.sh` installs the toolpath CLI with `cargo install
+# path-cli --locked`. That is registry-checksummed and correct, but it is also a
+# multi-minute compile in every fresh container, and it is the ONLY reason two
+# domains sit in the cloud-environment dialog: `index.crates.io` and
+# `static.crates.io` (#116, .github-private#439). This lane is the ratchet that
+# lets both go: build once here, where egress is unrestricted, and hand sessions
+# a digest-pinned binary instead of a compiler.
+#
+# ── Why a release asset, and not the boot payload store ──────────────────────
+# The obvious home is infra `cloudflare/boot`, which already serves
+# digest-addressed bytes. It cannot take this: that store commits its payloads
+# as strings in `src/payloads.mjs` and is deliberately APPEND-ONLY — "a pin bump
+# adds a key; it never retires one", at "about 6 KB each" (its README's
+# availability argument). A multi-MB binary that can never be retired breaks the
+# store's shape and its sizing at once. An R2 bucket is the other candidate and
+# the same README already rules it out on principle: committed bytes mean "a
+# reviewer sees exactly what will be served, in the diff", with no bucket whose
+# contents can diverge from what anyone reviewed.
+#
+# A GitHub release asset on THIS repo keeps the property that actually matters —
+# the bytes are refused unless they hash to a digest recorded somewhere they are
+# not fetched from (`setup-toolpath.sh`'s TOOLPATH_SHA256, in git) — without
+# pretending a binary is a payload. Measured 2026-08-16 from a live cloud
+# session: `GET github.com/bounded-systems/.github/releases/download/...` returns
+# 404, not 403, so the session proxy serves release assets of an attached repo.
+# The cost is stated plainly: a session WITHOUT `.github` attached cannot reach
+# them and falls back to the compile. That is #116's accepted degradation, not an
+# oversight.
+#
+# ── Why a published (tag, asset) pair is immutable ───────────────────────────
+# `setup-toolpath.sh` pins the digest of these exact bytes. Re-uploading over a
+# published asset would not "update" anything — it would make every session that
+# carries the recorded digest REFUSE the download and fall back to the compile,
+# silently undoing the ratchet. So this lane refuses to clobber, and a rebuild is
+# a new version. (Nothing here is reproducible-build territory: two runs of the
+# same compiler produce different bytes, which is precisely why the digest is
+# captured from the artifact that will actually be served.)
+#
+# No `.sha256` sidecar is published next to the binary, deliberately: a digest
+# served from the same host as the bytes it describes proves nothing. The only
+# copy that can refuse a bad download is the one committed to this repo.
+name: toolpath-prebuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "path-cli version to build (e.g. 0.16.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Never cancel a run that has started: a half-published release is the one state
+# that is worse than no release at all.
+concurrency:
+  group: toolpath-prebuild-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  # The one target a cloud session runs on — measured `uname -m` = x86_64 on the
+  # front-desk image. A second triple is a second asset and a second pin, not a
+  # change here.
+  TRIPLE: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the asset
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The version lands in a tag, an asset name and a URL path. Refuse anything
+      # path-shaped rather than escaping it downstream.
+      - name: Preflight — the version is well-formed and not already published
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$VERSION" in
+            (*[!0-9.]*|"") echo "::error::version '$VERSION' is not a plain dotted number"; exit 1 ;;
+          esac
+          tag="toolpath-v$VERSION"
+          asset="path-$VERSION-$TRIPLE"
+          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$asset"; then
+            echo "::error title=toolpath-prebuild: already published::$tag already carries $asset." \
+              "A published (tag, asset) pair is IMMUTABLE — sessions pin the digest of those exact" \
+              "bytes, so replacing them would make every pinned session refuse the download and fall" \
+              "back to the compile. Build a new version instead."
+            exit 1
+          fi
+          {
+            echo "TAG=$tag"
+            echo "ASSET=$asset"
+          } >> "$GITHUB_ENV"
+
+      - name: Build path-cli at the pinned version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # --locked builds path-cli's own lockfile rather than whatever the
+          # registry resolves to today: an unlocked install compiled a
+          # broken-as-published zune-jpeg and failed outright (.github#121).
+          cargo install path-cli --version "$VERSION" --locked --root "$RUNNER_TEMP/toolpath"
+          # path-cli ships two executables; only `path` is what a session uses.
+          test -x "$RUNNER_TEMP/toolpath/bin/path"
+
+      - name: Publish the asset and print the pin
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/toolpath/bin/path"
+          cp "$bin" "$RUNNER_TEMP/$ASSET"
+
+          # The digest is captured from the artifact that will be served, before
+          # it is uploaded — not re-derived afterwards from a download.
+          sum="$(sha256sum "$RUNNER_TEMP/$ASSET" | cut -d' ' -f1)"
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "toolpath $VERSION" \
+              --notes "Prebuilt \`path\` $VERSION for \`$TRIPLE\`, built by \`toolpath-prebuild.yml\`.
+
+          Sessions fetch this asset and REFUSE it unless it hashes to the digest recorded in
+          \`.claude/setup-toolpath.sh\`. This asset is immutable — see that workflow's header."
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/$ASSET"
+
+          # The pair a maintainer records in setup-toolpath.sh. Printed rather
+          # than committed by this lane: the digest can only exist after the
+          # build, and the value that refuses a bad download must arrive through
+          # a reviewed diff, not through a job that also publishes the bytes.
+          {
+            echo "### toolpath pin"
+            echo
+            echo 'Record this pair in `.claude/setup-toolpath.sh`, then open the PR:'
+            echo
+            echo '```sh'
+            echo "TOOLPATH_VERSION=$VERSION"
+            echo "TOOLPATH_SHA256=$sum"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "toolpath-prebuild: published $ASSET"
+          echo "toolpath-prebuild: TOOLPATH_VERSION=$VERSION TOOLPATH_SHA256=$sum"

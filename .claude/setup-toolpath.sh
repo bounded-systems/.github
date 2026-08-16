@@ -31,9 +31,14 @@
 # pins, not whatever the registry resolves to at install time — an unlocked
 # install compiled zune-jpeg 0.5.15, broken as published, and failed
 # (.github#121). The cost is a multi-minute compile, so the install runs in the
-# BACKGROUND and session start never waits on it; the log is the record. A
-# digest-pinned prebuilt binary is the follow-up ratchet once egress is open
-# and a digest can be captured (.github#112's last checkbox).
+# BACKGROUND and session start never waits on it; the log is the record.
+#
+# That compile is now the FALLBACK, not the plan (#116). A digest-pinned
+# prebuilt binary is tried first — see "The prebuilt ratchet" below — which is
+# what lets `index.crates.io` and `static.crates.io` leave the cloud-environment
+# dialog. The compile stays because a session that cannot reach the release
+# asset must still end up with a working `path`, and because the day the pinned
+# version is wrong, "slow" is a far better failure than "absent".
 set -uo pipefail
 
 LOG="${HOME:-/root}/.claude/toolpath-install.log"
@@ -69,6 +74,86 @@ if command -v path >/dev/null 2>&1; then
   ver="$(path --version 2>/dev/null || echo 'path (version unknown)')"
   auth="$(path auth status 2>&1 | head -1 || true)"
   echo "toolpath: $ver — auth: ${auth:-unknown}"
+  exit 0
+fi
+
+# ── The prebuilt ratchet (#116) ──────────────────────────────────────────────
+# Tried BEFORE the compile, because it is the whole point: a session gets `path`
+# in one download instead of minutes of cargo, and — the reason this outranks
+# convenience — the two crates.io domains in the cloud-environment dialog exist
+# for nothing but that compile (.github-private#439). Retiring them needs the
+# common case to stop touching the registry at all.
+#
+# Same posture as the bootstrap's fetch_verified, for the same reason: the bytes
+# are fetched from a release asset, and the digest that can refuse them is
+# recorded HERE, in git, where they are not fetched from. A digest served beside
+# the bytes it describes would prove nothing. So an asset that does not hash to
+# TOOLPATH_SHA256 is deleted unexecuted and the compile takes over.
+#
+# TOOLPATH_SHA256 EMPTY is a normal state, not a defect: the digest cannot exist
+# until a build has been published, and it must arrive through a reviewed diff
+# rather than from the lane that publishes the bytes. Empty simply means "no
+# prebuilt recorded yet" and the script goes straight to the compile — the
+# arrival state this file ships in. Dispatch `toolpath-prebuild.yml`, then record
+# the pair it prints. VERSION and SHA256 are ONE PAIR — move them together.
+TOOLPATH_VERSION=0.16.1
+TOOLPATH_SHA256=
+TOOLPATH_TRIPLE=x86_64-unknown-linux-gnu
+# ~/.local/bin, not ~/.cargo/bin: the prebuilt path must not depend on cargo
+# existing, and this directory is already first on the front-desk image's PATH
+# (measured 2026-08-16). Overridable so a test can point it somewhere harmless.
+TOOLPATH_BIN_DIR="${TOOLPATH_BIN_DIR:-$HOME/.local/bin}"
+
+# Fetch the pinned binary and REFUSE it unless it hashes to the recorded digest.
+# Downloads to an .unverified name and only becomes executable AFTER the check,
+# so unverified bytes never sit at a path something might run.
+install_prebuilt() {
+  local asset url tmp got
+  [ -n "$TOOLPATH_SHA256" ] || {
+    echo "toolpath: no prebuilt digest recorded for $TOOLPATH_VERSION — using the compile (dispatch toolpath-prebuild.yml to record one, #116)"
+    return 1
+  }
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64) ;;
+    *)
+      echo "toolpath: no prebuilt for $(uname -s)/$(uname -m) — using the compile"
+      return 1
+      ;;
+  esac
+
+  asset="path-$TOOLPATH_VERSION-$TOOLPATH_TRIPLE"
+  url="https://github.com/bounded-systems/.github/releases/download/toolpath-v$TOOLPATH_VERSION/$asset"
+  mkdir -p "$TOOLPATH_BIN_DIR" 2>/dev/null || return 1
+  tmp="$TOOLPATH_BIN_DIR/path.unverified"
+
+  # Release assets of an ATTACHED repo are served by the session proxy (measured
+  # 2026-08-16: this URL shape 404s rather than 403s from a live cloud session).
+  # A session without `.github` attached cannot reach them and falls through to
+  # the compile — #116's accepted degradation, stated rather than hidden.
+  curl -fsSL --retry 2 --max-time 120 "$url" -o "$tmp" 2>/dev/null || {
+    echo "toolpath: prebuilt $TOOLPATH_VERSION not reachable — using the compile"
+    rm -f "$tmp"
+    return 1
+  }
+
+  got="$(sha256sum "$tmp" | cut -d' ' -f1)"
+  if [ "$got" != "$TOOLPATH_SHA256" ]; then
+    echo "toolpath: REFUSING the prebuilt — sha256 mismatch, not executing it"
+    echo "toolpath:   expected $TOOLPATH_SHA256"
+    echo "toolpath:   got      $got"
+    rm -f "$tmp"
+    return 1
+  fi
+
+  chmod +x "$tmp" && mv "$tmp" "$TOOLPATH_BIN_DIR/path"
+}
+
+if install_prebuilt; then
+  echo "toolpath: $("$TOOLPATH_BIN_DIR/path" --version 2>/dev/null || echo "path $TOOLPATH_VERSION") — prebuilt, digest-verified (#116)"
+  case ":$PATH:" in
+    *":$TOOLPATH_BIN_DIR:"*) ;;
+    *) echo "toolpath: NOTE $TOOLPATH_BIN_DIR is not on PATH — 'path' is installed but not callable" ;;
+  esac
   exit 0
 fi
 
