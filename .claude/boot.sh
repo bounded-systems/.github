@@ -42,13 +42,14 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 # On main this is automatic: org-defaults.yml regenerates on push and opens the
 # bump PR, because the pin can only name a merge commit once that commit exists.
 # The equivalent by hand, against the endpoint rather than the git objects:
-#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
+#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
 PIN=9ee7da40d7d90625545af2702a2ad69b50a2850a
 SUM_session_start_dispatch_mjs=02156a613cae710588fcabaaba69bbbb38ec8dc2796022dbcb8c82795e4c63f0
 SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
 SUM_stop_hook_git_check_sh=d124f7e8844ce1bd1ebd7034b0fed0276b643223582a7cd18f7f78a5f6c6f11f
+SUM_setup_toolpath_sh=227acf41dd217bcdb97fd2494de5708b8e462d9e69224cf0382ca1aa2532870e
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
@@ -80,6 +81,15 @@ if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
   fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
   fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh"
+  # The third SessionStart hook. Unlike the other two files it is not something
+  # this script installs or invokes — the dispatcher's MANIFEST runs it — but it
+  # is fetched here because it is reachable NO other way on this path: it is
+  # declared in this repo's .claude/settings.json, which a session without
+  # `.github` attached does not have. Measured 2026-08-16: no script, no install
+  # log, no `path`, and nothing saying so, while cargo and the crates.io index
+  # were both fine. Absence is the one state a best-effort hook cannot report
+  # (#522).
+  fetch_verified setup-toolpath.sh          "$SUM_setup_toolpath_sh"
 fi
 
 # Both scripts self-locate from their own path, which is correct in the attached
@@ -113,6 +123,20 @@ if [ -f "$BOOT/register-mcp.mjs" ]; then
   CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
 else
   echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
+fi
+
+# Start the toolpath install (#522). The same shape as the call above and for the
+# same reason: this is the ONLY path that reaches a session without `.github`
+# attached, because the hook that would otherwise run it is declared in that
+# repo's .claude/settings.json. The script backgrounds its own compile, so this
+# costs one egress probe, and it is idempotent — the SessionStart hook and the
+# dispatcher's manifest both re-enter it and both no-op while a build is in
+# flight. The dispatcher is what REPORTS an install that could not happen; this
+# line is what makes it possible in the first place.
+if [ -f "$BOOT/setup-toolpath.sh" ]; then
+  bash "$BOOT/setup-toolpath.sh" || true
+else
+  echo "bootstrap: WARN setup-toolpath.sh missing — no provenance sharing (path) in this session"
 fi
 
 # Replace the platform's Stop hook with the infra#112 fix. The stock one scopes

@@ -227,6 +227,25 @@ test("parseSteps reads a raw script the same as a fenced block", () => {
   );
 });
 
+test("running a fetched script is a STEP, not transport (#522)", () => {
+  // `bash` had no branch here, so `bash "$BOOT/setup-toolpath.sh"` refused to
+  // parse. The tempting fix was FIELD_PLUMBING — and it would have been wrong in
+  // the one way this parse exists to catch: the line PUTS `path` on the session,
+  // so calling it plumbing admits a step with neither a fallback nor a
+  // declaration, silently. Same classification as `node`.
+  const steps = parseSteps('#!/usr/bin/env bash\nbash "$BOOT/setup-toolpath.sh" || true\n');
+  assert.deepEqual(
+    steps.map((s) => s.artifact),
+    ["setup-toolpath.sh"],
+  );
+});
+
+test("a bash invocation with no script is an error, not an unnamed step", () => {
+  // The `|| true` fragment parses on its own, so a bare verb must not quietly
+  // claim an artifact of `undefined`.
+  assert.throws(() => parseSteps("#!/usr/bin/env bash\nbash\n"), /"bash" with no script/);
+});
+
 test("the outer pair is content-addressed and the URL is derived from the SHA", () => {
   // Since 2026-08-10 the outer URL is a pure function of the digest
   // (boot.bounded.tools/<sha256>.sh), so the two halves CANNOT disagree —

@@ -208,9 +208,14 @@ export function parseSteps(source) {
         const dest = unquote(paths[paths.length - 1]);
         if (dest.startsWith("$BOOT/")) continue; // landing INSIDE the fetch cache is staging, not installing
         claim(basename(dest), raw.trim());
-      } else if (verb === "node") {
+      } else if (verb === "node" || verb === "bash") {
+        // `bash` joins `node` rather than FIELD_PLUMBING because running a
+        // fetched script IS installing something — `setup-toolpath.sh` puts
+        // `path` on the session (#522). Classifying it as plumbing would let a
+        // step into the field with no fallback and no declaration, which is the
+        // single thing this parse exists to prevent.
         const script = words.slice(1).find((w) => !unquote(w).startsWith("-"));
-        if (!script) throw new Error(`"node" with no script in the canonical setup script: "${frag}"`);
+        if (!script) throw new Error(`"${verb}" with no script in the canonical setup script: "${frag}"`);
         claim(basename(script), raw.trim());
       } else if (verb === "chmod") {
         claim(basename(words[words.length - 1]), raw.trim());
