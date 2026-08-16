@@ -45,11 +45,11 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
 #     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
 #   done
-PIN=840feed81037a34f357cd4f27aab6d2dab24f83c
+PIN=9ae359079ba0b9de908735c89485074a0ffcf816
 SUM_session_start_dispatch_mjs=15808158e7665d703414547b5e6dd9a4859a7a75838f75dbf4e22b684ddbba6e
 SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
 SUM_stop_hook_git_check_sh=52890becf4ddd223ac5331aa302d6fe82bca9c966b15520a6a48700c047d8546
-SUM_setup_toolpath_sh=051a13a277bb7b46aa57451c1d5800ae6d9ecec4a532370846df77151d70df52
+SUM_setup_toolpath_sh=f80894fcd9bb224ed170ae221aa13410c5ec24ff3c5e68c40bd9edce7879e72f
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
