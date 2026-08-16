@@ -163,8 +163,13 @@ jobs:
 
           gh api -X POST "$api/labels" -f 'labels[]=claimed' >/dev/null
 
-          body="$(printf '🎫 **Claimed** by %s — [run](%s)\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
-            "$CLAIMANT" "$RUN_URL")"
+          # Name the dispatcher alongside the claimant: the fallback door
+          # (claim-relay, .github-private#532) already records both, and the
+          # stronger door must not leave the weaker record. Record parity, not
+          # attribution — github.actor is owner-grade identity and cannot name
+          # a guest (.github-private#537, #558).
+          body="$(printf '🎫 **Claimed** by %s — dispatched by `%s` — [run](%s)\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
+            "$CLAIMANT" "$ACTOR" "$RUN_URL")"
           gh api -X POST "$api/comments" -f body="$body" >/dev/null
 
           # Projection only — most dispatchers are bots and not assignable, and
