@@ -6,7 +6,7 @@ Six files here, with different jobs:
 |---|---|---|
 | `inject-org-context.sh` | this repo | `.github` is the session's project directory |
 | `status-probe.sh` | this repo | same — a second SessionStart hook; warns only when a provider reports an active incident (`.github-private` → `docs/handoffs/service-status-layer.md`) |
-| `setup-toolpath.sh` | this repo | same — a third SessionStart hook; background-installs the toolpath CLI (`path`) when crates.io egress is open, so a session can `path share` its provenance to a PR (#112). Quiet no-op while egress is closed (`.github-private` → `docs/handoffs/toolpath-pathbase.md`) |
+| `setup-toolpath.sh` | **every attached repo** | a third SessionStart hook when `.github` is the project directory; otherwise fetched by `boot.sh` and run by the dispatcher's manifest. Background-installs the toolpath CLI (`path`) when crates.io egress is open, so a session can `path share` its provenance to a PR (#112). Quiet no-op while egress is closed; when it cannot install at all the dispatcher says so, with the reason (#522) (`.github-private` → `docs/handoffs/toolpath-pathbase.md`) |
 | `session-start-dispatch.mjs` | **every attached repo** | installed at the session root (see below) |
 | `register-mcp.mjs` | **every attached repo** | run from the environment setup script; re-run by the dispatcher as a fallback (see below) |
 | `stop-hook-git-check.sh` | the session | copied over the platform's Stop hook by the setup script; re-copied by the dispatcher as a fallback (infra#112) |
@@ -102,7 +102,7 @@ the digest, both 2026-08-10; embedding the digest literally and logging the
 run, 2026-08-16 — see below):
 
 ```sh
-{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/4d4e3a70535f3ad536d7966a095e932a343390e76589ff2ff262f158dd1b6c22.sh" -o /tmp/boot.sh && echo "4d4e3a70535f3ad536d7966a095e932a343390e76589ff2ff262f158dd1b6c22  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
+{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/239f716b6e69a408914ed3e6d5c750c27ecab1b8ff8dcbbe937885a170f02545.sh" -o /tmp/boot.sh && echo "239f716b6e69a408914ed3e6d5c750c27ecab1b8ff8dcbbe937885a170f02545  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
 ```
 
 The digest in the field is a **literal, not `$ORG_BOOT_SHA256`**, and that is a
@@ -337,7 +337,7 @@ To confirm a pin and its digests agree with the repo, from a clone:
 
 ```sh
 PIN=<the pin>
-for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh; do
+for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
   a=$(git show "$PIN:.claude/$f" | sha256sum | cut -d' ' -f1)
   b=$(curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum | cut -d' ' -f1)
   [ "$a" = "$b" ] && echo "$f OK $a" || echo "$f MISMATCH — endpoint disagrees with the git object"
