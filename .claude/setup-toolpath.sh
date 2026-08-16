@@ -173,14 +173,33 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 0
 fi
 
-# Cheap probe before committing to a compile. index.crates.io is the sparse
-# registry endpoint every `cargo install` starts at. Verified OPEN from a live
-# cloud session 2026-08-07 (the proxy's allowlist is path-shaped: the crates.io
-# API root 403s while cargo's index + download paths pass — probe table on
-# .github#112); the probe stays because other environments' policies differ,
-# and a closed registry should cost one line, not a hung compile.
-if ! curl -fs --max-time 5 -o /dev/null https://index.crates.io/config.json; then
-  echo "toolpath: crates.io egress blocked — not installing. The fix is the environment network allowlist, not this script (.github#112)."
+# Cheap probe before committing to a compile. A closed registry should cost one
+# line, not a failed build in a log nobody reads.
+#
+# BOTH hosts are probed, and that is the whole point (#534). `cargo install`
+# starts at the sparse index (index.crates.io) but downloads every .crate from
+# static.crates.io, so either one being shut is fatal — while probing only the
+# index says "open". That is not hypothetical: when the crates pair was retired
+# from the cloud-environment dialog on 2026-08-16, static.crates.io went dark
+# and index.crates.io DID NOT, because the environment sets
+# `includeDefaultPackageManagers: true` and the sparse index is in that default
+# layer. A one-host probe passed and launched a compile that could not finish.
+# The asymmetry is permanent while that setting is on, so it is designed for
+# rather than waited out.
+#
+# Reachability is judged by whether the host ANSWERS, not by the status it
+# returns: a blocked host fails at CONNECT and curl reports 000, whereas a live
+# host may legitimately 403 a bare root path (infra's cloud-environment.json
+# records both facts, and .github#112's probe table shows crates.io's own API
+# root 403ing while cargo's paths served).
+reachable() {
+  local code
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$1" 2>/dev/null)"
+  [ -n "$code" ] && [ "$code" != "000" ]
+}
+
+if ! reachable https://index.crates.io/config.json || ! reachable https://static.crates.io/; then
+  echo "toolpath: crates.io egress blocked — not installing. The fix is the environment network allowlist, not this script (.github#112, #534)."
   exit 0
 fi
 
