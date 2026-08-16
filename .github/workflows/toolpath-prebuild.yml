@@ -48,7 +48,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "path-cli version to build (e.g. 0.16.1)"
+        description: "Release version (e.g. 0.16.1). A 4th component (e.g. 0.16.1.2) rebuilds the same path-cli version under a fresh tag — needed after a burned tag, see the immutable-releases note in the publish step."
         required: true
         type: string
 
@@ -91,12 +91,32 @@ jobs:
           esac
           tag="toolpath-v$VERSION"
           asset="path-$VERSION-$TRIPLE"
-          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$asset"; then
-            echo "::error title=toolpath-prebuild: already published::$tag already carries $asset." \
-              "A published (tag, asset) pair is IMMUTABLE — sessions pin the digest of those exact" \
-              "bytes, so replacing them would make every pinned session refuse the download and fall" \
-              "back to the compile. Build a new version instead."
-            exit 1
+          view="$(gh release view "$tag" --json isDraft,assets 2>/dev/null || true)"
+          if [ -n "$view" ]; then
+            if [ "$(jq -r '.isDraft' <<<"$view")" = "true" ]; then
+              # A leftover draft from a failed run: it never published, so
+              # nothing anywhere pins its contents. Delete and rebuild rather
+              # than reasoning about what state it got stuck in.
+              gh release delete "$tag" --yes
+            elif jq -e --arg a "$asset" '.assets[] | select(.name == $a)' <<<"$view" >/dev/null; then
+              echo "::error title=toolpath-prebuild: already published::$tag already carries $asset." \
+                "A published (tag, asset) pair is IMMUTABLE — sessions pin the digest of those exact" \
+                "bytes, so replacing them would make every pinned session refuse the download and fall" \
+                "back to the compile. Build a new version instead."
+              exit 1
+            else
+              # The run-1 failure mode, now unrecoverable by construction: this
+              # repo has immutable releases, so a release that PUBLISHED without
+              # its asset can never gain one (HTTP 422, run 31969836566 — three
+              # attempts, three refusals). The tag is burned. toolpath-v0.16.1
+              # is the standing example. Republish as the same cargo version
+              # with a 4th component, e.g. 0.16.1.2.
+              echo "::error title=toolpath-prebuild: tag is burned::$tag exists, is published, and" \
+                "does not carry $asset. Under immutable releases a published release can never gain" \
+                "assets, so this tag can never serve. Dispatch again with a 4th version component" \
+                "(e.g. $VERSION.2) to publish under a fresh tag."
+              exit 1
+            fi
           fi
           {
             echo "TAG=$tag"
@@ -108,10 +128,14 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          # The RELEASE version may carry a 4th component (0.16.1.2 = second
+          # publish of path-cli 0.16.1, after a burned tag); cargo only knows
+          # the first three.
+          CARGO_VERSION="$(printf '%s' "$VERSION" | cut -d. -f1-3)"
           # --locked builds path-cli's own lockfile rather than whatever the
           # registry resolves to today: an unlocked install compiled a
           # broken-as-published zune-jpeg and failed outright (.github#121).
-          cargo install path-cli --version "$VERSION" --locked --root "$RUNNER_TEMP/toolpath"
+          cargo install path-cli --version "$CARGO_VERSION" --locked --root "$RUNNER_TEMP/toolpath"
           # path-cli ships two executables; only `path` is what a session uses.
           test -x "$RUNNER_TEMP/toolpath/bin/path"
 
@@ -135,8 +159,19 @@ jobs:
           # already established should not be contingent on what it does next.
           echo "toolpath-prebuild: built $ASSET sha256=$sum"
 
+          # DRAFT first, publish LAST — this repo has immutable releases, and
+          # that ordering is the entire lesson of runs 31969324450/31969836566.
+          # `gh release create` without --draft publishes immediately and then
+          # uploads, so the release locks EMPTY and every subsequent upload is
+          # refused (HTTP 422 "Cannot upload assets to an immutable release" —
+          # three attempts, three refusals) — the tag is burned forever, which
+          # is what happened to toolpath-v0.16.1. A draft is still mutable:
+          # assets attach while it is a draft, and flipping --draft=false is
+          # the lock-taking step. --target pins the tag to the commit that ran
+          # this build rather than wherever the default branch has moved to.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
+            gh release create "$TAG" "$RUNNER_TEMP/$ASSET" \
+              --draft --target "$GITHUB_SHA" \
               --title "toolpath $VERSION" \
               --notes "Prebuilt \`path\` $VERSION for \`$TRIPLE\`, built by \`toolpath-prebuild.yml\`.
 
@@ -145,16 +180,14 @@ jobs:
           fi
 
           # `uploads.github.com` is a different endpoint from the API and fails
-          # independently of it — run 31969324450 reached it one second after a
-          # successful `release create` and still left the release empty. So the
-          # upload is retried, and each attempt re-checks presence first: that
-          # makes a partial success idempotent instead of a 422, and makes the
-          # whole step safe to re-run over a release that already exists.
+          # independently of it. Retrying is safe HERE and only here, because
+          # the release is still a draft: each attempt re-checks presence
+          # first, so a partial success is idempotent instead of a 422.
           #
           # NOT `--clobber`, ever: replacing published bytes would make every
           # session pinned to the old digest refuse the download. The preflight
           # already refuses a published asset, so the only thing being retried
-          # here is getting the FIRST copy up.
+          # here is getting the FIRST copy onto the draft.
           for attempt in 1 2 3; do
             if gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$ASSET"; then
               break
@@ -165,14 +198,29 @@ jobs:
             sleep 5
           done
 
-          # Fail-closed read-back, the claim-ticket.yml backstop applied here:
-          # green means the asset is READABLE, not that a write returned 2xx.
-          # Without this the lane reports success and every session then falls
-          # back to the compile, which is the silent non-ratchet #116 is about.
+          # The asset must be ON the draft before the draft publishes — under
+          # immutable releases, publishing empty is not a retryable state, it
+          # is the burned-tag state. The draft is left in place deliberately:
+          # a re-run's preflight deletes it and starts clean.
           if ! gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx "$ASSET"; then
-            echo "::error title=toolpath-prebuild: asset did not land::$TAG has no asset named $ASSET" \
-              "after three upload attempts. The release may exist and be empty — re-running this" \
-              "workflow at the same version is safe and will retry the upload."
+            echo "::error title=toolpath-prebuild: asset did not land on the draft::$TAG (draft) has" \
+              "no asset named $ASSET after three upload attempts. NOT publishing — a re-run will" \
+              "delete this draft and start clean."
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false
+
+          # Fail-closed read-back, the claim-ticket.yml backstop applied here:
+          # green means the PUBLISHED release carries the asset — not that any
+          # write returned 2xx. Without this the lane reports success and every
+          # session silently falls back to the compile, which is the
+          # non-ratchet #116 is about.
+          final="$(gh release view "$TAG" --json isDraft,assets)"
+          if [ "$(jq -r '.isDraft' <<<"$final")" != "false" ] \
+            || ! jq -e --arg a "$ASSET" '.assets[] | select(.name == $a)' <<<"$final" >/dev/null; then
+            echo "::error title=toolpath-prebuild: publish did not land::$TAG is still a draft or" \
+              "lost $ASSET at publish. Inspect the release by hand before re-running."
             exit 1
           fi
 
