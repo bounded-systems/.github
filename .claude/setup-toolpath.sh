@@ -125,8 +125,25 @@ print(json.dumps({"url": lease["url"], "token": body["token"], "user": body.get(
         echo "toolpath: Pathbase grant redeemed — this session has its own token at $CRED_FILE (revoke just this one at the vendor, or \`path auth logout\`)"
       else
         # The code is single-use and 10-minute — a failed redeem burns it, and
-        # re-leasing mints a fresh one, so say WHICH leg failed.
-        echo "toolpath: Pathbase lease minted a code but the REDEEM failed — sharing will be anonymous. Vendor redeem endpoint unreachable or code rejected (.github#119)."
+        # re-leasing mints a fresh one, so say WHICH leg failed — and, since
+        # .github#179, which SIDE failed. This line used to say "Vendor redeem
+        # endpoint unreachable or code rejected", naming the vendor first for
+        # what was measured on 2026-08-16 to be an egress-allowlist gap of our
+        # own: pathbase.dev was never granted, so the redeem could not open a
+        # socket, while the reader was pointed at a service that was working
+        # the whole time. Splitting the two costs one probe on a path that has
+        # already failed. The discriminator is the one cloud-environment.json's
+        # knownCaveats defines: no HTTP status at all (000, a refused CONNECT)
+        # means NOT GRANTED; any status means the host answered and the vendor
+        # is the one that said no.
+        redeem_host="$(printf '%s' "$lease" | sed -n 's|.*"url":"https\{0,1\}://\([^"/]*\).*|\1|p')"
+        redeem_host="${redeem_host:-pathbase.dev}"
+        probe="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$redeem_host/" 2>/dev/null || true)"
+        if [ "${probe:-000}" = "000" ]; then
+          echo "toolpath: Pathbase lease minted a code but the REDEEM HOST $redeem_host IS UNREACHABLE (refused CONNECT, no HTTP status) — sharing will be anonymous. This is an EGRESS ALLOWLIST gap on our side, NOT a vendor fault: grant the host in the environment dialog and record it in .github-private/.claude/cloud-environment.json — which also moves ORG_ENV_CONFIG, so it is two dialog edits (.github#179)."
+        else
+          echo "toolpath: Pathbase lease minted a code but the vendor REJECTED the redeem ($redeem_host answered HTTP $probe) — sharing will be anonymous. Egress to the host is fine; the grant code was refused or had already expired (single-use, 10 minutes) (.github#119)."
+        fi
       fi
     elif [ -n "$lease" ] && printf '%s' "$lease" | grep -q '"token"'; then
       mkdir -p "$CRED_DIR" && chmod 700 "$CRED_DIR"
