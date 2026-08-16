@@ -41,9 +41,11 @@ Repairing by hand does not weaken the trust chain — `bash` only ever runs byte
 hashed to `$ORG_BOOT_SHA256`, whichever of the two sources supplied them, and if
 neither does it refuses rather than falling through to an unverified file. The
 checkout is tried first because the repair must work when egress is down, which is
-exactly when a resumed session is most likely to be repairing by hand. The `curl`
-invocation is the canonical setup-script field text and its flags are unchanged; if
-you change *them*, change `.claude/README.md` and the environment dialog together.
+exactly when a resumed session is most likely to be repairing by hand. This `curl`
+deliberately DIFFERS from the setup-script field's canonical text (`.claude/README.md`):
+sessions have `$ORG_BOOT_SHA256`, the init phase does not (`.github-private`#506), so
+the field embeds the digest literally while this snippet reads the variable. If you
+change the flags, change both texts and the environment dialog together.
 
 ## 2. Claim before working
 

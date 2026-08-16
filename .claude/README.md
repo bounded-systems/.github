@@ -94,23 +94,39 @@ field itself lives where no reviewer and no gate can see it. If the two drift,
 this file is what the field should be returned to.
 
 Since #125 the field is **one line**. Everything it used to do lives in
-[`boot.sh`](boot.sh) — fetched, digest-checked against a dialog-recorded pair,
-and only then executed — so the body is reviewed, tested and gated in-repo, and
-the only hand-typed text left is a line that changes only when its own failure
-behaviour does (twice so far, both 2026-08-10: retries for the measured
-init-time failure, then deriving the URL from the digest — see below):
+[`boot.sh`](boot.sh) — fetched, digest-checked, and only then executed — so the
+body is reviewed, tested and gated in-repo, and the only hand-typed text left
+is a line that changes only when its own failure behaviour does (three times
+so far: retries for the measured init-time failure and deriving the URL from
+the digest, both 2026-08-10; embedding the digest literally and logging the
+run, 2026-08-16 — see below):
 
 ```sh
-curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/$ORG_BOOT_SHA256.sh" -o /tmp/boot.sh && echo "$ORG_BOOT_SHA256  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"
+{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/4d4e3a70535f3ad536d7966a095e932a343390e76589ff2ff262f158dd1b6c22.sh" -o /tmp/boot.sh && echo "4d4e3a70535f3ad536d7966a095e932a343390e76589ff2ff262f158dd1b6c22  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
 ```
 
-`ORG_BOOT_SHA256` is the **single** environment-dialog variable left, recorded
-in `.github-private` → `.claude/cloud-environment.json` alongside the other
+The digest in the field is a **literal, not `$ORG_BOOT_SHA256`**, and that is a
+measured constraint, not a style choice: the init phase runs the setup script
+**without the dialog's environment variables** (`sha=UNSET` printed from inside
+the init run, while every probe from the session's own process sees the
+variable — `.github-private`#506, 2026-08-16). The var-derived field expanded
+its URL to `…/.sh`, 404'd in under a second through perfectly healthy egress,
+and the fail-open tail hid it; on all evidence in the record, the derived
+field never once completed at init. Do not "simplify" the literal back to the
+variable — `bootstrap-pin.test.mjs` pins the field's literal to the sha256 of
+this repo's own `boot.sh`, so the text and the payload cannot drift apart.
+
+`ORG_BOOT_SHA256` the **variable** stays in the dialog for the consumers that
+run where variables exist: `cloud-env-check.mjs`, `org-repair.sh`, and the
+CLAUDE.md step-1 gate all verify against it in-session. It is recorded in
+`.github-private` → `.claude/cloud-environment.json` alongside the other
 `ORG_`-prefixed values — which puts it inside the `ORG_ENV_CONFIG` digest, the
 `env-record.yml` honesty gate, and `cloud-env-check.mjs`'s every-boot drift
-check. That is the point of the shape: the trust anchor moved from an ungated
-110-line field to one short value that is **written down, hashed, and
-machine-checked**. Get the current value with:
+check. A digest bump therefore moves **three dialog things together, in one
+sitting**: re-paste the field text (new literal), set the `ORG_BOOT_SHA256`
+variable, and recompute `ORG_ENV_CONFIG` (`node
+.claude/hooks/cloud-env-check.mjs --print-digest` in `.github-private`, after
+writing the new value). Get the current digest with:
 
 ```sh
 node .claude/gen-bootstrap-pin.mjs --outer origin/main
@@ -123,7 +139,12 @@ content-addressed `boot.bounded.tools/<sha256>.sh` after infra#245 shipped on
 of the digest, so storing both was one fact written down twice, and the
 2026-08-10 near-miss in `.github-private` (a pair written pointing at an
 unpublished URL, caught only by probing) is exactly the mismatch that
-derivation makes unrepresentable. The field text now derives it. The serving
+derivation makes unrepresentable. CORRECTED 2026-08-16: "the field text now
+derives it" was true for ten hours of design and never true at runtime —
+init-time expansion of `$ORG_BOOT_SHA256` yields the empty string (#506).
+Derivation survives as the **paste-time convention**: the URL is still a pure
+function of the digest, computed by whoever types the field, and the field
+carries the result literally. The serving
 host is part of the field text rather than the hashed record; it is
 non-trust-bearing (the sha256 check refuses wrong bytes regardless of host),
 so moving hosts again is a field-text edit — a deliberate, org-wide re-paste —
@@ -131,11 +152,20 @@ not a dialog-var edit. The payload store is append-only (infra
 `cloudflare/boot/`), so a dialog holding an older digest keeps booting its
 older payload; publish and paste stay decoupled.
 
-Every intermediate state fails safe: an unset variable, a 404, or wrong bytes
-all break the `&&` chain before `bash` runs, and the session starts with no
-hooks — the same posture the old field had when a fetch_verified refused a
-file. The `--status` flag keeps sha256sum quiet on success so the one loud
-path is the final `echo`.
+Every intermediate state fails safe: a 404 or wrong bytes break the `&&` chain
+before `bash` runs, and the session starts with no hooks — the same posture the
+old field had when a fetch_verified refused a file. The field stays fail-open
+(the trailing `||` keeps exit 0, so a broken bootstrap never blocks session
+creation) — but since 2026-08-16 it is no longer *silently* fail-open: the
+whole run is logged to `/tmp/boot-init.log`, which rides the container into
+every session (and into environment snapshots) and ends in `boot_ok` on
+success, so "did boot run, and why not" is one `cat`. Two measured facts to
+weigh before ever changing that posture: the init runner executes the field
+under `set -e` and surfaces a nonzero exit loudly in the creation UI ("View
+details" shows the script's stdout — a usable readout channel), so a
+fail-closed field is possible but blocks all session creation while broken;
+and the UI's "Try again" after a failed setup **skips the init script on the
+retry pass**, producing a running-but-hookless session (#506).
 
 ### The field is skipped entirely on a RESUMED session (measured 2026-08-11)
 
@@ -144,11 +174,14 @@ session it does not run at all, and nothing above detects that.
 
 The environment manager's own log (`/tmp/env-manager.log`) records both boots of
 one container. On creation, `"session_mode": "setup-only"`, the field ran and
-succeeded — `Running initialization script {"script_length": 342}` against 340
-bytes for the canonical line above, a trailing newline apart — and the platform
+exited 0 — `Running initialization script {"script_length": 342}` against the
+342-byte then-canonical line, a trailing newline apart — and the platform
 then fired each repo's SessionStart hooks with `claude --init-only`, once per
 repo, which is the only context in which a project-scoped `.claude/settings.json`
-is ever discovered. On resume, `"session_mode": "resume-cached"`:
+is ever discovered. (CORRECTED 2026-08-16: this log line was read as "the field
+succeeded". Exit 0 was the fail-open tail — the fetch itself had 404'd on the
+empty-var URL, #506. The launcher's "Successfully executed init script" attests
+the exit code, not the install.) On resume, `"session_mode": "resume-cached"`:
 
 ```
 Wrote launcher settings file  {"path": "/root/.claude/launcher-settings.json"}

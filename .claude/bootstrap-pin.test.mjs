@@ -44,6 +44,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,32 +111,48 @@ test("the documented regenerate and confirm loops cover every fetched file", () 
 
 // ── The one-line field: the only text an operator still hand-types ───────────
 
-test("README's canonical field is one line, driven by the recorded digest", () => {
-  // The field's whole job is: fetch the content-addressed URL derived from
-  // $ORG_BOOT_SHA256, refuse unless the bytes hash to that same variable, only
-  // then execute. Since 2026-08-10 the URL is derived IN the field text
-  // (boot.bounded.tools/$ORG_BOOT_SHA256.sh) — a field that reintroduces a
-  // separate $ORG_BOOT_URL reintroduces the representable-mismatch class the
-  // derivation removed, and a field that grows a second line of logic is the
-  // infra#122 failure mode returning.
-  const line = README.split("\n").find((l) => l.includes("boot.bounded.tools/$ORG_BOOT_SHA256.sh"));
-  assert.ok(line, "README's canonical field text no longer derives the URL from $ORG_BOOT_SHA256");
-  assert.ok(!line.includes("$ORG_BOOT_URL"), "the field line reintroduced $ORG_BOOT_URL — the URL must stay derived");
-  const checks = line.split("$ORG_BOOT_SHA256").length - 1;
-  assert.ok(checks >= 2, "the field must use $ORG_BOOT_SHA256 twice — once to derive the URL, once to verify the bytes");
+test("README's canonical field embeds this repo's boot.sh digest, literally", () => {
+  // The field runs in the INIT phase, which has no dialog environment
+  // variables (measured 2026-08-16, .github-private#506: `sha=UNSET` printed
+  // from inside an init run while every probe from the session's own process
+  // saw the value). A field that reads $ORG_BOOT_SHA256 therefore fetches
+  // "…/.sh", 404s, and fail-opens into a hookless session — which is what the
+  // derived field did on every boot from 2026-08-10 to 2026-08-16. The literal
+  // is pinned to boot.sh's actual digest so the field text and the payload it
+  // names cannot drift apart: a boot.sh change goes red here until the README
+  // line is regenerated (and the dialog re-pasted — the README bump procedure).
+  const line = README.split("\n").find((l) => l.includes("curl") && l.includes("boot.bounded.tools/"));
+  assert.ok(line, "README's canonical field text no longer fetches from boot.bounded.tools");
+  const m = line.match(/boot\.bounded\.tools\/([0-9a-f]{64})\.sh/);
+  assert.ok(m, "the field's URL carries no 64-hex literal digest — $ORG_BOOT_SHA256 is UNSET at init (#506), so the URL must embed it");
+  const literal = m[1];
+  const bootDigest = createHash("sha256").update(readFileSync(join(HERE, "boot.sh"))).digest("hex");
+  assert.equal(
+    literal,
+    bootDigest,
+    `the field's literal digest does not match boot.sh (${bootDigest.slice(0, 12)}…) — ` +
+      `regenerate the field line and re-paste the dialog (bump procedure in this README)`,
+  );
+  const occurrences = line.split(literal).length - 1;
+  assert.ok(occurrences >= 2, "the field must carry the digest twice — once in the URL, once in the sha256sum check line");
+  assert.ok(!line.includes("$ORG_BOOT_SHA256"), "the field line reads $ORG_BOOT_SHA256 — UNSET during init (#506); the digest must be literal");
+  assert.ok(!line.includes("$ORG_BOOT_URL"), "the field line reintroduced $ORG_BOOT_URL — the URL stays a paste-time function of the digest");
   assert.ok(!line.trim().includes("\n"), "the canonical field text is no longer one line");
 });
 
-test("the field verifies before it executes", () => {
+test("the field verifies before it executes, and logs its run", () => {
   // Ordering is the security property: curl → sha256sum -c → bash, joined by
-  // `&&` so an unset variable, a 404 or wrong bytes all stop before execution.
-  const line = README.split("\n").find((l) => l.includes("boot.bounded.tools/$ORG_BOOT_SHA256.sh")) ?? "";
+  // `&&` so a 404 or wrong bytes stop before execution.
+  const line = README.split("\n").find((l) => l.includes("curl") && l.includes("boot.bounded.tools/")) ?? "";
   const curl = line.indexOf("curl");
   const check = line.indexOf("sha256sum -c");
   const run = line.indexOf("bash");
   assert.ok(curl >= 0 && check > curl && run > check, "the field's curl → sha256sum -c → bash ordering broke");
   const between = line.slice(check, run);
   assert.ok(between.includes("&&"), "the digest check and the execution are not &&-joined — a failed check would not stop the run");
+  // Silent fail-open is how a broken bootstrap hid from 2026-08-10 to
+  // 2026-08-16 (#506): the field must leave an on-disk record of every run.
+  assert.ok(line.includes("/tmp/boot-init.log"), "the field no longer logs to /tmp/boot-init.log — silent fail-open is the #506 failure mode");
 });
 
 test("the live pin lives only in boot.sh — README carries no live assignment", () => {
