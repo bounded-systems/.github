@@ -102,7 +102,7 @@ the digest, both 2026-08-10; embedding the digest literally and logging the
 run, 2026-08-16 — see below):
 
 ```sh
-{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/239f716b6e69a408914ed3e6d5c750c27ecab1b8ff8dcbbe937885a170f02545.sh" -o /tmp/boot.sh && echo "239f716b6e69a408914ed3e6d5c750c27ecab1b8ff8dcbbe937885a170f02545  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
+{ curl -fsSL --retry 3 --retry-connrefused --retry-max-time 60 --connect-timeout 5 --max-time 30 "https://boot.bounded.tools/d7bc4889e07710d1f351ca2ff22b731bfd190685ec87c9527718125349021471.sh" -o /tmp/boot.sh && echo "d7bc4889e07710d1f351ca2ff22b731bfd190685ec87c9527718125349021471  /tmp/boot.sh" | sha256sum -c --status - && bash /tmp/boot.sh && echo boot_ok || echo "bootstrap: refused or unreachable — no hooks installed (.github/.claude/README.md)"; } >/tmp/boot-init.log 2>&1
 ```
 
 The digest in the field is a **literal, not `$ORG_BOOT_SHA256`**, and that is a
