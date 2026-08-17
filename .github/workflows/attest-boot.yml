@@ -30,9 +30,14 @@ name: attest-boot
 # payload store carries main's boot.sh. Attesting branch bytes would sign
 # things that may never ship.
 #
-# Subjects are exactly boot.sh + its fetch set (the three files
-# fetch_verified installs). If the fetch set grows, add the path here — the
-# path filter and the subject list are deliberately the same list.
+# Subjects are exactly boot.sh + its fetch set (the four files fetch_verified
+# installs). The path filter and the subject list are deliberately the same
+# list, and `bootstrap-pin.test.mjs` now asserts both against boot.sh's actual
+# `fetch_verified` calls — because "if the fetch set grows, add the path here"
+# was an instruction to a human, and it was not followed: setup-toolpath.sh
+# joined the fetch set (#195) and was absent from both lists until #534. For
+# months the one artifact carrying an executable digest pin was the one with no
+# provenance attestation, and edits to it did not even trigger this workflow.
 on:
   push:
     branches: [main]
@@ -41,6 +46,7 @@ on:
       - .claude/session-start-dispatch.mjs
       - .claude/register-mcp.mjs
       - .claude/stop-hook-git-check.sh
+      - .claude/setup-toolpath.sh
       - .github/workflows/attest-boot.yml
   workflow_dispatch: {}
 
@@ -70,6 +76,7 @@ jobs:
             .claude/session-start-dispatch.mjs
             .claude/register-mcp.mjs
             .claude/stop-hook-git-check.sh
+            .claude/setup-toolpath.sh
       - name: Name the attested digests in the run summary
         run: |
           {

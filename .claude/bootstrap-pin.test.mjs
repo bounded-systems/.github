@@ -109,6 +109,38 @@ test("the documented regenerate and confirm loops cover every fetched file", () 
   }
 });
 
+test("attest-boot signs boot.sh and every file fetch_verified installs", () => {
+  // attest-boot.yml enumerates the fetch set TWICE — once as a push path filter,
+  // once as attestation subjects — and its comment used to say "if the fetch set
+  // grows, add the path here". That is an instruction to a human, and it was not
+  // followed: setup-toolpath.sh joined the fetch set in #195 and was missing from
+  // both lists until #534 found it. The consequence was not cosmetic. The one
+  // fetched artifact that carries an executable digest pin (TOOLPATH_SHA256) was
+  // the one with no provenance attestation, and editing it did not even trigger
+  // the workflow — so the gap was self-concealing in exactly the way the
+  // fetched-file failures in this file's header were.
+  //
+  // Both lists are now derived from the same source of truth this file already
+  // parses, so the next file added to fetch_verified fails here instead of
+  // silently going unsigned.
+  const WORKFLOW = readFileSync(join(HERE, "..", ".github", "workflows", "attest-boot.yml"), "utf8");
+  const expected = [".claude/boot.sh", ...fetches.map((f) => `.claude/${f.file}`)];
+
+  const subjectBlock = WORKFLOW.match(/subject-path:\s*\|\n((?:\s+\S+\n)+)/)?.[1];
+  assert.ok(subjectBlock, "attest-boot.yml has no subject-path block — nothing is being attested");
+  const subjects = subjectBlock.trim().split(/\s+/);
+  for (const want of expected) {
+    assert.ok(subjects.includes(want), `attest-boot.yml does not attest ${want} — it would ship unsigned`);
+  }
+
+  const pathsBlock = WORKFLOW.match(/paths:\s*\n((?:\s+-\s+\S+\n)+)/)?.[1];
+  assert.ok(pathsBlock, "attest-boot.yml has no push path filter");
+  const paths = [...pathsBlock.matchAll(/-\s+(\S+)/g)].map((m) => m[1]);
+  for (const want of expected) {
+    assert.ok(paths.includes(want), `attest-boot.yml does not run when ${want} changes — a new version would never be attested`);
+  }
+});
+
 // ── The one-line field: the only text an operator still hand-types ───────────
 
 test("README's canonical field is channel-based and names no digest", () => {
