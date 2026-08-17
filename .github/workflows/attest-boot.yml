@@ -82,7 +82,7 @@ jobs:
           {
             echo "### Attested subjects"
             echo
-            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh; do
+            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh .claude/setup-toolpath.sh; do
               echo "- \`$f\` — \`$(sha256sum "$f" | cut -d' ' -f1)\`"
             done
             echo

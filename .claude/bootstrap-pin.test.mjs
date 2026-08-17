@@ -54,6 +54,7 @@ import { inspect, parseBootstrap } from "./gen-bootstrap-pin.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT_SH = readFileSync(join(HERE, "boot.sh"), "utf8");
 const README = readFileSync(join(HERE, "README.md"), "utf8");
+const ATTEST = readFileSync(join(HERE, "..", ".github", "workflows", "attest-boot.yml"), "utf8");
 
 const { pin, digests, fetches } = parseBootstrap(BOOT_SH);
 
@@ -98,10 +99,20 @@ test("the documented regenerate and confirm loops cover every fetched file", () 
   // `fetch_verified` calls that define it. A file missing from a loop is a file
   // whose digest a maintainer following the docs would never recompute — exactly
   // how #72 shipped a stale digest. Cheap to state, so it is stated. Loops live
-  // in boot.sh's own comments and in README prose; both are held to it.
-  for (const source of [BOOT_SH, README]) {
-    for (const [, body] of source.matchAll(/^(?:#\s*)?for f in ([^;]+); do$/gm)) {
-      const listed = new Set(body.trim().split(/\s+/));
+  // in boot.sh's own comments, in README prose, and in attest-boot.yml's run
+  // summary; all three are held to it.
+  //
+  // attest-boot.yml joined this list the hard way. #205 derived that workflow's
+  // path filter and subject list from the fetch set, and MISSED a third
+  // enumeration — the summary loop — which kept reporting four files after five
+  // were attested. A gate that covers two of three hand-written copies is the
+  // same trap one level up, so the loop scan now reads that file too. Leading
+  // whitespace is allowed because the workflow's loop is indented, and entries
+  // are compared by basename because it lists `.claude/`-prefixed paths while
+  // `fetches` carries bare filenames.
+  for (const source of [BOOT_SH, README, ATTEST]) {
+    for (const [, body] of source.matchAll(/^\s*(?:#\s*)?for f in ([^;]+); do$/gm)) {
+      const listed = new Set(body.trim().split(/\s+/).map((p) => p.replace(/^\.claude\//, "")));
       for (const { file } of fetches) {
         assert.ok(listed.has(file), `a documented loop over "${body.trim()}" omits ${file}`);
       }
@@ -123,7 +134,7 @@ test("attest-boot signs boot.sh and every file fetch_verified installs", () => {
   // Both lists are now derived from the same source of truth this file already
   // parses, so the next file added to fetch_verified fails here instead of
   // silently going unsigned.
-  const WORKFLOW = readFileSync(join(HERE, "..", ".github", "workflows", "attest-boot.yml"), "utf8");
+  const WORKFLOW = ATTEST;
   const expected = [".claude/boot.sh", ...fetches.map((f) => `.claude/${f.file}`)];
 
   const subjectBlock = WORKFLOW.match(/subject-path:\s*\|\n((?:\s+\S+\n)+)/)?.[1];
