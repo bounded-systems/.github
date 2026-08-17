@@ -21,18 +21,27 @@ ROOT="${CLAUDE_SESSION_ROOT:-}"
 BOOT="$ROOT/.github/.claude"                       # preferred: the attached checkout
 
 # --- the trust anchor -------------------------------------------------------
-# PIN is a COMMIT SHA (content-addressed, so the URL is immutable). The SHA-256s
-# are the second, independent check: pinning the URL only guarantees immutability
-# IF the endpoint is honest, because the SHA in the URL is a path component the
-# client never verifies. These digests are checked locally, so a wrong-bytes
-# response is refused whatever served it.
+# PIN is a COMMIT SHA. The SHA-256s are the second, independent check: naming a
+# commit in the URL only guarantees immutability IF the endpoint is honest,
+# because that SHA is a path component the client never verifies. These digests
+# are checked locally, so a wrong-bytes response is refused whatever served it.
+#
+# That property is why the artifacts can be proxied at all. Since
+# .github-private#492 the fetch goes to boot.bounded.tools/artifact/$PIN/$f,
+# which fetches raw.githubusercontent server-side and streams the bytes through
+# — moving that egress off every session and onto one owned Worker. The Worker
+# holds no pins and performs no digest check, deliberately: a second pin source
+# is a second thing that can disagree with git, and the refusal below is the one
+# that must stay authoritative. Nothing about the trust argument changes with the
+# host, which is precisely the point — this client never trusted the host.
 #
 # These digests ARE fetched now — this file arrives via the one-line field —
-# and that is sound only because the field refuses this file unless it hashes
-# to the dialog-recorded ORG_BOOT_SHA256, the one value that is not fetched.
-# The root of trust moved from this block to that dialog pair; these lines are
-# the second link of the chain, not its anchor. See "Why the chain has three
-# links" in README.md.
+# and that is sound only because the field refuses this file unless it hashes to
+# the digest the channel manifest names (channel/front-desk.json, written only by
+# the OIDC-pinned boot-manifest lane on main; since #192 there is no
+# ORG_BOOT_SHA256 in the dialog at all). The root of trust moved from this block
+# to that manifest; these lines are the second link of the chain, not its anchor.
+# See "Why the chain has three links" in README.md.
 #
 # PIN and the digests are ONE PAIR — bump them together or the bootstrap refuses
 # a legitimate file. Do not hand-edit them; regenerate:
@@ -43,7 +52,7 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 # bump PR, because the pin can only name a merge commit once that commit exists.
 # The equivalent by hand, against the endpoint rather than the git objects:
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
-#     curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum
+#     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
 PIN=e2e617b067106f229bcdb762dfb778df911de2a4
 SUM_session_start_dispatch_mjs=15808158e7665d703414547b5e6dd9a4859a7a75838f75dbf4e22b684ddbba6e
@@ -57,7 +66,7 @@ SUM_setup_toolpath_sh=dabcd89df0467f9361c0c51d72cd2989aa8b91dfa1762e7c0f6a170a72
 fetch_verified() {
   local f="$1" want="$2" got
   curl -fsSL --retry 2 \
-    "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" \
+    "https://boot.bounded.tools/artifact/$PIN/$f" \
     -o "$BOOT/$f.unverified" || { echo "bootstrap: WARN could not fetch $f"; return 1; }
   got="$(sha256sum "$BOOT/$f.unverified" | cut -d' ' -f1)"
   if [ "$got" != "$want" ]; then
