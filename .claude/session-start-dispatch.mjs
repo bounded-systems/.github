@@ -161,12 +161,25 @@ export function sessionStartCommands(settings) {
  * Merge hook contexts into the one string SessionStart accepts, dropping exact
  * duplicates.
  *
- * Two attached repos legitimately emit the SAME org context. `.github`'s hook
- * resolves `<session root>/.github-private/claude/context.md` when that repo is
- * attached, and `.github-private`'s own hook reads the identical file from its
- * own checkout. Observed live 2026-07-31 in a four-repo session: "2 injected
+ * Two attached repos can emit the same org context, and until 2026-08-15 they
+ * always did. Observed live 2026-07-31 in a four-repo session: "2 injected
  * context", 2289 bytes twice, byte-identical, on a file whose own header reads
  * "Keep this LEAN — it counts against the context window every session".
+ *
+ * CORRECTED 2026-08-17 (#581). This paragraph used to explain the duplication
+ * as `.github`'s hook resolving `<session root>/.github-private/claude/context.md`
+ * while `.github-private`'s hook read "the identical file from its own
+ * checkout". Both halves were false of the shipped script: every source in
+ * `inject-org-context.sh` was a NETWORK source, none read a checkout, and the
+ * two repos' copies had diverged — so the deduplication below was silently
+ * ELECTING one of two different org contexts rather than dropping a redundant
+ * copy of one. `.github`'s copy taught the retired single-door claim
+ * convention, and it is the one that won.
+ *
+ * The hook now genuinely prefers a local checkout (step L), so the sentence is
+ * true again — with the difference that when two local copies disagree the hook
+ * says so in the injected text instead of leaving the merge to pick a winner
+ * nobody can see. The dispatcher still never reads a context.md itself.
  *
  * Deleting either hook is the wrong fix, because neither is redundant in
  * general: without `.github-private` attached, `.github`'s hook is the only one

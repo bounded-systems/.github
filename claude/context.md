@@ -27,15 +27,21 @@ _(Org posture: outward-only, composably-published.)_
   pushes to default branches; commits signed; linear history. **Review is not
   required, and is not the gate** — one maintainer, so the enforceable predicate is
   a *check*, not an approval (`docs/merge-gate.md`).
-- **Claim before working.** Before starting work on any issue, dispatch
-  `claim-ticket.yml` (`bounded-systems/.github`, workflow_dispatch: repo, issue,
-  claimant), then confirm the claim comment on the issue names your claimant.
+- **Claim before working.** Doors, best reachable first (#529):
+  1. `claim-ticket.yml` (`bounded-systems/.github`, workflow_dispatch: repo,
+     issue, claimant) — the real door, lease-backed. Reachable only if
+     `.github` was attached at session creation (`add_repo` refuses it).
+  2. `claim-relay.yml` (`.github-private`, workflow_dispatch: issue, claimant)
+     — for `.github-private` issues when door 1 is unreachable. Bot-authored,
+     run-backed record; does **not** authenticate the claimant (#530).
+  3. Hand-claim (assign + comment) — last resort only, when no door is
+     reachable. It provides **no exclusion** (keycard#7, `signerSelfAsserted`);
+     say plainly the window was down.
+  Whichever door: confirm the claim comment on the issue names your claimant.
   An issue with any assignee or the `claimed` label is someone else's — do not
-  start. Window unreachable → claim by hand (assign + comment) and say the
-  window was down. Work with no issue yet → open one and claim it; the
-  direction (2026-08-07) is that **every session's work ties to a Front Desk
-  claim** — a session with nothing to claim is the exception to close, not
-  the norm.
+  start. Work with no issue yet → open one and claim it; the direction
+  (2026-08-07) is that **every session's work ties to a Front Desk claim** — a
+  session with nothing to claim is the exception to close, not the norm.
 - **The declared working set is `claude/session-repos.json`** — and it is
   creation-attached by intent (2026-08-07, #309): a session from the front-desk
   environment should start with every declared repo already checked out. A
