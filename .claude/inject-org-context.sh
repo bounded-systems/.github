@@ -2,7 +2,10 @@
 # SessionStart hook — inject the bounded-systems canonical Claude context.
 # Canonical source since .github#175: bounded-systems/.github -> claude/context.md
 # (PUBLIC — the #491 audit found nothing private; the .github-private copy is a
-# duplicate that remains a fallback below).
+# duplicate that remains a fallback below). Since infra#415 that public copy is
+# reached through boot.bounded.tools/public-context.md rather than raw
+# .githubusercontent.com — same bytes, one fewer host a session must reach. See
+# step 0.
 #
 # THE TWO COPIES ARE NOT GUARANTEED IDENTICAL, and this header used to say they
 # were "byte-identical until #494 retires it". Both halves were wrong (#581):
@@ -57,13 +60,35 @@ elif [ -f "$pub" ]; then
   ctx="$(cat "$pub" 2>/dev/null || true)"
 fi
 
-# 0) The public canonical copy — anonymous raw fetch, no token, no clone. This
-#    is the source that works in a cloud session with NOTHING attached; every
-#    fallback below was measured failing there on 2026-07-31, when the file
-#    lived only in the private repo.
+# 0) The public canonical copy — anonymous, no token, no clone. This is the
+#    source that works in a cloud session with NOTHING attached; every fallback
+#    below was measured failing there on 2026-07-31, when the file lived only in
+#    the private repo.
+#
+#    SERVED THROUGH THE BOOT WORKER since infra#415, not fetched from
+#    raw.githubusercontent.com directly. THE BYTES ARE THE SAME FILE: the Worker
+#    fetches bounded-systems/.github's claude/context.md from CLOUDFLARE'S
+#    network and streams it through verbatim — verified byte-identical against
+#    both the checkout and the raw upstream at deploy time (all three hashed to
+#    99f98f39… on 2026-08-17). What changes is only which host THIS session
+#    contacts, and that is the entire point: this line was the last session-side
+#    use of raw.githubusercontent.com, and the only reason that host was still in
+#    the front-desk egress allowlist (.github-private#534 item 2).
+#
+#    NOT the Worker's /context.md — that route is lease-gated and serves the
+#    .github-PRIVATE copy out of CONTEXT_KV, a different file that #581 recorded
+#    diverging from this one. /public-context.md is the public copy, which is
+#    what this hook has always fetched.
+#
+#    NO raw.githubusercontent FALLBACK is kept, deliberately. A fallback to the
+#    host we are retiring would stop working the moment the allowlist entry is
+#    dropped, leaving dead code that reads like resilience; and the failure it
+#    would cover — the Worker being unreachable — is already covered by steps 1-3
+#    over github.com, a host that is not going anywhere. Fail open, loudly, per
+#    the message at the bottom.
 if [ -z "$ctx" ] && command -v curl >/dev/null 2>&1; then
   ctx="$(curl -fsSL --connect-timeout 5 --max-time 15 \
-    https://raw.githubusercontent.com/bounded-systems/.github/main/claude/context.md \
+    https://boot.bounded.tools/public-context.md \
     2>/dev/null || true)"
 fi
 
@@ -99,7 +124,7 @@ fi
 # the silent variant made a context-less session indistinguishable from a
 # healthy one, and the verbspec worker shipped work without knowing.
 if [ -z "$ctx" ]; then
-  echo "org context NOT loaded — all sources failed (public raw, gh api, git clone, curl+token). Degraded mode: see the org stanza in CLAUDE.md."
+  echo "org context NOT loaded — all sources failed (boot.bounded.tools/public-context.md, gh api, git clone, curl+token). Degraded mode: see the org stanza in CLAUDE.md."
   exit 0
 fi
 
