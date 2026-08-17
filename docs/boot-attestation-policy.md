@@ -30,7 +30,9 @@ Grades follow `positioning.md`:
 
 The digest chain (`.claude/README.md`, "Why the chain has three links") already
 decides **what executes**: the field text refuses `boot.sh` unless it hashes to
-the dialog-recorded `ORG_BOOT_SHA256`, and `fetch_verified` refuses the three
+the digest the channel manifest names (`channel/front-desk.json`, written only by
+the OIDC-pinned `boot-manifest` lane on `main` — since #192 there is no
+`ORG_BOOT_SHA256` in the dialog at all), and `fetch_verified` refuses the four
 fetched files unless they hash to `boot.sh`'s pinned `SUM_*`. That chain fails
 closed and does not need the network.
 
@@ -64,10 +66,18 @@ hold, or S is refused:
 | Source ref | `refs/heads/main` |
 | OIDC issuer | `https://token.actions.githubusercontent.com` |
 
-Subjects are exactly `boot.sh` plus the three files `fetch_verified` installs:
-`session-start-dispatch.mjs`, `register-mcp.mjs`, `stop-hook-git-check.sh`.
-This list and `attest-boot.yml`'s `subject-path` are deliberately the same list;
-if one grows, the other must.
+Subjects are exactly `boot.sh` plus the four files `fetch_verified` installs:
+`session-start-dispatch.mjs`, `register-mcp.mjs`, `stop-hook-git-check.sh`,
+`setup-toolpath.sh`.
+
+This list, `attest-boot.yml`'s `subject-path`, its push path filter, and its
+run-summary loop are all the same list. That used to be stated as an instruction
+— "if one grows, the other must" — and the instruction failed: `setup-toolpath.sh`
+joined the fetch set in #195 and was missing from every one of them until #534.
+All four copies are now asserted against `boot.sh`'s actual `fetch_verified`
+calls by `.claude/bootstrap-pin.test.mjs`, which parses them with the same
+`parseBootstrap` that backs the pin gate. Adding a file to the fetch set fails
+that suite until each copy is updated; this document is one of the copies.
 
 As a command:
 

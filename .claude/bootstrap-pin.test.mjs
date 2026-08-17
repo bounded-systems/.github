@@ -55,6 +55,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT_SH = readFileSync(join(HERE, "boot.sh"), "utf8");
 const README = readFileSync(join(HERE, "README.md"), "utf8");
 const ATTEST = readFileSync(join(HERE, "..", ".github", "workflows", "attest-boot.yml"), "utf8");
+const POLICY = readFileSync(join(HERE, "..", "docs", "boot-attestation-policy.md"), "utf8");
 
 const { pin, digests, fetches } = parseBootstrap(BOOT_SH);
 
@@ -171,6 +172,27 @@ test("attest-boot signs boot.sh and every file fetch_verified installs", () => {
   const paths = [...pathsBlock.matchAll(/-\s+(\S+)/g)].map((m) => m[1]);
   for (const want of expected) {
     assert.ok(paths.includes(want), `attest-boot.yml does not run when ${want} changes — a new version would never be attested`);
+  }
+
+  // The policy doc is the FOURTH copy of this list, and the one a human reads to
+  // learn what the chain covers. It stated three files for as long as there were
+  // four.
+  //
+  // Scoped to the SUBJECT LIST, not the whole document, and that distinction is
+  // not pedantry — it was caught failing. A whole-document `includes` check
+  // passes on prose that merely mentions a filename, so the same paragraph that
+  // explains this bug would have satisfied a gate asserting the bug was fixed.
+  // The list is the claim a reader acts on; the list is what gets checked.
+  // Bounded by the blank line that ends the list, NOT by the first period: every
+  // filename in it contains a dot, so a `[^.]*` terminator captures almost
+  // nothing and the gate fails on correct input. Found by running it.
+  const subjectList = POLICY.match(/`fetch_verified` installs:\s*([\s\S]*?)\n\s*\n/)?.[1];
+  assert.ok(subjectList, "docs/boot-attestation-policy.md no longer states its subject list in a parseable form");
+  for (const { file } of fetches) {
+    assert.ok(
+      subjectList.includes(file),
+      `docs/boot-attestation-policy.md's subject list omits ${file} — a reader would conclude it is unattested`,
+    );
   }
 });
 
