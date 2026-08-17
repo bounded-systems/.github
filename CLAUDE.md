@@ -53,11 +53,21 @@ you change the flags, change both texts together.
 
 ## 2. Claim before working
 
-Before starting work on any issue, dispatch `claim-ticket.yml` in this repo
-(`workflow_dispatch`: `repo`, `issue`, `claimant`), then confirm on the **issue**
-that the claim comment names your claimant — a dispatch does not return its run id,
-so the issue is the record, not the run list. An issue with any assignee or the
-`claimed` label is someone else's. Window unreachable → claim by hand and say so.
+Doors, best reachable first (#529):
+
+1. `claim-ticket.yml` in this repo (`workflow_dispatch`: `repo`, `issue`,
+   `claimant`) — the real door, lease-backed. Reachable only if `.github` was
+   attached at session creation; `add_repo` refuses dot-prefixed names.
+2. `claim-relay.yml` in `.github-private` (`issue`, `claimant`) — for
+   `.github-private` issues when door 1 is unreachable. Bot-authored and
+   run-backed, but does **not** authenticate the claimant (#530).
+3. Hand-claim (assign + comment) — last resort, and it provides **no exclusion**
+   (keycard#7, `signerSelfAsserted`). Say plainly the window was down.
+
+Whichever door: confirm on the **issue** that the claim comment names your
+claimant — a dispatch does not return its run id, so the issue is the record,
+not the run list. An issue with any assignee or the `claimed` label is someone
+else's.
 
 ## 3. What this repo is
 
