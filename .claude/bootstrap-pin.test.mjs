@@ -84,8 +84,30 @@ test("every fetched file is digest-checked, and every digest is used", () => {
 
 test("the setup script fetches nothing without a digest", () => {
   // Catches a bare `curl … -o` added alongside the verified path.
-  const rawCurls = [...BOOT_SH.matchAll(/^\s*curl[^\n]*-o\s+(\S+)/gm)].map((m) => m[1]);
+  //
+  // This assertion spent its whole life asleep. `[^\n]*` cannot cross a line
+  // continuation, and boot.sh's only curl is split across three lines, so the
+  // scan matched ZERO curls and the loop below ran zero times — green forever,
+  // including on a hypothetical unverified fetch, which is the one thing it
+  // exists to catch. Measured on 2026-08-17: 0 matches before this change, 1
+  // after. Continuations are folded first so the shape of the invocation stops
+  // deciding whether the gate runs at all.
+  const joined = BOOT_SH.replace(/\\\n\s*/g, " ");
+  const rawCurls = [...joined.matchAll(/^\s*curl[^\n]*?-o\s+(\S+)/gm)].map((m) => m[1]);
+
+  // A gate that can silently check nothing is worse than no gate, because it
+  // reads as coverage. boot.sh fetches, so at least one curl must be found; if
+  // this ever trips, the scan has drifted from the file again rather than the
+  // file having become safe.
+  assert.ok(
+    rawCurls.length > 0,
+    "found no `curl … -o` in boot.sh — the scan is not matching what it audits, so this gate is vacuous",
+  );
+
   for (const target of rawCurls) {
+    // `-o /dev/null` discards its bytes; a body that is thrown away is never
+    // executed, so a reachability probe needs no digest.
+    if (target.replace(/"/g, "") === "/dev/null") continue;
     assert.ok(
       target.includes(".unverified"),
       `boot.sh curls to ${target} directly — fetched files must land on an ` +
