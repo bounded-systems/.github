@@ -54,10 +54,10 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
 #     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
-PIN=91db76202160f0d883cc043c169af860b1746ac7
+PIN=92e9d4bbee571d4b8096df877e38a4da45884a6d
 SUM_session_start_dispatch_mjs=f97ebc15b19a77bd21308229a355fbd5a0f767984063c13ded470dd3e0d40125
 SUM_register_mcp_mjs=36710119312b6caa9065f9d89c8f661ed750cfc16657528437ad0f60d67418c6
-SUM_stop_hook_git_check_sh=52890becf4ddd223ac5331aa302d6fe82bca9c966b15520a6a48700c047d8546
+SUM_stop_hook_git_check_sh=0258906b2cf0a872a7f747dd50de6a0ec40970171b2724187120b555360d7875
 SUM_setup_toolpath_sh=dabcd89df0467f9361c0c51d72cd2989aa8b91dfa1762e7c0f6a170a72a9ffa2
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
