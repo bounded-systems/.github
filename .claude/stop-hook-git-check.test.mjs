@@ -328,6 +328,47 @@ test("the remedy never routes to --amend, and names the shallow trap", () => {
   }
 });
 
+test("the push it demands is the CORRECT push: unpiped, retried, postcondition-verified", () => {
+  // .github-private #461. `git push … 2>&1 | tail -3 && break` takes TAIL's exit
+  // status, not git's, so `&& break` fires on the first attempt whatever git did:
+  // the retry loop never retries and a refused push is reported as a successful
+  // one. Measured on a live 403, where the pipe ate the `HTTP 403` line and the
+  // surviving `send-pack: unexpected disconnect` was filed as a network flake.
+  //
+  // The hook is where a session is TOLD to push, so it is where the working form
+  // has to be — the issue's own framing: the push guidance itself, not a doc it
+  // might read. Asserted for the same reason the --amend remedy above is: the
+  // advice is the defect's last mile.
+  const r = repo({ withOriginHead: false });
+  try {
+    git(r.dir, "checkout", "-q", "-b", "feature");
+    r.add({ message: "properly signed, just unpushed", sign: "ssh" });
+    const got = runHook(r.dir);
+    assert.equal(got.code, 2);
+    assert.match(got.stderr, /Do NOT pipe the push/, "the masking must be named where the push is demanded");
+    assert.match(got.stderr, /git ls-remote --exit-code --heads origin 'feature'/, "the postcondition check must name the actual branch");
+    assert.doesNotMatch(got.stderr, /\|\s*tail/, "the broken form must never be the one suggested");
+  } finally {
+    clean(r);
+  }
+});
+
+test("the push form is not printed when there is nothing to push", () => {
+  // It rides the unpushed-commit path only. A stop with a merely dirty tree has
+  // no push to get right yet, and guidance printed on every stop is guidance
+  // sessions learn to scroll past.
+  const r = repo();
+  try {
+    writeFileSync(join(r.dir, "f.txt"), "changed\n");
+    const got = runHook(r.dir);
+    assert.equal(got.code, 2);
+    assert.match(got.stderr, /uncommitted changes/);
+    assert.doesNotMatch(got.stderr, /Do NOT pipe the push/);
+  } finally {
+    clean(r);
+  }
+});
+
 // ── Scope: the whole session, not just the cwd (#214) ────────────────────────
 //
 // The faults above were all "the hook asked git the wrong question". This one is

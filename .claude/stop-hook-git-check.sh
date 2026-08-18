@@ -59,6 +59,46 @@ discover_repos() {
   } | awk 'NF && !seen[$0]++'
 }
 
+# ── How to push, printed at the moment a push is demanded (.github-private #461)
+#
+# The retry-with-backoff form a session reaches for under time pressure pipes the
+# push to keep the transcript short:
+#
+#   git push -u origin "$b" 2>&1 | tail -3 && break
+#
+# That is broken. A pipeline's exit status is the LAST command's, so `tail`
+# exiting 0 makes the whole thing succeed no matter what git did: `&& break`
+# fires on the first attempt every time, the retry loop that exists to survive
+# transient failure is inert, and the caller reports a push that never happened.
+# It fails in the OPTIMISTIC direction, which is why nothing downstream catches
+# it — the session says "pushed" and ends with the work still local.
+#
+# Measured on a live refusal (#461): the pipe ate `error: RPC failed; HTTP 403`
+# and left `send-pack: unexpected disconnect` plus a reassuring `Everything
+# up-to-date`, which was read — and reported to the operator — as a network
+# flake. A 403 and a dropped connection look identical once the discriminating
+# line is discarded, so the masking degrades diagnosis, not just this one push.
+#
+# This is printed HERE, rather than written into a doc, because this is the
+# moment a session is told to push; a doc it might read is not that moment. It
+# costs nothing on every stop where there is nothing to push.
+push_guidance() {
+  local b="$1"
+  cat >&2 <<EOF
+  Do NOT pipe the push. A pipeline's status is tail's, not git's, so a refused
+  push reports success. Retry on the command itself, and verify the
+  POSTCONDITION (the ref is on the remote) rather than the command's own claim:
+
+    ok=0
+    for i in 1 2 3 4 5; do
+      git push -u origin '$b' && { ok=1; break; }
+      sleep \$((2**i))
+    done
+    [ "\$ok" = 1 ] || { echo 'push FAILED after retries'; exit 1; }
+    git ls-remote --exit-code --heads origin '$b'
+EOF
+}
+
 # One checkout's worth of checking. A SUBSHELL body — `( )`, not `{ }` — so the
 # `cd` cannot leak to the next repo and every `exit 2` below keeps its original
 # meaning: it ends this repo's check and becomes this function's return code,
@@ -231,6 +271,7 @@ if [[ -n "$current_branch" ]]; then
     else
       echo "${LOC}Branch '$current_branch' has $unpushed unpushed commit(s) and no remote branch. Please push these changes to the remote repository." >&2
     fi
+    push_guidance "$current_branch"
     exit 2
   fi
 fi
