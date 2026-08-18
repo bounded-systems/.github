@@ -512,6 +512,76 @@ nothing:
 session-start-dispatch: WARN no stop-hook-git-check.sh beside this file — leaving the platform's Stop hook in place
 ```
 
+### What it checks: the whole session, not the cwd (#214)
+
+The hook is invoked by `launcher-settings.json` with no working directory of its
+own, so it runs wherever the session is — and a cloud session sits at
+`/home/user`, which is **not** a repo. Its checkouts sit *beside* it
+(`/home/user/.github`, `/home/user/.github-private`), and mid-session `add_repo`
+clones land in `/workspace/<repo>`. The hook opened with
+
+```sh
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+```
+
+so for that shape it exited 0 without running any of its checks. Measured
+2026-08-18 in a four-checkout session with one untracked file in
+`/workspace/verbspec`: run from `/home/user` it exited **0**; run from inside that
+repo it exited **2**. The predicate was never wrong — it was never asked.
+
+It now discovers every checkout the session holds and asks the *same* per-repo
+question once per checkout, reporting all of them rather than stopping at the
+first. The per-repo logic is untouched: it moved inside a subshell function, so
+each `exit 2` still means what it did, and the cases behind #536-A/B/C and
+infra#112 are unchanged.
+
+Discovery looks at the cwd's repo, then the immediate subdirectories of
+`$CLAUDE_SESSION_ROOT` and `$CLAUDE_WORKSPACE_ROOT` (default `/workspace`),
+deduped by top-level path. Those two are variables **only** so the test suite can
+be hermetic against the container's real `/workspace` — a session sets neither. A
+root holding no checkouts is still quiet, but now because there is nothing to
+check rather than because the cwd missed.
+
+Two details there are load-bearing, and both were caught by running the hook
+against this session rather than only against fixtures:
+
+- **The session-root default is `$PWD`, not `$HOME`.** The platform invokes the
+  hook with the session's working directory, which *is* the session root
+  (`/home/user`); `$HOME` in this container is `/root`. Defaulting to `$HOME`
+  found `/workspace` and silently missed both creation-attached checkouts.
+- **The scan sets `dotglob`.** The two checkouts every session holds are
+  `.github` and `.github-private`, and a bare `*` skips every dot-prefixed name.
+  Without it the scan missed precisely the repos the org always has.
+
+Both are the same failure the issue is about — a check that runs, reports
+nothing, and is believed — which is why each has a test that fails without it.
+
+### Stopping without a merged PR: release, then archive
+
+A session that ends with a merged PR keeps its claim — the merged PR *is* the
+record, and the `claimed` label staying put is correct. The other ending is work
+abandoned, and the claim comment names the obligation: "Release by removing the
+`claimed` label (and unassigning) if work stops without a merged PR."
+
+When that is the ending, do all three in the same turn, in this order:
+
+1. **Pass the Stop hook's predicate.** Archiving releases the container, and the
+   container is ephemeral — anything uncommitted or unpushed is gone. This is the
+   whole reason the scope fix above comes first: before #214 the check could not
+   see most of a session's work, so "it went quiet" was not evidence of anything.
+2. **Release the claim** — drop the `claimed` label and the assignee. Where the
+   session holds `issues: write` on the repo, `issue_write` can PATCH the label
+   set directly; where it does not, that is what a release door would be for, and
+   there is not one yet (#214). Say so rather than leaving the claim held.
+3. **Archive the session** (`archive_session`).
+
+Do **not** wire this to a claim released by somebody *else*. There is no push
+channel for issue events — only `subscribe_pr_activity` exists — so it would
+require polling, and it fails in the destructive direction: a board tidy-up, or
+the stale-claim sweep `claim-ticket.yml` anticipates, would reclaim a live
+session's container mid-work. The safe trigger is a session ending its own work,
+which needs no event at all.
+
 ### Ordering caveat
 
 It registers whatever exists **at the moment it runs**. If the setup script runs

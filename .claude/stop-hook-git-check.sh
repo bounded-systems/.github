@@ -9,10 +9,63 @@ if [[ "$stop_hook_active" = "true" ]]; then
   exit 0
 fi
 
-# Check if we're in a git repository - bail if not
-if ! git rev-parse --git-dir >/dev/null 2>&1; then
-  exit 0
-fi
+# ── WHICH repositories this session holds ────────────────────────────────────
+#
+# This used to be "whichever repo the cwd happens to be in, or none", and none
+# was the common case: a cloud session's root (/home/user) is NOT a repo — the
+# creation-attached checkouts sit BESIDE it (/home/user/.github,
+# /home/user/.github-private) and mid-session `add_repo` clones land in
+# /workspace/<repo>. The old guard here was `git rev-parse --git-dir || exit 0`,
+# so the hook ran its predicate against nothing and reported "safe to stop".
+#
+# Measured 2026-08-18 (#214) in a four-checkout session, with one untracked file
+# in /workspace/verbspec: run from /home/user the hook exited 0; run from inside
+# that repo it exited 2. The predicate was never wrong — it was never asked.
+#
+# So scope is the fix, not logic: everything below is the SAME per-repo check,
+# now asked once per checkout. The roots are variables so the test suite can be
+# hermetic against the container's real /workspace (see `hermetic` in the tests);
+# a session sets neither and gets the real ones.
+#
+# The session-root default is $PWD, NOT $HOME: the platform invokes this hook
+# with the session's working directory, which IS the session root (/home/user),
+# while $HOME in this container is /root. Defaulting to $HOME found /workspace
+# and silently missed both creation-attached checkouts — measured while building
+# #214, which is the same class of miss the issue is about.
+repos_in() (
+  # dotglob is LOAD-BEARING, not tidiness: this org's two creation-attached
+  # checkouts are `.github` and `.github-private`, and a bare `*` skips every
+  # name starting with a dot. Without it the scan found /workspace and silently
+  # missed both repos every session actually holds — measured while building
+  # #214. nullglob keeps an unmatched pattern from arriving as a literal.
+  # A subshell body so neither option leaks to the caller.
+  shopt -s dotglob nullglob
+  local root="$1" d
+  [ -d "$root" ] || exit 0
+  for d in "$root"/*/; do
+    [ -e "$d.git" ] || continue      # a file for worktrees/submodules, a dir otherwise
+    ( cd "$d" && git rev-parse --show-toplevel 2>/dev/null ) || true
+  done
+)
+
+# The cwd's repo first (the only one the old version could see), then the two
+# places a session's checkouts actually live. Deduped by top-level path, so a
+# cwd inside a discovered checkout is not checked twice.
+discover_repos() {
+  {
+    git rev-parse --show-toplevel 2>/dev/null || true
+    repos_in "${CLAUDE_SESSION_ROOT:-$PWD}"
+    repos_in "${CLAUDE_WORKSPACE_ROOT:-/workspace}"
+  } | awk 'NF && !seen[$0]++'
+}
+
+# One checkout's worth of checking. A SUBSHELL body — `( )`, not `{ }` — so the
+# `cd` cannot leak to the next repo and every `exit 2` below keeps its original
+# meaning: it ends this repo's check and becomes this function's return code,
+# leaving the hard-won logic underneath untouched.
+check_repo() (
+  LOC="$1: "
+  cd "$1" || exit 0
 
 # Bail if there's no remote to push to. Every error path below asks the user
 # to "push to the remote branch" — meaningless without a remote, and
@@ -25,14 +78,14 @@ fi
 
 # Check for uncommitted changes (both staged and unstaged)
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "There are uncommitted changes in the repository. Please commit and push these changes to the remote branch." >&2
+  echo "${LOC}There are uncommitted changes in the repository. Please commit and push these changes to the remote branch." >&2
   exit 2
 fi
 
 # Check for untracked files that might be important
 untracked_files=$(git ls-files --others --exclude-standard)
 if [[ -n "$untracked_files" ]]; then
-  echo "There are untracked files in the repository. Please commit and push these changes to the remote branch." >&2
+  echo "${LOC}There are untracked files in the repository. Please commit and push these changes to the remote branch." >&2
   exit 2
 fi
 
@@ -130,7 +183,7 @@ if [[ -n "$current_branch" ]]; then
   # produces unsigned commits that the merge gate rejects hours later.
   local_gpgsign=$(git config --local --get commit.gpgsign 2>/dev/null)
   if [[ "$local_gpgsign" == "false" ]]; then
-    echo "This repository has a LOCAL commit.gpgsign=false, which disables signing for every commit made here while the rest of the session still believes signing is on." >&2
+    echo "${LOC}This repository has a LOCAL commit.gpgsign=false, which disables signing for every commit made here while the rest of the session still believes signing is on." >&2
     echo "Remove it with 'git config --local --unset commit.gpgsign', then re-create any commits made since." >&2
     exit 2
   fi
@@ -149,7 +202,7 @@ if [[ -n "$current_branch" ]]; then
     done < <(git rev-list HEAD --not "${exclude[@]}" 2>/dev/null)
 
     if [[ -n "$unverifiable" ]]; then
-      echo "There are commit(s) on branch '$current_branch' that GitHub will show as Unverified (missing signature, or committer email is not noreply@anthropic.com):" >&2
+      echo "${LOC}There are commit(s) on branch '$current_branch' that GitHub will show as Unverified (missing signature, or committer email is not noreply@anthropic.com):" >&2
       printf '%s' "$unverifiable" >&2
       # NEVER --amend here (#536, and the trap that cost two PRs on 2026-08-16).
       # In a `--depth 1` clone the shallow graft severs the parent, so --amend
@@ -174,12 +227,27 @@ if [[ -n "$current_branch" ]]; then
   unpushed=$(git rev-list HEAD --not "${exclude[@]}" --count 2>/dev/null) || unpushed=0
   if [[ "$unpushed" -gt 0 ]]; then
     if [[ "$upstream" == "origin/$current_branch" ]]; then
-      echo "There are $unpushed unpushed commit(s) on branch '$current_branch'. Please push these changes to the remote repository." >&2
+      echo "${LOC}There are $unpushed unpushed commit(s) on branch '$current_branch'. Please push these changes to the remote repository." >&2
     else
-      echo "Branch '$current_branch' has $unpushed unpushed commit(s) and no remote branch. Please push these changes to the remote repository." >&2
+      echo "${LOC}Branch '$current_branch' has $unpushed unpushed commit(s) and no remote branch. Please push these changes to the remote repository." >&2
     fi
     exit 2
   fi
 fi
 
 exit 0
+)
+
+mapfile -t REPOS < <(discover_repos)
+# No checkouts at all is still quiet — the same answer the old bail gave, but
+# now because there is genuinely nothing to check rather than because the cwd
+# happened not to be a repo.
+[ ${#REPOS[@]} -eq 0 ] && exit 0
+
+# EVERY repo is checked before exiting: stopping at the first problem would hide
+# the second one behind a fix-and-retry cycle per repo.
+status=0
+for repo in "${REPOS[@]}"; do
+  check_repo "$repo" || status=2
+done
+exit $status
