@@ -54,6 +54,13 @@ const hermetic = (root) => ({
   GIT_CONFIG_GLOBAL: join(root, "gitconfig"),
   GIT_CONFIG_SYSTEM: "/dev/null",
   HOME: root,
+  // The discovery roots (#214) are sealed for the same reason GIT_CONFIG_SYSTEM
+  // is: this container has a REAL /workspace holding real checkouts, and a suite
+  // that scanned it would pass or fail on whatever another task left lying
+  // there. Both point at paths that do not exist, so a test sees only the repos
+  // it built. The session tests below opt back in explicitly.
+  CLAUDE_SESSION_ROOT: join(root, "no-session-root"),
+  CLAUDE_WORKSPACE_ROOT: join(root, "no-workspace"),
 });
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: hermetic(dirname(cwd)) }).trim();
@@ -65,11 +72,11 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8",
  * 2 something to say — so both are captured. `stop_hook_active:false` is the
  * live shape; `true` is the recursion guard.
  */
-function runHook(cwd, { active = false } = {}) {
+function runHook(cwd, { active = false, root = dirname(cwd), extraEnv = {} } = {}) {
   try {
     execFileSync("bash", [HOOK], {
       cwd,
-      env: hermetic(dirname(cwd)),
+      env: { ...hermetic(root), ...extraEnv },
       input: JSON.stringify({ stop_hook_active: active }),
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -118,13 +125,22 @@ function commitRaw(cwd, { message = "c", parent = null, email = "noreply@anthrop
  * which is how the harness configures it, and why a repo-local override is the
  * interesting case rather than a normal one.
  */
-function repo({ localGpgsign = null, withOriginHead = true, sign = "ssh", email = "noreply@anthropic.com" } = {}) {
+function repo(opts = {}) {
   const root = mkdtempSync(join(tmpdir(), "stophook-"));
   // Signing on GLOBALLY, as the harness configures it — so a repo-local `false`
   // is the anomaly fault A is about, rather than the only source of truth.
   writeFileSync(join(root, "gitconfig"), "[commit]\n\tgpgsign = true\n");
-  const dir = join(root, "repo");
-  mkdirSync(dir);
+  return makeRepoAt(root, "repo", opts);
+}
+
+/**
+ * One checkout under an existing root. Split out of `repo` for #214: a session
+ * holds SEVERAL checkouts side by side under one root, and the discovery being
+ * tested walks exactly that shape.
+ */
+function makeRepoAt(root, name, { localGpgsign = null, withOriginHead = true, sign = "ssh", email = "noreply@anthropic.com" } = {}) {
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
   git(dir, "init", "-q", "-b", "main");
   git(dir, "config", "user.email", "noreply@anthropic.com");
   git(dir, "config", "user.name", "Claude");
@@ -309,5 +325,146 @@ test("the remedy never routes to --amend, and names the shallow trap", () => {
     assert.match(got.stderr, /parentless root commit/, "the shallow trap must be named, not just avoided");
   } finally {
     clean(r);
+  }
+});
+
+// ── Scope: the whole session, not just the cwd (#214) ────────────────────────
+//
+// The faults above were all "the hook asked git the wrong question". This one is
+// "the hook was never asked": a cloud session's root is not a repo, its
+// checkouts sit beside it, and `git rev-parse --git-dir || exit 0` therefore
+// returned quiet for the entire session. Measured 2026-08-18 with one untracked
+// file in /workspace/verbspec — exit 0 from /home/user, exit 2 from inside it.
+//
+// Real repos under a real root again, for the same reason as above: the fault
+// was a disagreement about where checkouts live, and a fake filesystem would
+// have agreed with whichever answer the script already held.
+
+/** A session: several checkouts side by side under one root, as CCR lays them out. */
+function session({ names = ["alpha", "beta"] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "stophook-session-"));
+  writeFileSync(join(root, "gitconfig"), "[commit]\n\tgpgsign = true\n");
+  const repos = Object.fromEntries(names.map((n) => [n, makeRepoAt(root, n)]));
+  return { root, repos, drop: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/** Run the hook the way the platform does: from the session root, which is NOT a repo. */
+const runFromRoot = (s, extra = {}) =>
+  runHook(s.root, { root: s.root, extraEnv: { CLAUDE_SESSION_ROOT: s.root, ...extra } });
+
+test("THE REGRESSION: a dirty checkout is caught from a non-git session root", () => {
+  const s = session();
+  try {
+    assert.equal(runFromRoot(s).code, 0, "a clean session must start quiet");
+    writeFileSync(join(s.repos.beta.dir, "stray.txt"), "x\n");
+
+    const got = runFromRoot(s);
+    assert.equal(got.code, 2, "the session root reported safe-to-stop with a dirty checkout");
+    assert.match(got.stderr, /untracked files/);
+  } finally {
+    s.drop();
+  }
+});
+
+test("the offending checkout is named, so the message is actionable", () => {
+  const s = session();
+  try {
+    writeFileSync(join(s.repos.beta.dir, "stray.txt"), "x\n");
+    const got = runFromRoot(s);
+    assert.match(got.stderr, new RegExp(s.repos.beta.dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(got.stderr, /alpha/, "a clean checkout must not be implicated");
+  } finally {
+    s.drop();
+  }
+});
+
+test("every dirty checkout is reported, not just the first", () => {
+  const s = session();
+  try {
+    writeFileSync(join(s.repos.alpha.dir, "stray.txt"), "x\n");
+    writeFileSync(join(s.repos.beta.dir, "stray.txt"), "x\n");
+
+    const got = runFromRoot(s);
+    assert.equal(got.code, 2);
+    // Stopping at the first would hide the second behind a fix-and-retry cycle.
+    assert.equal((got.stderr.match(/untracked files/g) ?? []).length, 2);
+  } finally {
+    s.drop();
+  }
+});
+
+test("checkouts under the workspace root are discovered too", () => {
+  // Mid-session `add_repo` clones land in /workspace/<repo>, not beside the root.
+  const s = session({ names: ["alpha"] });
+  const ws = mkdtempSync(join(tmpdir(), "stophook-ws-"));
+  try {
+    writeFileSync(join(ws, "gitconfig"), "[commit]\n\tgpgsign = true\n");
+    const late = makeRepoAt(ws, "added-later");
+    writeFileSync(join(late.dir, "stray.txt"), "x\n");
+
+    const got = runFromRoot(s, { CLAUDE_WORKSPACE_ROOT: ws });
+    assert.equal(got.code, 2, "a mid-session clone escaped the check");
+    assert.match(got.stderr, /untracked files/);
+  } finally {
+    s.drop();
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+test("a checkout reached as both cwd and discovery is checked once", () => {
+  const s = session();
+  try {
+    writeFileSync(join(s.repos.alpha.dir, "stray.txt"), "x\n");
+    // cwd is inside alpha AND alpha is under the session root — one report, not two.
+    const got = runHook(s.repos.alpha.dir, {
+      root: s.root,
+      extraEnv: { CLAUDE_SESSION_ROOT: s.root },
+    });
+    assert.equal(got.code, 2);
+    assert.equal((got.stderr.match(/untracked files/g) ?? []).length, 1);
+  } finally {
+    s.drop();
+  }
+});
+
+test("a session holding no checkouts is quiet", () => {
+  const empty = mkdtempSync(join(tmpdir(), "stophook-empty-"));
+  try {
+    // Quiet because there is nothing to check — not because the cwd missed.
+    const got = runHook(empty, { root: empty, extraEnv: { CLAUDE_SESSION_ROOT: empty } });
+    assert.equal(got.code, 0);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test("a file beside the checkouts is not mistaken for one", () => {
+  const s = session({ names: ["alpha"] });
+  try {
+    // `gitconfig` already sits at the root; a stray directory without .git too.
+    mkdirSync(join(s.root, "notes"));
+    writeFileSync(join(s.root, "notes", "scratch.md"), "x\n");
+    assert.equal(runFromRoot(s).code, 0);
+  } finally {
+    s.drop();
+  }
+});
+
+test("a dot-prefixed checkout is discovered (this org's actual shape)", () => {
+  // `.github` and `.github-private` are the two creation-attached checkouts every
+  // bounded-systems session holds. A bare `*` glob skips them, so the first cut of
+  // the discovery above found /workspace and missed both — silently, which is the
+  // exact failure mode #214 exists to remove.
+  const s = session({ names: [".github", "plain"] });
+  try {
+    assert.equal(runFromRoot(s).code, 0);
+    writeFileSync(join(s.repos[".github"].dir, "stray.txt"), "x\n");
+
+    const got = runFromRoot(s);
+    assert.equal(got.code, 2, "a dot-prefixed checkout escaped discovery");
+    assert.match(got.stderr, /untracked files/);
+    assert.match(got.stderr, /\.github/);
+  } finally {
+    s.drop();
   }
 });
