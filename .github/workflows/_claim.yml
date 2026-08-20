@@ -1,0 +1,258 @@
+name: _claim
+
+# THE portable claim door. One implementation; every consumer is a caller.
+#
+# WHY A REUSABLE AND NOT A FILE YOU COPY (#226)
+# ---------------------------------------------
+# The Front Desk convention had two doors that both record a claim, and they
+# had drifted: `claim-ticket.yml` creates the `claimed` label deliberately,
+# projects the assignee non-fatally, and audits the record by reading it back;
+# `.github-private`'s `claim-relay.yml` does none of those, and its fatal
+# assignee projection can strand a `claimed` label with no claim comment —
+# a stuck claim, clearable only by hand (.github-private#652).
+#
+# Neither door was wrong on purpose. They diverged because the convention was
+# delivered as "copy this file", and copies always drift. This file is the one
+# place the behaviour lives, so there is one place a bug can be and one place
+# to fix it.
+#
+# CALLABLE FROM ANYWHERE. This repo is public, so a `workflow_call` workflow in
+# it can be called by any repository, inside this organization or outside it.
+# The job runs against the CALLER's `github.repository` and uses the CALLER's
+# GITHUB_TOKEN, so it needs no owner input, no repo input, and no credential of
+# its own. A claim record is `issues: write` and nothing more.
+#
+# WHAT A CLAIM IS. The `claimed` label plus a comment naming the claimant. The
+# assignee is a best-effort human-facing projection — agents and bots are
+# usually not assignable, so assignment must never be load-bearing.
+#
+# WHAT THIS DOES NOT ESTABLISH. It does not authenticate the claimant: anyone
+# who can dispatch the caller can pass any `claimant` string. It buys exclusion
+# between concurrent sessions, not proof of authorization
+# (.github-private#530). Closing that needs an authenticated guest identity, not
+# more workflow plumbing — do not read a green run here as issuer-attested.
+#
+# CONFIRM ON THE ISSUE, NOT THE RUN. A dispatch does not return its run id, so
+# a caller cannot identify its own run. The claim exists iff the claim comment
+# on the issue names the claimant.
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        description: "Issue number in the calling repository"
+        required: true
+        type: string
+      claimant:
+        description: "Claimant identity, e.g. claude-session/my-branch"
+        required: true
+        type: string
+      release:
+        description: "Release an existing claim instead of taking one"
+        type: boolean
+        default: false
+      label:
+        description: "Label used to mark a claim. Override only if `claimed` collides with an existing label in the caller."
+        type: string
+        default: claimed
+
+jobs:
+  claim:
+    runs-on: ubuntu-latest
+
+    # Serialise per (repo, issue): two callers racing for one ticket must not
+    # both read "unclaimed" and both write. Declared at JOB level so it applies
+    # when this workflow is called, and never cancelling — a claim half
+    # recorded and then killed is the worst of both outcomes.
+    concurrency:
+      group: claim-${{ github.repository }}-${{ inputs.issue }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Record or release the claim
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ inputs.issue }}
+          CLAIMANT: ${{ inputs.claimant }}
+          RELEASE: ${{ inputs.release }}
+          LABEL: ${{ inputs.label }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # VALIDATE BEFORE TOUCHING ANYTHING. These land in URLs and in a
+          # comment body; a malformed value should fail here naming itself, not
+          # produce a confusing 404 halfway through a partial write.
+          case "$ISSUE" in
+            '' | *[!0-9]*)
+              echo "::error title=Claim NOT recorded::issue must be a positive integer, got '${ISSUE}'"
+              exit 1
+              ;;
+          esac
+          case "$CLAIMANT" in
+            '')
+              echo "::error title=Claim NOT recorded::claimant must not be empty"
+              exit 1
+              ;;
+            *[!A-Za-z0-9/._-]*)
+              echo "::error title=Claim NOT recorded::claimant must match [A-Za-z0-9/._-]+, got '${CLAIMANT}'"
+              exit 1
+              ;;
+          esac
+          case "$LABEL" in
+            '' | *[!A-Za-z0-9._-]*)
+              echo "::error title=Claim NOT recorded::label must match [A-Za-z0-9._-]+, got '${LABEL}'"
+              exit 1
+              ;;
+          esac
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}"
+          repo_api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          hdr_auth="Authorization: Bearer ${GH_TOKEN}"
+          hdr_acc="Accept: application/vnd.github+json"
+          hdr_ver="X-GitHub-Api-Version: 2022-11-28"
+
+          # THREE OUTCOMES, THREE EXITS. "could not check" must never be
+          # reachable as a pass, and must be red for a different stated reason
+          # than "already claimed".
+          before="$(mktemp)"
+          code="$(curl -sS -o "$before" -w '%{http_code}' \
+            -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "$api")"
+          if [ "$code" != "200" ]; then
+            echo "::error title=Claim NOT recorded::could not read issue #${ISSUE} (HTTP ${code}). Nothing was changed."
+            cat "$before"
+            exit 1
+          fi
+
+          state="$(jq -r '.state' "$before")"
+          # `any(. == $l)`, NOT `index($l)`. index returns the ARRAY POSITION —
+          # 0 for a label in first place — which compares false against "true"
+          # and reads a claimed issue as unclaimed. That is a fail-OPEN bug in
+          # the one check whose whole job is to fail closed.
+          labelled="$(jq -r --arg l "$LABEL" '[.labels[]?.name] | any(. == $l) | tostring' "$before")"
+          assignees="$(jq -r '[.assignees[]?.login] | join(", ")' "$before")"
+
+          # BOTH HELPERS FAIL LOUD. `|| true` here would print "Released" after
+          # a delete that did not happen — a run concluding success having
+          # performed no effect.
+          post() {
+            local out http
+            out="$(mktemp)"
+            http="$(curl -sS -X POST -o "$out" -w '%{http_code}' \
+              -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" -d "$2" "${api}/$1")"
+            case "$http" in
+              2*) : ;;
+              *)
+                echo "::error title=Claim left the issue PARTIALLY updated::POST ${1} returned ${http}. Read issue #${ISSUE} before retrying."
+                cat "$out"
+                exit 1
+                ;;
+            esac
+          }
+
+          del() {
+            local out http
+            out="$(mktemp)"
+            if [ -n "${2:-}" ]; then
+              http="$(curl -sS -X DELETE -o "$out" -w '%{http_code}' \
+                -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" -d "$2" "${api}/$1")"
+            else
+              http="$(curl -sS -X DELETE -o "$out" -w '%{http_code}' \
+                -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "${api}/$1")"
+            fi
+            case "$http" in
+              2* | 404) : ;;
+              *)
+                echo "::error title=Claim NOT released::DELETE ${1} returned ${http}. The claim is still in place."
+                cat "$out"
+                exit 1
+                ;;
+            esac
+          }
+
+          if [ "$RELEASE" = "true" ]; then
+            if [ "$labelled" != "true" ] && [ -z "$assignees" ]; then
+              echo "::notice::issue #${ISSUE} carries no claim; nothing to release."
+              exit 0
+            fi
+            if [ "$labelled" = "true" ]; then
+              del "labels/${LABEL}"
+            fi
+            if [ -n "$assignees" ]; then
+              # Remove the assignees the issue ACTUALLY carries, read back from
+              # the issue — NOT the dispatcher. They are routinely different,
+              # and removing the wrong login leaves the claim standing while
+              # this lane reports it released.
+              del assignees "$(jq -c '{assignees: [.assignees[]?.login]}' "$before")"
+            fi
+            post comments "$(jq -nc --arg c "$CLAIMANT" --arg u "$RUN_URL" \
+              '{body: ("🔓 **Released** by \($c) — [run](\($u))\n\n<!-- front-desk-claim -->\nRecorded by the shared claim door, not by the guest. This does not assert the releaser held the claim.")}')"
+            echo "Released #${ISSUE}."
+            exit 0
+          fi
+
+          # FAIL CLOSED ON A LIVE CLAIM.
+          if [ "$state" != "open" ]; then
+            echo "::error title=Claim NOT recorded::issue #${ISSUE} is ${state}."
+            exit 1
+          fi
+          if [ "$labelled" = "true" ] || [ -n "$assignees" ]; then
+            echo "::error title=Claim NOT recorded::issue #${ISSUE} is already claimed (label=${labelled}, assignees=[${assignees}]). Release it first, or pick different work."
+            exit 1
+          fi
+
+          # Create the label deliberately rather than leaning on any add-time
+          # auto-create behaviour — a claim must not depend on an undocumented
+          # side effect. This is what lets the door work in a repository that
+          # has never carried a claim.
+          label_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "${repo_api}/labels/${LABEL}")"
+          if [ "$label_code" = "404" ]; then
+            create="$(mktemp)"
+            created="$(curl -sS -X POST -o "$create" -w '%{http_code}' \
+              -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" \
+              -d "$(jq -nc --arg n "$LABEL" '{name: $n, color: "1d76db", description: "Held by an agent or human — see the claim comment. Remove to release."}')" \
+              "${repo_api}/labels")"
+            case "$created" in
+              2*) : ;;
+              *)
+                echo "::error title=Claim NOT recorded::could not create the '${LABEL}' label (HTTP ${created}). Nothing was changed."
+                cat "$create"
+                exit 1
+                ;;
+            esac
+          elif [ "$label_code" != "200" ]; then
+            echo "::error title=Claim NOT recorded::could not check for the '${LABEL}' label (HTTP ${label_code}). Nothing was changed."
+            exit 1
+          fi
+
+          post labels "$(jq -nc --arg l "$LABEL" '{labels: [$l]}')"
+          post comments "$(jq -nc --arg c "$CLAIMANT" --arg u "$RUN_URL" --arg a "$ACTOR" \
+            '{body: ("🎫 **Claimed** by \($c) — dispatched by `\($a)` — [run](\($u))\n\n<!-- front-desk-claim -->\nRecorded by the shared claim door, so this record is not guest-authored — but the door does **not** authenticate the claimant. It buys exclusion between concurrent sessions, not proof of authorization.\n\nRelease by re-running the caller with `release: true`, or by removing the label and unassigning.")}')"
+
+          # PROJECTION ONLY, AND DELIBERATELY LAST AND NON-FATAL. Most
+          # dispatchers are bots and are not assignable. Failing here would
+          # abort a run whose real record already landed, leaving the label set
+          # with no claim comment — an issue nobody holds and nobody can take.
+          # That is .github-private#652, and this ordering is its fix.
+          assign="$(mktemp)"
+          assigned="$(curl -sS -X POST -o "$assign" -w '%{http_code}' \
+            -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" \
+            -d "$(jq -nc --arg a "$ACTOR" '{assignees: [$a]}')" "${api}/assignees")"
+          case "$assigned" in
+            2*) : ;;
+            *) echo "::notice::assignee projection skipped — '${ACTOR}' is not assignable here (HTTP ${assigned}). The claim itself is recorded." ;;
+          esac
+
+          # THE BACKSTOP: green means the record is READABLE, not that the
+          # writes returned 2xx.
+          after="$(mktemp)"
+          curl -sS -o "$after" -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "$api" >/dev/null
+          if [ "$(jq -r --arg l "$LABEL" '[.labels[]?.name] | any(. == $l) | tostring' "$after")" != "true" ]; then
+            echo "::error title=Claim NOT recorded::the claim did not read back on issue #${ISSUE} — treat as NOT claimed."
+            exit 1
+          fi
+
+          echo "Claimed #${ISSUE} for ${CLAIMANT}."
+          echo "✅ **Claimed** #${ISSUE} for \`${CLAIMANT}\`." >> "$GITHUB_STEP_SUMMARY"
