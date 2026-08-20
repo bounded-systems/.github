@@ -67,6 +67,13 @@ jobs:
       # here runs only on the author's machine and green CI says nothing about
       # it — which is how this one shipped in the first place.
       - run: node --test gh-permission-reconcile.test.mjs
+      # The claim-request format and the claim ladder (.github-private#637).
+      # Two ratchets that are only ratchets if this line exists — the committed
+      # digest fixture, which turns red on any encoding drift, and the cross-file
+      # check that this repo's repo-name charset still equals the one
+      # claim-ticket.yml's preflight enforces. The paragraph above about a test
+      # file that is never listed here is the reason this comment is not shorter.
+      - run: node --test claim-digest.test.mjs
 
   # The other half of that split: main IS the merged state, so main can bump its
   # own pin. Mirrors registry-graph.yml — regenerate, and if that changed
