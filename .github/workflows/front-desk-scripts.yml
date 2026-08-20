@@ -1,0 +1,48 @@
+name: front-desk-scripts
+
+# Runs the behaviour tests for the Front Desk projection and its public filter.
+#
+# WHY A LANE AT ALL. The scripts arrived here with 67 pins already written
+# (.github#228), and a test that no lane runs is decoration: it passes on the
+# author's machine forever and says nothing about what merges. The filter's
+# tests in particular are the ONLY evidence that the public feed cannot carry a
+# private-repo title — per agentic-code-hygiene rule 3, the filter asserting it
+# filters is not evidence, so the pins that try to leak have to run on every
+# change or the claim decays to a comment.
+#
+# Fixtures and a stubbed `curl`; no network, no GitHub, no token.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/scripts/front-desk-*.sh"
+      - ".github/workflows/front-desk-public.yml"
+      - ".github/workflows/front-desk-scripts.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/scripts/front-desk-*.sh"
+      - ".github/workflows/front-desk-public.yml"
+      - ".github/workflows/front-desk-scripts.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The snapshot's bad failure mode is not a crash — it is emitting
+      # something that LOOKS like a complete, current board when it is neither.
+      - name: projection behaviour
+        run: bash .github/workflows/scripts/front-desk-projection.test.sh
+
+      # Written as attempts to leak rather than assertions of virtue: a fixture
+      # carries a distinctive private-title marker and the pins assert it reaches
+      # no part of the output. Default-deny means an UNKNOWN visibility drops
+      # too, which is the case a denylist would publish.
+      - name: public feed — leak guard
+        run: bash .github/workflows/scripts/front-desk-public.test.sh

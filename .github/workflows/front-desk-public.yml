@@ -1,0 +1,183 @@
+name: front-desk-public
+
+# Publishes the PUBLIC half of the Front Desk board as a cosign-signed JSON
+# snapshot on the parentless `front-desk-public` branch, so anything — the
+# website's build, a script, a person — can fetch it anonymously and verify it.
+#
+# WHY THIS LANE LIVES IN THE PUBLIC REPO (.github#228, site#212). The private
+# projection (.github-private → front-desk-projection.yml) is what a SESSION
+# reads; it carries every row, private titles included, and a private repo's
+# branch is not anonymously fetchable. The site's build is hermetic and cannot
+# hold a credential, so the feed it consumes has to be public at the source.
+# Pushing across the private→public boundary was the alternative and was
+# rejected deliberately: it would put a cross-repo write credential in the
+# private lane. Producing here needs no boundary crossing at all.
+#
+# THE PATTERN BEING MATCHED is trellis → site, which this org already runs:
+# trellis publishes status.json + its Sigstore bundle to a public branch, and
+# site/lattice-refresh.yml fetches, runs a REAL `cosign verify-blob` pinned to
+# the producer's certificate identity, and only then commits. Four properties,
+# each mechanical rather than promised:
+#   public       — anonymous fetch, no token anywhere in the consumer
+#   signed       — keyless Sigstore, logged in Rekor
+#   pinned       — the consumer verifies against THIS workflow's identity
+#   determinate  — the consumer commits the verified bytes and builds from them,
+#                  so a build never depends on what the network says today
+#
+# THE ACCEPTED TRADEOFF, RECORDED RATHER THAN GLOSSED. The unfiltered board —
+# private-repo titles included — transits this PUBLIC repo's runner before the
+# filter drops them. That was the owner's call (site#212) over the alternative
+# of a cross-boundary credential. The controls that make it safe are here, and
+# they are about the only durable surface a runner has, its LOGS:
+#   - fetch and filter in ONE step, so the unfiltered snapshot never outlives it
+#   - the unfiltered file is never pushed, uploaded, or made an artifact
+#   - nothing echoes a title: every progress line is counts only
+# A future edit that prints an item for debugging undoes this. That is why the
+# summary below is written as counts and says so.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Offset from the private projection's :27 so the two lanes do not query the
+    # board in the same minute. Hourly matches the private lane: the useful
+    # granularity of "what should I pick up" is not seconds, and every consumer
+    # reads the committed file rather than this run.
+    - cron: "47 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Same protection boundary the other front-desk lanes run behind. An
+    # environment is a gate; picking one up or dropping one as a side effect of
+    # unrelated work silently changes what is gated.
+    environment: front-desk
+    permissions:
+      contents: write # push the snapshot branch (NOT a default branch — see below)
+      id-token: write # OIDC → cf-token-broker, and cosign's keyless Fulcio cert
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # FAIL, DO NOT SKIP. A quietly-skipped run makes a stale feed look like a
+      # healthy one, and every consumer's defence is the age check on the file it
+      # already has — which measures nothing if this lane silently does nothing.
+      - name: Preflight — is the broker configured?
+        env:
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
+        run: |
+          if [ -z "${BROKER_URL:-}" ]; then
+            echo "::error title=Front Desk public feed did NOT run::CF_BROKER_URL is empty, so no token was minted and the published feed is going stale. This is the org variable naming the cf-token-broker — not a secret. Fix at the org."
+            exit 1
+          fi
+          echo "Broker configured; minting."
+
+      - name: Mint the Front Desk token via the OIDC broker
+        id: app-token
+        uses: bounded-systems/.github/.github/actions/broker-gh-token@d1b25e3bb48ba919f2af0f1ab83063a1d76d88d4 # broker-gh-token (prx-26bq), .github#109
+        with:
+          app: front-desk
+          broker-url: ${{ vars.CF_BROKER_URL }}
+
+      # Assert the scope BEFORE the work, so a missing grant fails here naming
+      # the gap instead of erroring inside a GraphQL response. `read` suffices:
+      # this lane only reads the board.
+      - name: The minted token can read org Projects
+        env:
+          GRANTED: ${{ steps.app-token.outputs.permissions }}
+        run: |
+          set -euo pipefail
+          if [ "$GRANTED" = '"full-grant"' ]; then
+            echo "full-grant token — carries whatever the installation holds; not independently checkable here."
+            exit 0
+          fi
+          got="$(printf '%s' "$GRANTED" | jq -r '.organization_projects // "absent"')"
+          case "$got" in
+            read|write|admin) echo "✓ organization_projects: $got" ;;
+            *)
+              echo "::error title=Front Desk public feed did NOT run::the minted token carries organization_projects=$got. The mint SUCCEEDED, so the app is registered and the OIDC trust holds — the gap is either the broker's GH_APPS entry for 'front-desk' not requesting Organization Projects, or the App installation not holding it."
+              exit 1
+              ;;
+          esac
+
+      # ONE STEP: query, filter, verify. The unfiltered snapshot exists only
+      # inside this step and is never written anywhere that outlives it.
+      - name: Project the board and filter it to the public rows
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          bash .github/workflows/scripts/front-desk-projection.sh > /tmp/full.json
+          bash .github/workflows/scripts/front-desk-public.sh < /tmp/full.json > /tmp/front-desk-public.json
+
+          # Count parity against the source, not a field check on the output:
+          # the public file strips repo_private by design, so asking it whether
+          # its rows are non-private reads null on every row and fires on VALID
+          # output. Comparing counts catches over- AND under-inclusion.
+          want="$(jq '[.items[] | select(.repo != null and .repo_private == false)] | length' /tmp/full.json)"
+          got="$(jq '.item_count' /tmp/front-desk-public.json)"
+          if [ "$want" != "$got" ]; then
+            echo "::error title=Front Desk public feed NOT published::filter emitted $got rows but the snapshot holds $want public rows. Refusing to publish."
+            exit 1
+          fi
+
+          # No repo the snapshot marked private may appear in the public file.
+          priv="$(jq -r '[.items[] | select(.repo_private == true) | .repo] | unique | join("|")' /tmp/full.json)"
+          if [ -n "$priv" ] && jq -e --arg p "$priv" \
+               '[.items[] | select(.repo | test("^(" + $p + ")$"))] | length > 0' \
+               /tmp/front-desk-public.json >/dev/null 2>&1; then
+            echo "::error title=Front Desk public feed NOT published::a repo the snapshot marked private appears in the public file. Refusing to publish."
+            exit 1
+          fi
+
+          # The unfiltered snapshot dies here, explicitly rather than by luck.
+          rm -f /tmp/full.json
+
+          # COUNTS ONLY. Never echo a title: the runner's logs are its one
+          # durable surface, and this repo is public.
+          jq -r '"public items: \(.item_count)  generated_at: \(.generated_at)"' /tmp/front-desk-public.json
+          {
+            echo "## Front Desk public feed"
+            jq -r '"- generated_at: \(.generated_at)", "- public items: \(.item_count)",
+                   (.counts | to_entries[] | "- \(.key): \(.value)")' /tmp/front-desk-public.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      # Keyless: the Actions OIDC identity mints a one-build Fulcio cert, logged
+      # in Rekor. No stored key. The consumer pins the certificate identity to
+      # this workflow, so a feed signed by anything else fails verification even
+      # if it lands on this branch.
+      - name: Sign the feed (keyless Sigstore)
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle /tmp/front-desk-public.json.sigstore.json \
+            /tmp/front-desk-public.json
+
+      # PARENTLESS AND FORCE-PUSHED, never to a default branch. The branch is
+      # always exactly one commit holding the feed and its bundle: an hourly cron
+      # appending to a normal branch would be ~8.7k commits a year of a file
+      # nobody diffs. The board is the history; this is a snapshot of it.
+      #
+      # The stamp refreshes unconditionally, even when the board has not moved —
+      # a snapshot that skips the write when nothing changed goes on looking
+      # authoritative while its generated_at rots, and the consumer's age check
+      # is then measuring the wrong thing.
+      - name: Publish the signed feed
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GIT_AUTHOR_NAME: front-desk-public
+          GIT_AUTHOR_EMAIL: front-desk-public@users.noreply.github.com
+          GIT_COMMITTER_NAME: front-desk-public
+          GIT_COMMITTER_EMAIL: front-desk-public@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          feed="$(git hash-object -w /tmp/front-desk-public.json)"
+          sig="$(git hash-object -w /tmp/front-desk-public.json.sigstore.json)"
+          tree="$(printf '100644 blob %s\tfront-desk-public.json\n100644 blob %s\tfront-desk-public.json.sigstore.json\n' \
+                    "$feed" "$sig" | git mktree)"
+          commit="$(git commit-tree "$tree" -m "Front Desk public feed $(jq -r .generated_at /tmp/front-desk-public.json)")"
+          git push --force origin "$commit:refs/heads/front-desk-public"
+          echo "pushed $commit → front-desk-public"
