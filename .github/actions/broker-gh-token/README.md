@@ -38,6 +38,17 @@ No `secrets: inherit`, no `FRONT_DESK_APP_PRIVATE_KEY`, no `create-github-app-to
 per-app policy (`repository_owner == allowedOwner`, least-privilege permissions)
 and mints the token.
 
+> **An entry pins ONE workflow ref — you cannot reuse another lane's app.**
+> `repository_owner` is not the whole predicate. Measured 2026-08-21
+> (`.github` run 32500955164): a new lane in this same repo, naming
+> `front-desk-sign` with the same audience and the same `require: contents`,
+> was refused **HTTP 401** while `sign-branch.yml` mints that entry
+> successfully. A 404 means the broker does not carry the app; a **401 means it
+> carries the app and refused this caller**. A new workflow therefore needs its
+> own `GH_APPS` entry — which is also what keeps capabilities independently
+> revocable. Declare it in `.github-private` `org/doors/doors.json` first; that
+> file is `declared` in `granted ⊆ declared ⊆ installed`.
+
 ## How it works
 
 1. The job grants `id-token: write`; GitHub injects `ACTIONS_ID_TOKEN_REQUEST_URL`
