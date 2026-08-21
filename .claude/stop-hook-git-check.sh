@@ -265,6 +265,38 @@ if [[ -n "$current_branch" ]]; then
   # convert the `fatal: ambiguous argument 'origin/HEAD'` above into "nothing to
   # push", which is the second half of #536-C.
   unpushed=$(git rev-list HEAD --not "${exclude[@]}" --count 2>/dev/null) || unpushed=0
+
+  # (#234) A `--depth 1` clone sets a fetch refspec covering only the default
+  # branch, so a branch pushed with `-u` gets `branch.<b>.merge` written while
+  # `refs/remotes/origin/<b>` is never created. `$upstream` falls back to the
+  # default branch, every commit on the branch counts as unpushed, and the
+  # message below claims "no remote branch" about work already on the remote.
+  #
+  # That loop does not converge: the remedy is a push, the push succeeds and
+  # changes nothing, and the next Stop says the same thing. The hook's own
+  # advice to verify with `git ls-remote` PASSES while the hook keeps failing.
+  # The push was never the fix; the refspec is.
+  #
+  # Same root cause as #536-C — a shallow clone has fewer refs than this hook
+  # assumes — opposite symptom.
+  #
+  # An upstream that is CONFIGURED but has no tracking ref is the unambiguous
+  # signature of that state: it can only follow a successful push, so the remote
+  # is reachable by definition, and it cannot arise on a branch that was never
+  # pushed. That keeps `ls-remote` off the common path and away from fixtures
+  # whose `origin` is unreachable.
+  if [[ "$unpushed" -gt 0 && "$upstream" != "origin/$current_branch" ]] \
+     && [[ -n "$(git config --get "branch.$current_branch.merge" 2>/dev/null)" ]]; then
+    remote_tip=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads origin "$current_branch" 2>/dev/null | cut -f1)
+    if [[ -n "$remote_tip" && "$remote_tip" == "$(git rev-parse HEAD 2>/dev/null)" ]]; then
+      echo "${LOC}Branch '$current_branch' is fully pushed ($remote_tip), but this clone has no remote-tracking ref for it: the fetch refspec covers only the default branch, which is what 'git clone --depth 1' configures." >&2
+      echo "Do NOT push again — the ref is already on the remote and a push will change nothing. Repair the refspec once instead:" >&2
+      echo "    git config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'" >&2
+      echo "    git fetch origin '$current_branch'" >&2
+      exit 2
+    fi
+  fi
+
   if [[ "$unpushed" -gt 0 ]]; then
     if [[ "$upstream" == "origin/$current_branch" ]]; then
       echo "${LOC}There are $unpushed unpushed commit(s) on branch '$current_branch'. Please push these changes to the remote repository." >&2
