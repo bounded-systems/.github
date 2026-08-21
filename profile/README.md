@@ -223,5 +223,8 @@ flowchart TD
 - 📦 [`prx` on GitHub](https://github.com/bounded-systems/prx)
 - 🚪 [`guest-room` on GitHub](https://github.com/bounded-systems/guest-room)
 
-> prx, guest-room, and the libraries are source-available under
+> The `@bounded-systems/*` libraries are open source under
+> [MIT](https://opensource.org/license/mit). The door/room capability runtime —
+> `door-kit` and `guest-room` — is source-available under
 > [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
+> Each repo's own `LICENSE` and package manifest is authoritative.

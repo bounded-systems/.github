@@ -12,8 +12,13 @@ Thanks for your interest in bounded-systems.
   happened while certifying nothing about the change. The gate is the check.
   An outside contribution still needs a maintainer to merge it; that is a human
   step, not an enforced review.
-- **License:** contributions are accepted under
+- **License:** contributions are accepted under the license of the repo you are
+  contributing to. Most `@bounded-systems/*` packages are open source under
+  [MIT](https://opensource.org/license/mit); the door/room capability runtime
+  (`door-kit`, `guest-room`) is source-available under
   [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/).
+  Check the repo's own `LICENSE` and package manifest — that declaration is
+  authoritative.
 - Sign your commits where possible (signed commits are required on protected
   branches).
 
