@@ -31,7 +31,8 @@ _(Org posture: outward-only, composably-published.)_
   1. `claim-ticket.yml` (`bounded-systems/.github`, workflow_dispatch: repo,
      issue, claimant) — the real door, lease-backed. Reachable only if
      `.github` was attached at session creation (`add_repo` refuses it).
-  2. `claim-relay.yml` (`.github-private`, workflow_dispatch: issue, claimant)
+  2. `claim.yml` (`.github-private`, workflow_dispatch: issue, claimant — a
+     caller of `_claim.yml` in `.github`)
      — for `.github-private` issues when door 1 is unreachable. Bot-authored,
      run-backed record; does **not** authenticate the claimant (#530).
   3. Hand-claim (assign + comment) — last resort only, when no door is
