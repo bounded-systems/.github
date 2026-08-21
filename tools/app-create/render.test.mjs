@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { escapeHtml, creationUrl, validateManifest, renderPage } from "./render.mjs";
+import {
+  escapeHtml,
+  creationUrl,
+  validateManifest,
+  renderPage,
+  stripLocalKeys,
+} from "./render.mjs";
 
 const OK = {
   name: "example-door",
@@ -87,7 +93,7 @@ test("the embedded manifest round-trips byte-identically", () => {
     .replaceAll("&gt;", ">")
     .replaceAll("&lt;", "<")
     .replaceAll("&amp;", "&");
-  assert.deepEqual(JSON.parse(unescaped), tricky);
+  assert.deepEqual(JSON.parse(unescaped), stripLocalKeys(tricky));
 });
 
 test("a quote in the manifest cannot break out of the attribute", () => {
@@ -149,4 +155,61 @@ test("the page names the owner and warns that ownership is final", () => {
 test("the redirect_url is shown, so the human can see where the code will land", () => {
   const html = renderPage(OK, { owner: "user" });
   assert.ok(html.includes("hooks.example.invalid/app-created"));
+});
+
+// ── local annotations must not reach GitHub ─────────────────────────────────
+// GitHub's manifest schema has a fixed field set and rejects a payload carrying
+// fields it does not know. `$comment` is an org convention — every manifest in
+// github-admin/app-manifests carries one — and infra's create-app.yml strips it
+// before POSTing. The first version of this generator did not, and the Create
+// button simply failed.
+
+test("stripLocalKeys removes $-prefixed keys and keeps the rest", () => {
+  const out = stripLocalKeys({ ...OK, $comment: "why", $note: "more" });
+  assert.deepEqual(out, OK);
+});
+
+test("the POSTed manifest carries no $-prefixed key", () => {
+  // THE ASSERTION THAT WOULD HAVE CAUGHT THE BUG. The round-trip test passed
+  // throughout, because the escaping was never wrong — the input to it was.
+  // A round-trip proves faithful transport, not a valid payload.
+  const html = renderPage({ ...OK, $comment: "explanatory" }, { owner: "user" });
+  const embedded = JSON.parse(
+    html
+      .match(/name="manifest" value='([^']*)'/)[1]
+      .replaceAll("&#39;", "'")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&gt;", ">")
+      .replaceAll("&lt;", "<")
+      .replaceAll("&amp;", "&"),
+  );
+  assert.deepEqual(
+    Object.keys(embedded).filter((k) => k.startsWith("$")),
+    [],
+    "no local annotation key may reach GitHub",
+  );
+});
+
+test("what the human reviews is exactly what is POSTed", () => {
+  // If these ever diverge the page still renders and still works — and the
+  // review step silently stops meaning anything, which is worse than a failure.
+  const html = renderPage({ ...OK, $comment: "explanatory" }, { owner: "user" });
+  const shown = JSON.parse(html.match(/<pre>([\s\S]*?)<\/pre>/)[1]
+    .replaceAll("&#39;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&"));
+  const posted = JSON.parse(html.match(/name="manifest" value='([^']*)'/)[1]
+    .replaceAll("&#39;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&"));
+  assert.deepEqual(shown, posted);
+});
+
+test("the annotation is still shown to the reviewer, outside the payload", () => {
+  const html = renderPage({ ...OK, $comment: "because of issue 440" }, { owner: "user" });
+  assert.ok(html.includes("because of issue 440"), "the why should survive as context");
 });

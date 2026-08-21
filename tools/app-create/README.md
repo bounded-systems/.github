@@ -42,6 +42,19 @@ creates the wrong App. That is why the test asserts a user-owned page contains
 no `/organizations/` path at all, rather than merely asserting the right one is
 present.
 
+## Local annotation keys are stripped
+
+GitHub's manifest schema has a **fixed field set** and rejects a payload carrying
+fields it does not know. `$comment` is a convention for recording *why* a
+manifest looks the way it does — every manifest in `bounded-systems/infra`
+`github-admin/app-manifests/` has one — so any `$`-prefixed top-level key is
+removed before the manifest is embedded.
+
+The annotation is still shown to the reviewer, **above** the payload rather than
+inside it, and the page displays exactly what GitHub receives. Those two must not
+drift: a page that renders the annotated manifest while POSTing the stripped one
+still works, and silently makes the review step meaningless.
+
 ## What this does not do
 
 It does not exchange the code, assert the created App's slug, or store the

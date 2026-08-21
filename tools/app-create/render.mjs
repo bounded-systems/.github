@@ -96,12 +96,38 @@ export function validateManifest(m) {
   return errs;
 }
 
+/**
+ * Remove local annotation keys before the manifest is POSTed.
+ *
+ * GitHub's App Manifest schema has a FIXED field set, and it rejects a payload
+ * carrying fields it does not know. `$comment` is this org's convention for
+ * recording why a manifest looks the way it does — every manifest in
+ * `bounded-systems/infra` `github-admin/app-manifests/` has one — and
+ * `create-app.yml` strips it for exactly this reason before POSTing.
+ *
+ * `$` prefixes no GitHub manifest field, so stripping the prefix generally is
+ * safer than special-casing one key name: the next annotation someone invents
+ * is handled without anyone remembering to come back here.
+ */
+export function stripLocalKeys(manifest) {
+  return Object.fromEntries(
+    Object.entries(manifest).filter(([k]) => !k.startsWith("$")),
+  );
+}
+
 export function renderPage(manifest, { owner, org }) {
   const action = creationUrl({ owner, org });
-  // Compact for the form field, pretty for the human. The reviewer and GitHub
-  // must receive the same manifest — same object, two serialisations.
-  const compact = JSON.stringify(manifest);
-  const pretty = JSON.stringify(manifest, null, 2);
+  // THE PAYLOAD, and what the human reviews, must be the SAME OBJECT. Strip
+  // once, then serialise it twice — compact for the form field, pretty for the
+  // page. Rendering the annotated manifest while POSTing the stripped one would
+  // quietly defeat the review step this page exists for: the reviewer would be
+  // approving something GitHub never sees.
+  const payload = stripLocalKeys(manifest);
+  const compact = JSON.stringify(payload);
+  const pretty = JSON.stringify(payload, null, 2);
+  // The annotation still has value to a reviewer — it is the "why" — so it is
+  // shown as context ABOVE the payload rather than inside it.
+  const comment = typeof manifest.$comment === "string" ? manifest.$comment : null;
   const target = owner === "user" ? "your user account" : `the <code>${escapeHtml(org)}</code> organization`;
 
   return `<!doctype html>
@@ -121,6 +147,8 @@ export function renderPage(manifest, { owner, org }) {
           padding: .8rem 1rem; border-radius: 0 6px 6px 0; margin: 1.5rem 0; }
   code { background: rgba(127,127,127,.15); padding: .1rem .3rem; border-radius: 4px; }
   footer { opacity: .7; font-size: 13px; margin-top: 2rem; }
+  .why { background: rgba(127,127,127,.08); border-radius: 6px; padding: .75rem 1rem;
+         font-size: 13.5px; }
 </style>
 
 <h1>Create the GitHub App <code>${escapeHtml(manifest.name)}</code></h1>
@@ -136,6 +164,7 @@ with a <strong>one-time code, valid one hour</strong>, which is exchanged for th
 private key. Hand that code to the lane that stores the key; nobody needs to hold it.
 </div>
 
+${comment ? `<p class="why"><strong>Why this App exists:</strong> ${escapeHtml(comment)}</p>\n` : ""}<p class="sub">This is exactly what GitHub receives:</p>
 <pre>${escapeHtml(pretty)}</pre>
 
 <form action="${escapeHtml(action)}" method="post">
