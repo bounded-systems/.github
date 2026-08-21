@@ -188,10 +188,42 @@ jobs:
       # Report-only baseline: degrades gracefully on repos without Dependency graph
       # enabled (most repos), surfaces high-severity findings where it is. Promote to
       # a hard gate per-repo later (drop continue-on-error once the graph is on).
+      #
+      # INBOUND LICENSING (#241). Until this, the job carried fail-on-severity and
+      # nothing else, so a dependency arriving under AGPL/SSPL/BUSL or a
+      # noncommercial licence passed silently into packages the org publishes as
+      # MIT. That is the inbound half of the crossTierEdges() check in
+      # .github-private (#659), which only ever sees @bounded-systems/* edges: an
+      # MIT grant reaches exactly as far as its dependency closure, and one
+      # copyleft or noncommercial dep means the package cannot deliver the licence
+      # it advertises.
+      #
+      # DENYlist, not allowlist, deliberately: allow-licenses also fails every
+      # package whose licence the action cannot determine, which is common enough
+      # to make a report-only lane pure noise — and noise is how a gate stops
+      # being read. A denylist fires on exactly the cases that matter. (The two
+      # inputs are mutually exclusive, so this is a real choice, not a default.)
+      #
+      # LGPL is deliberately ABSENT. It is weak copyleft and compatible with
+      # ordinary dynamic use; in a bundled JS artifact it may not be. If a repo
+      # starts bundling dependencies into a published artifact, add it there.
+      #
+      # Added while green: measured 2026-08-21, every third-party dependency in
+      # the scope is permissive (zod/ts-morph/@types/* MIT, semver ISC,
+      # @std/assert MIT). Same posture the lic and runtime-prove gates landed
+      # under — a gate you adopt at zero violations is one you can flip to
+      # blocking later without a migration.
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         continue-on-error: true
         with:
           fail-on-severity: high
+          deny-licenses: >-
+            AGPL-3.0-only, AGPL-3.0-or-later,
+            GPL-2.0-only, GPL-2.0-or-later,
+            GPL-3.0-only, GPL-3.0-or-later,
+            SSPL-1.0, BUSL-1.1, Elastic-2.0,
+            PolyForm-Noncommercial-1.0.0, PolyForm-Small-Business-1.0.0,
+            CC-BY-NC-4.0, CC-BY-NC-SA-4.0
 
   spell:
     # Opt-in (default false): fails on any token not in the dictionaries or the
