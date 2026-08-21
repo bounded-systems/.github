@@ -26,6 +26,11 @@ jobs:
       # unparseable workflow is not reported as a failing check, it just silently
       # stops running its jobs. See the header of workflows.test.mjs.
       - run: node --test workflows.test.mjs
+      # The App-manifest creation page generator. Its failure modes are quiet and
+      # expensive: a manifest mangled by HTML escaping, or the wrong creation
+      # endpoint, both produce a page that WORKS and creates the wrong App — and
+      # App ownership cannot be changed, nor a key regenerated, after the fact.
+      - run: node --test tools/app-create/render.test.mjs
       # The multi-repo SessionStart dispatcher. Separate step so a failure names
       # itself rather than reading as an org-defaults contract break.
       - run: node --test .claude/session-start-dispatch.test.mjs
