@@ -83,7 +83,19 @@ jobs:
         id: app-token
         uses: ./.github/actions/broker-gh-token
         with:
-          app: front-desk-sign
+          # Its OWN broker entry, not sign-branch.yml's. Broker entries pin ONE
+          # workflow ref — measured, not assumed: the first dry-run of this lane
+          # named `front-desk-sign` and was refused HTTP 401 (run 32500955164).
+          # A 404 would have meant the broker does not carry that app; 401 means
+          # it knows the app and refused THIS caller, while sign-branch.yml mints
+          # the same entry with the same audience, repo and scopes and succeeds.
+          # So a second lane cannot borrow a first lane's grant, and README's
+          # `repository_owner == allowedOwner` is not the whole predicate.
+          #
+          # Declared in .github-private org/doors/doors.json as front-desk-release
+          # (#666). Separate from front-desk-sign on purpose: branch-signing and
+          # release-cutting keep independent revocation boundaries.
+          app: front-desk-release
           broker-url: ${{ vars.CF_BROKER_URL }}
           # Creating a tag object + ref is a contents write. Asserted at mint
           # time so a missing scope names itself instead of surfacing as a bare
