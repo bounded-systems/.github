@@ -12,6 +12,19 @@ const OK = {
   default_events: [],
 };
 
+/**
+ * The form's action, EXACTLY. Asserting a URL by substring is what CodeQL flags
+ * as incomplete URL sanitization, and it is right to: `includes()` passes for
+ * `https://evil.example/?x=https://github.com/settings/apps/new`, so a
+ * substring assertion cannot tell the intended endpoint from one embedded in
+ * an attacker-chosen host. Extract the attribute and compare the whole value.
+ */
+function formAction(html) {
+  const m = html.match(/<form action="([^"]*)"/);
+  assert.ok(m, "the page must contain a form with an action");
+  return m[1];
+}
+
 // ── the endpoint ────────────────────────────────────────────────────────────
 // A private App installs ONLY on its owner, and App ownership cannot be changed
 // after creation. Emitting the wrong endpoint produces an App that cannot be
@@ -50,7 +63,7 @@ test("a user-owned page never contains the organization endpoint", () => {
   // The failure this guards is silent: both endpoints are valid URLs, so a
   // wrong one produces a working page that creates an App in the wrong place.
   const html = renderPage(OK, { owner: "user" });
-  assert.ok(html.includes("https://github.com/settings/apps/new"));
+  assert.equal(formAction(html), "https://github.com/settings/apps/new");
   assert.ok(!html.includes("/organizations/"), "user page must not carry an org endpoint");
 });
 
@@ -130,7 +143,7 @@ test("the page names the owner and warns that ownership is final", () => {
   assert.ok(/cannot be changed after creation/i.test(user));
 
   const org = renderPage(OK, { owner: "org", org: "acme" });
-  assert.ok(org.includes("acme"), "the org page must name the organization");
+  assert.equal(formAction(org), "https://github.com/organizations/acme/settings/apps/new");
 });
 
 test("the redirect_url is shown, so the human can see where the code will land", () => {
