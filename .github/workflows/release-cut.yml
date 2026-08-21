@@ -1,0 +1,170 @@
+name: release-cut
+
+# Cut a `v<version>` tag on a repo in this org, from CI, through the broker.
+#
+# WHY THIS EXISTS (#243). mint#22 built a CI tag-cutter so that "the one step of
+# the release flow that still needed a human's laptop no longer does" — and then
+# NO REPOSITORY EVER CALLED IT. Eight packages relicensed under
+# .github-private#659 merged cleanly and none could be released: a session cannot
+# substitute, because `git push` of a tag ref is 403 through the session proxy,
+# the releases API surface it gets is read-only, and workflow_dispatch on the
+# per-repo publish lanes reaches only their dry-run step. The capability existed
+# and was unreachable, which is the same thing as not existing.
+#
+# WHY NOT A CALLER OF mint's release-cut.yml. Its own header warns, in a box,
+# that a tag pushed there TRIGGERS NOTHING: GitHub does not create workflow runs
+# from events caused by GITHUB_TOKEN. Every consumer here publishes from
+# `on: push: tags`, so adopting that cutter means rewriting five working release
+# lanes into chained jobs, and a consumer that wires it up naively gets "a tag, a
+# green run, no publish, and no provenance".
+#
+# THE TOKEN IS THE WHOLE POINT. A GitHub App installation token is NOT
+# GITHUB_TOKEN, so the ref this creates DOES fire the consumer's existing
+# `on: push: tags` lane. That property is what makes this a second door rather
+# than a duplicate of mint's, and it is the one assumption to confirm on the
+# first real cut — which is why dry-run is the default.
+#
+# Shape follows claim-ticket.yml / sign-branch.yml: one dispatch here, named
+# repo, brokered token. No per-repo change to adopt it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Repository name (owner fixed to this org), e.g. trellis-kit"
+        type: string
+        required: true
+      version:
+        description: "Version to cut, WITHOUT the leading v — e.g. 0.5.0"
+        type: string
+        required: true
+      dry-run:
+        description: "Verify only; create no tag. Default true — a registry publish is irreversible."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mint the App token from the broker
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout (for the local broker action)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        env:
+          REPO: ${{ inputs.repo }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$REPO" in
+            (*[!A-Za-z0-9._-]*|"") echo "::error::repo '$REPO' is not a plain repository name"; exit 1 ;;
+          esac
+          case "$VERSION" in
+            (v*) echo "::error::version '$VERSION' must not carry the leading v — pass 0.5.0, not v0.5.0"; exit 1 ;;
+          esac
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '$VERSION' is not X.Y.Z"; exit 1
+          fi
+
+      - name: Mint the App token
+        id: app-token
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: front-desk-sign
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          # Creating a tag object + ref is a contents write. Asserted at mint
+          # time so a missing scope names itself instead of surfacing as a bare
+          # 403 halfway through (#87/#93).
+          require: contents
+
+      - name: Verify, then cut
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET: ${{ github.repository_owner }}/${{ inputs.repo }}
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+
+          # Refuse a tag that already exists. Re-cutting a published version is
+          # never what was meant: JSR versions are immutable, so the second cut
+          # cannot replace the first — it can only confuse the record.
+          if gh api "repos/$TARGET/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error title=release-cut: tag exists::$TARGET already has $TAG. Bump the manifest and cut the next version."
+            exit 1
+          fi
+
+          default="$(gh api "repos/$TARGET" --jq .default_branch)"
+          sha="$(gh api "repos/$TARGET/commits/$default" --jq .sha)"
+
+          # EXPECT-VERSION (mint#22's idea, kept). The manifest on the default
+          # branch must already declare the version being cut, so a tag can never
+          # name a version the code does not. Deno-native repos carry it in
+          # deno.json, JSR-published ones in jsr.json, npm ones in package.json —
+          # probe in that order and take the first that parses.
+          found=""
+          for f in jsr.json deno.json package.json; do
+            raw="$(gh api "repos/$TARGET/contents/$f" --jq .content 2>/dev/null || true)"
+            [ -n "$raw" ] || continue
+            v="$(printf '%s' "$raw" | base64 -d 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)"
+            [ -n "$v" ] || continue
+            found="$f:$v"
+            if [ "$v" = "$VERSION" ]; then break; fi
+          done
+
+          if [ -z "$found" ]; then
+            echo "::error title=release-cut: no version to check::No jsr.json/deno.json/package.json on $TARGET@$default declares a version. Refusing to tag a version nothing claims."
+            exit 1
+          fi
+          manifest="${found%%:*}"
+          declared="${found#*:}"
+          if [ "$declared" != "$VERSION" ]; then
+            echo "::error title=release-cut: version mismatch::$manifest on $TARGET@$default declares $declared, not $VERSION. Merge the bump first."
+            exit 1
+          fi
+
+          {
+            echo "### release-cut"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| repo | \`$TARGET\` |"
+            echo "| tag | \`$TAG\` |"
+            echo "| commit | \`$sha\` (\`$default\` tip) |"
+            echo "| manifest | \`$manifest\` declares \`$declared\` ✓ |"
+            echo "| mode | $([ "$DRY_RUN" = "true" ] && echo 'DRY RUN — nothing cut' || echo '**CUT**') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice title=release-cut: dry run::Verified $TARGET $TAG at $sha. Dispatch again with dry-run: false to cut."
+            exit 0
+          fi
+
+          # Through the refs API, not git: workflows.test.mjs forbids git writes
+          # in runners (a runner-made ref carries no identity), and the API path
+          # is what makes the tag carry the App's identity — which is in turn
+          # what lets the consumer's `on: push: tags` lane fire at all.
+          tag_sha="$(gh api "repos/$TARGET/git/tags" \
+            -f tag="$TAG" \
+            -f message="$TAG" \
+            -f object="$sha" \
+            -f type=commit --jq .sha)"
+          gh api "repos/$TARGET/git/refs" -f ref="refs/tags/$TAG" -f sha="$tag_sha" >/dev/null
+
+          echo "::notice title=release-cut: cut::$TARGET $TAG -> $sha. The consumer's tag-triggered publish lane should now be running; confirm it did."
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Cut \`$TAG\` at \`$sha\`. Confirm the consumer's publish lane ran — an App token fires it, but that is the assumption this lane rests on." >> "$GITHUB_STEP_SUMMARY"
