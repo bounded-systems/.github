@@ -44,6 +44,31 @@ import { join } from "node:path";
 const DIR = ".github/workflows";
 const files = readdirSync(DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
 
+// ── inbound licence policy (#241) ────────────────────────────────────────────
+// The dependency-review job is the org's only inbound licence gate, and its
+// policy is one `with:` key. Deleting that key leaves a job that still runs,
+// still reports, and still goes green — a gate that stops gating without
+// looking broken, which is the exact shape the rest of this file exists for.
+// Asserted structurally, from the file, for the same reason as everything else
+// here: from how it IS wired, not from how it ought to be.
+test("repo-standard: dependency-review carries an inbound licence policy", () => {
+  const src = readFileSync(join(DIR, "repo-standard.yml"), "utf8");
+  assert.match(src, /deny-licenses:/, "dependency-review has no licence policy");
+
+  // The families that would actually poison an MIT package. Spot-checked rather
+  // than exhaustively pinned: this guards deletion of the policy, not edits to
+  // it — narrowing the list is a reviewed diff, dropping it is an accident.
+  for (const id of ["AGPL-3.0-only", "GPL-3.0-only", "SSPL-1.0", "BUSL-1.1",
+                    "PolyForm-Noncommercial-1.0.0"]) {
+    assert.ok(src.includes(id), `deny-licenses no longer names ${id}`);
+  }
+
+  // allow-licenses and deny-licenses are mutually exclusive in the action;
+  // setting both makes it error at runtime rather than fail a review.
+  assert.doesNotMatch(src, /allow-licenses:/,
+    "allow-licenses and deny-licenses cannot both be set");
+});
+
 test("there are workflows to check", () => {
   // Guards the guard: a bad path here would make every test below vacuously
   // pass, which is the failure mode this whole file exists to complain about.
