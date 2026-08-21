@@ -51,10 +51,11 @@ _(Org posture: outward-only, composably-published.)_
 - **Every quality property is a forcing function** — machine-checked, ratcheted,
   self-documenting; trust is mechanical, not reviewer vigilance
   (`docs/agentic-code-hygiene.md`). Org-wide; `prx` is the reference instantiation.
-- **Two license tiers** (#659): the leaf libraries are **MIT**; the `door-kit` /
-  `guest-room` runtime is **PolyForm Noncommercial 1.0.0**. Gated by `lic` in
-  `registry/generate.ts` — the tier lives in `registry/seed.json`, never in the
-  package. Covers the seeded 27 of 45 published packages.
+- **Everything is MIT** (#669, superseding #659's two-tier split) — every
+  published package, runtime included. Gated by `lic` in `registry/generate.ts`;
+  the policy is `ORG_LICENSE` in `registry/license.ts`, never in the package.
+  Covers the seeded 27 of 45. `door-kit` and `guest-room` still declare PolyForm
+  on JSR and are owed a relicense; `ocap-provenance` is owed only a publish.
 
 ## Map (pointer — full detail in `docs/org-map.md`)
 
