@@ -509,3 +509,103 @@ test("a dot-prefixed checkout is discovered (this org's actual shape)", () => {
     s.drop();
   }
 });
+
+// ── D: the shallow clone's OTHER missing ref (#234) ──────────────────────────
+
+/**
+ * A repo whose `origin` is a real bare repo on disk, so pushes and `ls-remote`
+ * genuinely work. The shared `repo()` fixture points origin at `example.invalid`,
+ * which is right for every test that must never touch a network and wrong for
+ * this one: the defect here is only visible when the branch really is on the
+ * remote.
+ */
+function repoWithRealRemote() {
+  const root = mkdtempSync(join(tmpdir(), "stophook-real-"));
+  writeFileSync(join(root, "gitconfig"), "[commit]\n\tgpgsign = true\n");
+  const bare = join(root, "origin.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", bare], { env: hermetic(root) });
+
+  const r = makeRepoAt(root, "repo");
+  git(r.dir, "remote", "set-url", "origin", bare);
+  git(r.dir, "push", "-q", "origin", "main");
+  return { ...r, bare };
+}
+
+/**
+ * Reproduce what `git clone --depth 1` leaves behind: a fetch refspec covering
+ * only the default branch, so a branch pushed with `-u` has `branch.<b>.merge`
+ * configured while its remote-tracking ref was never written.
+ */
+function narrowRefspec(dir, branch) {
+  git(dir, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main");
+  git(dir, "update-ref", "-d", `refs/remotes/origin/${branch}`);
+}
+
+test("D: a fully-pushed branch with no tracking ref is NOT reported as unpushed", () => {
+  const r = repoWithRealRemote();
+  try {
+    git(r.dir, "checkout", "-q", "-b", "feature");
+    r.add({ message: "pushed, but the refspec will not track it", sign: "ssh" });
+    git(r.dir, "push", "-q", "-u", "origin", "feature");
+    narrowRefspec(r.dir, "feature");
+
+    // Precondition: this is the state the defect needs — upstream configured,
+    // tracking ref absent. Without it the test would pass for the wrong reason.
+    assert.equal(git(r.dir, "config", "--get", "branch.feature.merge"), "refs/heads/feature");
+    assert.throws(() => git(r.dir, "rev-parse", "--verify", "refs/remotes/origin/feature"));
+
+    const got = runHook(r.dir);
+    assert.doesNotMatch(got.stderr, /no remote branch/, "claimed no remote branch for a pushed branch");
+    assert.match(got.stderr, /fully pushed/);
+    assert.match(got.stderr, /Do NOT push again/);
+    assert.match(got.stderr, /refs\/heads\/\*:refs\/remotes\/origin\/\*/, "must name the refspec repair");
+  } finally {
+    clean(r);
+  }
+});
+
+test("D: the remedy converges — after repairing the refspec the hook goes quiet", () => {
+  // The defect is not the wrong string, it is that following the old remedy
+  // never ends. Asserting the new one terminates is the actual regression test.
+  const r = repoWithRealRemote();
+  try {
+    git(r.dir, "checkout", "-q", "-b", "feature");
+    r.add({ message: "pushed", sign: "ssh" });
+    git(r.dir, "push", "-q", "-u", "origin", "feature");
+    narrowRefspec(r.dir, "feature");
+    const before = runHook(r.dir);
+    assert.equal(before.code, 2);
+    // The convergence claim is only meaningful if the hook actually PRINTS this
+    // remedy. Without this assertion the test passes against the old hook too,
+    // whose remedy was a push that never converges.
+    assert.match(before.stderr, /refs\/heads\/\*:refs\/remotes\/origin\/\*/);
+
+    // Exactly what the hook now prints.
+    git(r.dir, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*");
+    git(r.dir, "fetch", "-q", "origin", "feature");
+
+    assert.equal(runHook(r.dir).code, 0, "the printed repair did not silence the hook");
+  } finally {
+    clean(r);
+  }
+});
+
+test("D: genuinely unpushed work on a tracked branch is still reported", () => {
+  // The narrow guard must not swallow the real case: upstream configured, ref
+  // missing, but HEAD ahead of what the remote actually holds.
+  const r = repoWithRealRemote();
+  try {
+    git(r.dir, "checkout", "-q", "-b", "feature");
+    r.add({ message: "pushed", sign: "ssh" });
+    git(r.dir, "push", "-q", "-u", "origin", "feature");
+    narrowRefspec(r.dir, "feature");
+    r.add({ message: "NOT pushed", sign: "ssh" });
+
+    const got = runHook(r.dir);
+    assert.equal(got.code, 2);
+    assert.match(got.stderr, /unpushed/);
+    assert.doesNotMatch(got.stderr, /fully pushed/, "swallowed real unpushed work");
+  } finally {
+    clean(r);
+  }
+});
