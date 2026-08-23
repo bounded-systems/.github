@@ -215,3 +215,47 @@ for (const file of files) {
     );
   });
 }
+
+// ── _labels defaults to reporting, and never to deleting ────────────────────
+//
+// Two inputs on `_labels.yml` are safety properties rather than preferences,
+// and both fail SILENTLY if they flip:
+//
+//   apply: true  — every caller that meant to run a drift CHECK starts writing
+//                  instead. The run still goes green, so nothing says so.
+//   prune: true  — an undeclared live label is deleted, which strips it from
+//                  every issue that carried it. There is no undo, and the
+//                  Front Desk projection reads `claimed` by exact name.
+//
+// A default is one word in a file nobody re-reads, which is exactly the shape
+// this file exists to ratchet. Asserted structurally, from the file.
+test("_labels: apply and prune both default to false", () => {
+  const src = readFileSync(join(DIR, "_labels.yml"), "utf8");
+
+  for (const input of ["apply", "prune"]) {
+    // The input's own block: from `      apply:` to the next key at that
+    // indent. Same indentation-bounded read as the broker-gh-token check
+    // above, for the same reason — no YAML dependency.
+    const lines = src.split("\n");
+    const start = lines.findIndex((l) => new RegExp(`^\\s{6}${input}:\\s*$`).test(l));
+    assert.notEqual(start, -1, `_labels.yml declares no '${input}' input`);
+
+    const indent = lines[start].search(/\S/);
+    let dflt = null;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i].trim() === "") continue;
+      if (lines[i].search(/\S/) <= indent) break;
+      const m = /^\s*default:\s*(\S+)/.exec(lines[i]);
+      if (m) { dflt = m[1]; break; }
+    }
+
+    assert.equal(
+      dflt,
+      "false",
+      `_labels.yml input '${input}' defaults to ${dflt} — it must default to false. ` +
+        `apply:true silently turns every drift CHECK into a write; prune:true ` +
+        `silently deletes undeclared labels off every issue carrying them. Both ` +
+        `regressions stay green, which is why this is a test and not a comment.`,
+    );
+  }
+});
