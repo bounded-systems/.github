@@ -1,0 +1,275 @@
+name: _labels
+
+# THE portable label door. One implementation; every consumer is a caller.
+#
+# WHY LABELS NEED A DOOR AT ALL
+# ------------------------------
+# Labels are load-bearing and undeclared. `.github-private`'s Front Desk
+# projection decides what is claimable by matching an exact string —
+#
+#   claimed: (([.content.labels.nodes[]?.name] | index("claimed")) != null
+#
+# — and `claimed`, `blocked`, `unclaimed` and `egress-blocked` exist only
+# because somebody made them by hand once. Rename or delete one and nothing
+# goes red; the projection just reports the wrong board. That is the silent
+# drift `docs/agentic-code-hygiene.md` claims is machine-checked org-wide,
+# sitting underneath an undeclared string.
+#
+# WHY THIS IS NOT THE repo-settings SHAPE (.github-private#668)
+# --------------------------------------------------------------
+# That lane was reverted because its door carried `administration` — a caller
+# holding the key, widened rather than narrowed, against `knowledge/ocap-doors.md`.
+# This is the inverse and rides the door `_claim.yml` already proved travels:
+# `issues: write`, a real workflow `permissions:` key on the CALLER's built-in
+# GITHUB_TOKEN, scoped to the calling repository alone. No broker, no App, no
+# secret. Nothing here can see another repo, and nothing here holds a key.
+#
+# THE DEFAULT IS A REPORT, NOT A WRITE. `apply: false` reports drift and exits
+# non-zero, which makes this usable as a required status check — the org's
+# stated gate model (`.github-private` docs/merge-gate.md: review is not the
+# gate, the check is). A caller opts INTO writing.
+#
+# PRUNING IS OFF AND STAYS OFF UNLESS ASKED. Deleting a label strips it from
+# every issue that carried it and there is no undo. That must never be a
+# default, and never a side effect of adding one.
+#
+# CALLABLE FROM ANYWHERE. This repo is public, so any repository can call this.
+# The job runs against the CALLER's `github.repository` with the CALLER's
+# GITHUB_TOKEN, so it takes no owner input, no repo input, and no credential of
+# its own. Declare `permissions: { contents: read, issues: write }` on the
+# calling job, exactly as `_claim.yml`'s callers do.
+
+on:
+  workflow_call:
+    inputs:
+      file:
+        description: "Path to the label declaration, relative to the caller's repo root."
+        type: string
+        default: .github/labels.json
+      apply:
+        description: "Write the declaration. false (default) reports drift and fails on it."
+        type: boolean
+        default: false
+      prune:
+        description: "Delete live labels absent from the declaration. Irreversible — off unless asked."
+        type: boolean
+        default: false
+      strict:
+        description: "In report mode, exit non-zero on drift. false prints the plan and exits 0."
+        type: boolean
+        default: true
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+
+    # Serialise per repo: two applies racing on one label set can interleave a
+    # create and an update into a half-written state. Never cancelling — a
+    # partial apply killed midway is the worst of both outcomes, same reasoning
+    # as _claim.yml's per-ticket group.
+    concurrency:
+      group: labels-${{ github.repository }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out the caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reconcile labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILE: ${{ inputs.file }}
+          APPLY: ${{ inputs.apply }}
+          PRUNE: ${{ inputs.prune }}
+          STRICT: ${{ inputs.strict }}
+        run: |
+          set -euo pipefail
+
+          # ── read and validate the declaration ────────────────────────────
+          # A declaration that cannot be read is not "no labels declared". It is
+          # a red run naming itself, because the alternative — treating an
+          # unreadable file as an empty set — is a prune of everything.
+          if [ ! -f "$FILE" ]; then
+            echo "::error title=Labels NOT reconciled::declaration '${FILE}' does not exist. Nothing was changed."
+            exit 1
+          fi
+          if ! jq empty "$FILE" 2>/dev/null; then
+            echo "::error title=Labels NOT reconciled::declaration '${FILE}' is not valid JSON. Nothing was changed."
+            exit 1
+          fi
+
+          shape="$(jq -r '
+            if type != "array" then "not an array"
+            elif length == 0 then "empty"
+            elif any(.[]; type != "object") then "contains a non-object entry"
+            elif any(.[]; has("name") | not) then "an entry has no name"
+            elif any(.[]; has("color") | not) then "an entry has no color"
+            else "ok" end' "$FILE")"
+          if [ "$shape" != "ok" ]; then
+            echo "::error title=Labels NOT reconciled::declaration is ${shape}. Expected a non-empty array of {name, color, description?}."
+            exit 1
+          fi
+
+          # Validate every value BEFORE the first write. A bad colour rejected
+          # halfway through leaves the label set partially applied, and a
+          # partial apply is harder to reason about than no apply.
+          bad="$(jq -r '
+            [ .[]
+              | select(
+                  (.name | test("^[A-Za-z0-9][A-Za-z0-9 :._-]*$") | not)
+                  or (.color | test("^[0-9a-fA-F]{6}$") | not)
+                )
+              | .name // "(unnamed)" ] | join(", ")' "$FILE")"
+          if [ -n "$bad" ]; then
+            echo "::error title=Labels NOT reconciled::invalid name or colour (colour is 6 hex digits, no leading #): ${bad}"
+            exit 1
+          fi
+
+          dupes="$(jq -r '[.[].name] | group_by(.) | map(select(length > 1) | .[0]) | join(", ")' "$FILE")"
+          if [ -n "$dupes" ]; then
+            echo "::error title=Labels NOT reconciled::declaration names a label twice: ${dupes}"
+            exit 1
+          fi
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/labels"
+          hdr_auth="Authorization: Bearer ${GH_TOKEN}"
+          hdr_acc="Accept: application/vnd.github+json"
+          hdr_ver="X-GitHub-Api-Version: 2022-11-28"
+
+          # ── read live state ──────────────────────────────────────────────
+          # Paginated: a repo past 100 labels would otherwise look like it is
+          # missing the rest, and the apply path would try to create labels
+          # that already exist.
+          live="$(mktemp)"
+          echo '[]' > "$live"
+          page=1
+          while :; do
+            body="$(mktemp)"
+            code="$(curl -sS -o "$body" -w '%{http_code}' \
+              -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "${api}?per_page=100&page=${page}")"
+            if [ "$code" != "200" ]; then
+              echo "::error title=Labels NOT reconciled::could not list labels (HTTP ${code}). Nothing was changed."
+              cat "$body"
+              exit 1
+            fi
+            n="$(jq 'length' "$body")"
+            jq -s '.[0] + .[1]' "$live" "$body" > "${live}.next" && mv "${live}.next" "$live"
+            [ "$n" -lt 100 ] && break
+            page=$((page + 1))
+          done
+
+          # ── diff ─────────────────────────────────────────────────────────
+          # Compare on the three fields we manage. A live description of null
+          # and a declared description of "" are the same absence to GitHub, so
+          # both normalise to "" — otherwise every run reports permanent drift
+          # on labels nobody has touched.
+          plan="$(jq -n --slurpfile want "$FILE" --slurpfile have "$live" '
+            ( $want[0] | map({ name, color: (.color | ascii_downcase), description: (.description // "") }) ) as $w
+            | ( $have[0] | map({ name, color: (.color | ascii_downcase), description: (.description // "") }) ) as $h
+            | ( $h | map(.name) ) as $hn
+            | ( $w | map(.name) ) as $wn
+            | {
+                create: [ $w[] | select(.name as $n | $hn | index($n) | not) ],
+                update: [ $w[] | . as $x | select(.name as $n | $hn | index($n))
+                          | select( ($h[] | select(.name == $x.name)) != $x ) ],
+                orphan: [ $h[] | select(.name as $n | $wn | index($n) | not) | .name ]
+              }')"
+
+          n_create="$(jq '.create | length' <<<"$plan")"
+          n_update="$(jq '.update | length' <<<"$plan")"
+          n_orphan="$(jq '.orphan | length' <<<"$plan")"
+
+          echo "declaration: ${FILE}"
+          echo "  create: ${n_create}   update: ${n_update}   undeclared-live: ${n_orphan}"
+          jq -r '.create[]? | "  + \(.name)"' <<<"$plan"
+          jq -r '.update[]? | "  ~ \(.name)"' <<<"$plan"
+          jq -r '.orphan[]? | "  ? \(.)  (live, not declared)"' <<<"$plan"
+
+          # An undeclared live label is reported ALWAYS and deleted only when
+          # asked. Silence here would let the declaration drift out of step with
+          # reality while every run stayed green.
+          if [ "$n_orphan" -gt 0 ] && [ "$PRUNE" != "true" ]; then
+            echo "::notice title=Undeclared labels present::${n_orphan} live label(s) are not in ${FILE}. Not deleted (prune is off). Add them to the declaration, or run with prune to remove them."
+          fi
+
+          # ── report-only mode ─────────────────────────────────────────────
+          #
+          # STRICT IS THE DIFFERENCE BETWEEN TWO QUESTIONS, and conflating them
+          # makes the lane unusable. "Has the live state drifted from a
+          # declaration that is already applied?" is an alarm and must be red.
+          # "What would this proposed declaration do?" is a preview, and a
+          # pull request that ADDS a label is drifted BY CONSTRUCTION — the
+          # label does not exist yet. Failing that would make every
+          # label-adding PR red until merged, i.e. a gate nobody can satisfy
+          # except by bypassing it, which is worse than no gate.
+          #
+          # Default is strict, so a caller that says nothing gets the alarm.
+          # An invalid declaration is red in BOTH modes — everything above this
+          # point has already exited. `strict: false` relaxes drift, never
+          # validation.
+          if [ "$APPLY" != "true" ]; then
+            if [ "$n_create" -gt 0 ] || [ "$n_update" -gt 0 ]; then
+              if [ "$STRICT" = "true" ]; then
+                echo "::error title=Labels drifted::${n_create} to create, ${n_update} to update. Run with apply to write."
+                exit 1
+              fi
+              echo "::notice title=Label plan::${n_create} to create, ${n_update} to update. Preview only (strict off); a write happens on apply."
+              exit 0
+            fi
+            echo "in sync"
+            exit 0
+          fi
+
+          # ── apply ────────────────────────────────────────────────────────
+          # Both helpers fail loud. A `|| true` here would print success after a
+          # write that did not happen.
+          write() {
+            local method="$1" url="$2" payload="$3" what="$4"
+            local out http
+            out="$(mktemp)"
+            http="$(curl -sS -X "$method" -o "$out" -w '%{http_code}' \
+              -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" -d "$payload" "$url")"
+            case "$http" in
+              2*) : ;;
+              *)
+                echo "::error title=Labels left PARTIALLY applied::${what} returned ${http}. Read the repo's labels before retrying."
+                cat "$out"
+                exit 1
+                ;;
+            esac
+          }
+
+          while read -r row; do
+            [ -z "$row" ] && continue
+            name="$(jq -r '.name' <<<"$row")"
+            write POST "$api" "$row" "create '${name}'"
+            echo "  created ${name}"
+          done < <(jq -c '.create[]?' <<<"$plan")
+
+          while read -r row; do
+            [ -z "$row" ] && continue
+            name="$(jq -r '.name' <<<"$row")"
+            enc="$(jq -rn --arg n "$name" '$n | @uri')"
+            write PATCH "${api}/${enc}" "$row" "update '${name}'"
+            echo "  updated ${name}"
+          done < <(jq -c '.update[]?' <<<"$plan")
+
+          if [ "$PRUNE" = "true" ] && [ "$n_orphan" -gt 0 ]; then
+            while read -r name; do
+              [ -z "$name" ] && continue
+              enc="$(jq -rn --arg n "$name" '$n | @uri')"
+              out="$(mktemp)"
+              http="$(curl -sS -X DELETE -o "$out" -w '%{http_code}' \
+                -H "$hdr_auth" -H "$hdr_acc" -H "$hdr_ver" "${api}/${enc}")"
+              case "$http" in
+                2* | 404) echo "  deleted ${name}" ;;
+                *)
+                  echo "::error title=Labels left PARTIALLY applied::DELETE '${name}' returned ${http}."
+                  cat "$out"
+                  exit 1
+                  ;;
+              esac
+            done < <(jq -r '.orphan[]?' <<<"$plan")
+          fi
+
+          echo "applied: ${n_create} created, ${n_update} updated"
