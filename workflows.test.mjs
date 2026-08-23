@@ -229,10 +229,13 @@ for (const file of files) {
 //
 // A default is one word in a file nobody re-reads, which is exactly the shape
 // this file exists to ratchet. Asserted structurally, from the file.
-test("_labels: apply and prune both default to false", () => {
+test("_labels: apply and prune default false, strict defaults true", () => {
   const src = readFileSync(join(DIR, "_labels.yml"), "utf8");
 
-  for (const input of ["apply", "prune"]) {
+  // strict is the third of the same kind: it decides whether a drift REPORT is
+  // an alarm or a preview. Flipped to false org-wide, every drift check goes
+  // quietly green and the lane still looks like it is watching.
+  for (const [input, want] of [["apply", "false"], ["prune", "false"], ["strict", "true"]]) {
     // The input's own block: from `      apply:` to the next key at that
     // indent. Same indentation-bounded read as the broker-gh-token check
     // above, for the same reason — no YAML dependency.
@@ -251,11 +254,12 @@ test("_labels: apply and prune both default to false", () => {
 
     assert.equal(
       dflt,
-      "false",
-      `_labels.yml input '${input}' defaults to ${dflt} — it must default to false. ` +
+      want,
+      `_labels.yml input '${input}' defaults to ${dflt}, must be ${want}. ` +
         `apply:true silently turns every drift CHECK into a write; prune:true ` +
-        `silently deletes undeclared labels off every issue carrying them. Both ` +
-        `regressions stay green, which is why this is a test and not a comment.`,
+        `silently deletes undeclared labels off every issue carrying them; ` +
+        `strict:false silently downgrades every drift alarm to a preview. All ` +
+        `three regressions stay green, which is why this is a test not a comment.`,
     );
   }
 });

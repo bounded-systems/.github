@@ -54,6 +54,10 @@ on:
         description: "Delete live labels absent from the declaration. Irreversible — off unless asked."
         type: boolean
         default: false
+      strict:
+        description: "In report mode, exit non-zero on drift. false prints the plan and exits 0."
+        type: boolean
+        default: true
 
 jobs:
   labels:
@@ -77,6 +81,7 @@ jobs:
           FILE: ${{ inputs.file }}
           APPLY: ${{ inputs.apply }}
           PRUNE: ${{ inputs.prune }}
+          STRICT: ${{ inputs.strict }}
         run: |
           set -euo pipefail
 
@@ -188,10 +193,28 @@ jobs:
           fi
 
           # ── report-only mode ─────────────────────────────────────────────
+          #
+          # STRICT IS THE DIFFERENCE BETWEEN TWO QUESTIONS, and conflating them
+          # makes the lane unusable. "Has the live state drifted from a
+          # declaration that is already applied?" is an alarm and must be red.
+          # "What would this proposed declaration do?" is a preview, and a
+          # pull request that ADDS a label is drifted BY CONSTRUCTION — the
+          # label does not exist yet. Failing that would make every
+          # label-adding PR red until merged, i.e. a gate nobody can satisfy
+          # except by bypassing it, which is worse than no gate.
+          #
+          # Default is strict, so a caller that says nothing gets the alarm.
+          # An invalid declaration is red in BOTH modes — everything above this
+          # point has already exited. `strict: false` relaxes drift, never
+          # validation.
           if [ "$APPLY" != "true" ]; then
             if [ "$n_create" -gt 0 ] || [ "$n_update" -gt 0 ]; then
-              echo "::error title=Labels drifted::${n_create} to create, ${n_update} to update. Run with apply to write."
-              exit 1
+              if [ "$STRICT" = "true" ]; then
+                echo "::error title=Labels drifted::${n_create} to create, ${n_update} to update. Run with apply to write."
+                exit 1
+              fi
+              echo "::notice title=Label plan::${n_create} to create, ${n_update} to update. Preview only (strict off); a write happens on apply."
+              exit 0
             fi
             echo "in sync"
             exit 0
