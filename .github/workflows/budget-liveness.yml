@@ -1,0 +1,117 @@
+name: budget-liveness
+
+# Watches the org's PRIVATE Actions estate from OUTSIDE the budget that can stop
+# it. The reasoning, the measured pair that justifies the placement, and the
+# message it produces all live in scripts/budget-liveness.mjs and its test —
+# this file owns only the schedule, the mint and the call, the same split
+# front-desk-projection.yml and service-status.yml use.
+#
+# THE ONE THING TO KNOW HERE: this repo is PUBLIC, so its Actions minutes come
+# from the free allowance and the org's Actions BUDGET does not reach them.
+# That is why the probe can run during the outage it reports. Moving this file
+# into a private repo silently destroys the only property that makes it work —
+# it would then be another `service-status.yml`, unable to report the outage
+# that stops it (#553's "the gate that reports on a thing must not depend on
+# that thing").
+#
+# ── NOT YET ON A SCHEDULE, and what it costs to turn on ─────────────────────
+# The mint below names `front-desk-liveness`, a door that DOES NOT EXIST in the
+# broker registry yet. Its declaration is the .github-private half of this
+# change (org/doors/doors.json); the entry that actually mints is owed in
+# bounded-systems/infra, the same two-repo split #700 used for registry-refresh.
+#
+# Until that entry lands, every run of this lane fails at the mint. So the cron
+# is deliberately absent rather than merely failing hourly: #680 removed a
+# schedule for exactly this reason — "a lane that cannot publish must not fail
+# daily; that is the alarm fatigue this org's own headers keep warning about."
+# A detector whose own noise trains people to ignore it has negative value.
+#
+# TO ACTIVATE, once the infra entry exists, uncomment the `schedule:` block
+# below and dispatch once to confirm a green run. That is the whole change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max-age-hours:
+        description: "Hours before the projection stamp counts as stale (default 3)"
+        required: false
+        type: string
+  # schedule:
+  #   - cron: "43 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout, for the script and the local broker action
+      id-token: write # OIDC -> cf-token-broker
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # FAILS rather than skipping, on front-desk-projection.yml's reasoning:
+      # a quietly-skipped alarm run is indistinguishable from a healthy one,
+      # and this lane's entire product is the difference between those two.
+      - name: Preflight — is the broker configured?
+        env:
+          BROKER_URL: ${{ vars.CF_BROKER_URL }}
+        run: |
+          if [ -z "${BROKER_URL:-}" ]; then
+            echo "::error title=Actions liveness probe did NOT run::CF_BROKER_URL is empty, so no token was minted and nothing was checked. This run proves NOTHING about whether the org's private Actions are running — read it as neither an outage nor an all-clear. Fix the org variable naming the cf-token-broker (it is not a secret)."
+            exit 1
+          fi
+          echo "Broker configured; minting."
+
+      - name: Mint the liveness token via the OIDC broker
+        id: app-token
+        uses: ./.github/actions/broker-gh-token
+        with:
+          # Its OWN entry, pinned to THIS workflow. It cannot borrow the
+          # unpinned `front-desk` fan-in: that entry carries no `contents` at
+          # all (#348 is the discovery that the fan-in could not carry it), so
+          # the read below would 404 no matter how the door were widened. Nor
+          # `front-desk-audit`, which has the right permissions but is pinned to
+          # .github-private's front-desk-coverage.yml — a workflowRef pins ONE
+          # workflow, so each caller needs its own entry.
+          app: front-desk-liveness
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          # Empty is the honest declaration: `require:` asserts scopes at WRITE,
+          # and this job writes nothing anywhere. It only READS one file from a
+          # branch. The read level it needs is asserted explicitly in the next
+          # step instead, which is the assertion `require:` cannot express.
+          require: ""
+
+      # ASSERT THE SCOPE BEFORE THE WORK, so a missing grant fails here naming
+      # the gap rather than surfacing as a 404 that reads like a deleted branch.
+      - name: The minted token can read repository contents
+        env:
+          GRANTED: ${{ steps.app-token.outputs.permissions }}
+        run: |
+          set -euo pipefail
+          if [ "$GRANTED" = '"full-grant"' ]; then
+            echo "full-grant token — carries whatever the installation holds; not independently checkable here."
+            exit 0
+          fi
+          got="$(printf '%s' "$GRANTED" | jq -r '.contents // "absent"')"
+          case "$got" in
+            read|write|admin)
+              echo "✓ contents: $got"
+              ;;
+            *)
+              echo "::error title=Actions liveness probe did NOT run::the minted token carries contents=$got. Granted: $GRANTED. The mint SUCCEEDED, so the App is registered and the OIDC trust holds — the gap is the broker's GH_APPS entry for 'front-desk-liveness' not requesting Contents, or the App installation not holding it. This run proves NOTHING about the estate's state."
+              exit 1
+              ;;
+          esac
+
+      - name: Is the private estate still publishing?
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          MAX_AGE_HOURS: ${{ inputs.max-age-hours }}
+        run: node scripts/budget-liveness.mjs
