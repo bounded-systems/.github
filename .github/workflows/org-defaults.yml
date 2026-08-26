@@ -79,6 +79,20 @@ jobs:
       # claim-ticket.yml's preflight enforces. The paragraph above about a test
       # file that is never listed here is the reason this comment is not shorter.
       - run: node --test claim-digest.test.mjs
+      # The claim door's verification leg (.github-private#642) — the consumer
+      # side of the format above. Every refusal in that suite is the only
+      # evidence the door refuses at all: the relying party is injected, so the
+      # negative cases can be exercised without a keeper that can be asked to
+      # misbehave. It also carries two cross-file ratchets, one of which asserts
+      # THIS line exists, because the paragraph above is about a suite that
+      # shipped without one.
+      - run: node --test claim-authorization.test.mjs
+      # The ceremony half — the thing that fills the door's optional input. Its
+      # suite exists for one agreement neither side can check alone at runtime:
+      # the request the human is shown must digest to what the door recomputes.
+      # If those diverge, every ceremony passes at the keeper and fails at the
+      # door, and neither log says why.
+      - run: node --test claim-ceremony.test.mjs
 
   # The other half of that split: main IS the merged state, so main can bump its
   # own pin. Mirrors registry-graph.yml — regenerate, and if that changed

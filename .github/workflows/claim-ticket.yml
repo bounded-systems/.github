@@ -32,6 +32,20 @@
 # stale claims yet; if that starts to hurt, it is a scheduled sweep in the
 # board-parity family, not more logic here.
 #
+# ── What a claim record now SAYS about itself (.github-private#642) ──────────
+# The record also carries a RUNG on the claim ladder, and the reasons it is not
+# higher. Ordinarily that rung is `human-associated` — an account is somewhere
+# in the chain — which is the strongest true thing this door could ever say on
+# its own, for the reason stated further down beside the assignee projection:
+# github.actor is owner-grade identity and cannot name a guest.
+#
+# Supply `human_authorization` and the claim can rise to `human-attended`: a
+# passkey assertion whose CHALLENGE IS THE CLAIM DIGEST, verified by the keeper
+# — a relying party that is deliberately not this run, because an approval the
+# requester renders is self-attestation. That token is optional and it is not a
+# second identity for the door; it is the only thing here that is evidence
+# rather than assertion. See claim-authorization.mjs for what each rung costs.
+#
 # ── Why it FAILS CLOSED ──────────────────────────────────────────────────────
 # The opposite posture from front-desk-add.yml, on claim-boundary.md's
 # fail-direction rule: this job's only product is the sentence "the claim is
@@ -73,6 +87,15 @@ on:
         description: "Who is claiming — a session URL, branch name, or handle"
         required: true
         type: string
+      human_authorization:
+        description: >-
+          OPTIONAL. An authorization token from the keeper — base64url of
+          {authorizationId, nonce, issuedAt}. Get one by running `node claim-ceremony.mjs`
+          with CLAIM_REPO/CLAIM_ISSUE/CLAIMANT/KEEPER_URL set and approving with a passkey;
+          it prints the token on stdout. Absent is the ordinary case and stays green;
+          PRESENT AND UNVERIFIABLE IS A RED RUN. See claim-authorization.mjs.
+        required: false
+        type: string
 
 permissions:
   contents: read # checkout, for the local broker action
@@ -111,6 +134,49 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # ── THE AUTHORIZATION LEG (.github-private#642) ──────────────────────────
+      #
+      # BEFORE the mint and before any write, because a token that does not verify
+      # must stop the run while the ticket is still untouched. A check after the
+      # claim was recorded would be a report, not a gate.
+      #
+      # What this step decides is WHICH RUNG the claim record is entitled to name
+      # — not whether the claim happens. Three outcomes, and the middle one is the
+      # ordinary case:
+      #
+      #   token present, verifies    → human-attended (or higher), credential named
+      #   no token                   → human-associated, green — see below
+      #   token present, unverifiable→ RED, and the run says which property failed
+      #
+      # THE HONEST DEFAULT IS THE PART WORTH READING. With no token, the door
+      # records `human-associated`: an account is somewhere in the chain and
+      # nothing more. That is not a downgrade, it is this door's own long-standing
+      # statement about itself — `github.actor is owner-grade identity and cannot
+      # name a guest` (.github-private#537, #558) — finally written into the
+      # record instead of left implied by a claim comment that names a dispatcher
+      # as though naming were authenticating.
+      #
+      # KEEPER_URL unset is fine while no token is supplied, and fatal the moment
+      # one is: falling back to the honest default there would let anyone turn a
+      # refused authorization into a green claim by unsetting a variable.
+      - name: Verify the human authorization, and say which rung it proved
+        id: authorization
+        env:
+          # THE DOOR'S OWN INPUTS. Never the token's — the token contributes only
+          # the anti-replay values, and claim-authorization.test.mjs asserts these
+          # three lines still read from `inputs`.
+          CLAIM_REPO: ${{ inputs.repo }}
+          CLAIM_ISSUE: ${{ inputs.issue }}
+          CLAIMANT: ${{ inputs.claimant }}
+          HUMAN_AUTHORIZATION: ${{ inputs.human_authorization }}
+          KEEPER_URL: ${{ vars.KEEPER_URL }}
+          DISPATCHER: ${{ github.actor }}
+        run: node claim-authorization.mjs
+
       - name: Mint the claim identity via the OIDC broker
         id: app-token
         uses: ./.github/actions/broker-gh-token
@@ -129,6 +195,8 @@ jobs:
           CLAIMANT: ${{ inputs.claimant }}
           ACTOR: ${{ github.actor }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUTHORIZATION: ${{ steps.authorization.outputs.authorization }}
+          RUNG: ${{ steps.authorization.outputs.rung }}
         run: |
           set -euo pipefail
           api="repos/bounded-systems/$REPO/issues/$ISSUE"
@@ -168,8 +236,13 @@ jobs:
           # stronger door must not leave the weaker record. Record parity, not
           # attribution — github.actor is owner-grade identity and cannot name
           # a guest (.github-private#537, #558).
-          body="$(printf '🎫 **Claimed** by %s — dispatched by `%s` — [run](%s)\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
-            "$CLAIMANT" "$ACTOR" "$RUN_URL")"
+          #
+          # $AUTHORIZATION is the rung this run actually proved, PLUS the reasons
+          # it is not higher. Both halves, always: a rung with no reasons is a
+          # verdict nobody can check, and .github-private/docs/claim-boundary.md
+          # P4 is specifically about mechanisms that are named but do not resolve.
+          body="$(printf '🎫 **Claimed** by %s — dispatched by `%s` — [run](%s)\n\n%s\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
+            "$CLAIMANT" "$ACTOR" "$RUN_URL" "$AUTHORIZATION")"
           gh api -X POST "$api/comments" -f body="$body" >/dev/null
 
           # Projection only — most dispatchers are bots and not assignable, and
@@ -185,5 +258,5 @@ jobs:
             exit 1
           fi
 
-          echo "✅ **Claimed** bounded-systems/$REPO#$ISSUE for \`$CLAIMANT\`." >> "$GITHUB_STEP_SUMMARY"
-          echo "claimed: bounded-systems/$REPO#$ISSUE by $CLAIMANT"
+          echo "✅ **Claimed** bounded-systems/$REPO#$ISSUE for \`$CLAIMANT\` — authorization: \`$RUNG\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "claimed: bounded-systems/$REPO#$ISSUE by $CLAIMANT ($RUNG)"
