@@ -12,9 +12,16 @@ name: site-deploy
 #              it auto-creates on first run), but the pin the broker's Workers-deploy tier requires:
 #              workersDeployAuthorized demands an environment claim, fail-closed, so an ungated
 #              preview mint needs an environment of its own (infra#336).
-#   promote  — gated behind the caller's `site-promote` Environment (set required reviewers there).
-#              On approval, deploy the SAME reviewed version to 100% prod, then confirm prod ROUTES
-#              to that verified version (manifest equality) + an RFC 9110 probe.
+#   promote  — gated behind the caller's `site-promote` Environment, and — when the caller sets
+#              `keeper_url` — behind a FACE ID CEREMONY (infra#480): the promote job opens a
+#              ceremony whose challenge pins THIS run on THIS commit, notifies the approver with
+#              the approve URL AND the verified preview URL (review first, then sign), polls for
+#              the authorization, and redeems it fail-closed BEFORE the promote credential is
+#              minted. A caller that adopts the ceremony can drop its `site-promote` required
+#              reviewers (a repo-settings toggle) — the Environment then remains as the broker's
+#              pin, which is what the mint actually requires. On approval, deploy the SAME
+#              reviewed version to 100% prod, then confirm prod ROUTES to that verified version
+#              (manifest equality) + an RFC 9110 probe.
 #
 # Because the two jobs enter DIFFERENT environments, they cannot share one broker registry entry:
 # each job appends its role to `cf_broker_path` and POSTs <path>-preview / <path>-promote, two
@@ -67,6 +74,29 @@ on:
         required: false
         type: string
         default: cloudflare-workers-deploy-broker
+      keeper_url:
+        description: >-
+          Base URL of the org's WebAuthn keeper (e.g. https://keeper.bounded.tools). Set it
+          and the promote job requires a Face ID ceremony bound to this run and commit
+          BEFORE any promote credential is minted (infra#480 — retires the comment/click
+          approval for callers that adopt it; the caller must then also grant
+          `issues: write` for the notification issue). Leave empty to keep the caller's
+          `site-promote` required-reviewer gate as the only human gate.
+        required: false
+        type: string
+        default: ""
+      keeper_break_glass:
+        description: >-
+          Fall back to the retired comment-approval gate because the keeper itself cannot
+          serve a ceremony. Loud by design; only honored when keeper_url is set.
+        required: false
+        type: boolean
+        default: false
+      break_glass_approvers:
+        description: "Comma-separated GitHub logins allowed to approve a break-glass promote by comment."
+        required: false
+        type: string
+        default: bdelanghe
     secrets:
       CLOUDFLARE_API_TOKEN:
         description: >-
@@ -85,6 +115,12 @@ permissions:
   contents: read
   packages: read
   id-token: write
+  # For the keeper ceremony's notification issue (and the break-glass approval issue).
+  # A declared block zeroes every unlisted scope, so without this line even a caller
+  # granting issues: write would have it stripped — the same intersection rule the
+  # id-token comment above records. Callers not using keeper_url lose nothing: the
+  # caller must still grant issues: write for this to be anything but none.
+  issues: write
 
 jobs:
   preview:
@@ -243,9 +279,12 @@ jobs:
             echo "- **Version:** \`${{ steps.upload.outputs.version_id }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # PROMOTE: gated behind the caller's required-reviewers `site-promote` Environment. You review the
-  # verified preview above, then approve — only then does this run, deploying the SAME reviewed,
-  # already-verified version to 100% production and confirming prod routes to it.
+  # PROMOTE: gated behind the caller's `site-promote` Environment and — when `keeper_url` is set —
+  # a Face ID ceremony bound to this run and commit (infra#480). You review the verified preview,
+  # then approve — only then does this run, deploying the SAME reviewed, already-verified version
+  # to 100% production and confirming prod routes to it. The ceremony runs BEFORE the promote
+  # credential is minted, and its notification carries the preview URL so the review-then-sign
+  # order survives the gate conversion.
   promote:
     needs: preview
     runs-on: ubuntu-latest
@@ -258,6 +297,122 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      # Human authorization BEFORE the mint (infra#480): no promote credential exists until a
+      # Face ID has signed THIS run's digest. The challenge pins run_id + head_sha; the
+      # notification issue carries the VERIFIED PREVIEW URL so the human reviews what they are
+      # about to promote, then signs. `repo` in the request is the CALLER's repo (a reusable
+      # workflow runs in the caller's context); `workflow` names this file — the lane that
+      # actually holds the gate.
+      - name: Open the Face ID ceremony
+        id: ceremony
+        if: ${{ inputs.keeper_url != '' && !inputs.keeper_break_glass }}
+        env:
+          KEEPER_URL: ${{ inputs.keeper_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIEW_URL: ${{ needs.preview.outputs.preview_url }}
+          VERSION_ID: ${{ needs.preview.outputs.version_id }}
+          DOMAIN: ${{ inputs.domain }}
+        run: |
+          set -euo pipefail
+          req="$(jq -nc --arg repo "${GITHUB_REPOSITORY#*/}" --arg run "$GITHUB_RUN_ID" --arg sha "$GITHUB_SHA" \
+            '{v:"bounded.deploy-request.v1",repo:$repo,workflow:"site-deploy.yml",run_id:$run,head_sha:$sha}')"
+          start="$(curl -sfS --max-time 20 -X POST -H 'content-type: application/json' \
+            -d "{\"requestType\":\"bounded.deploy-request.v1\",\"request\":$req}" \
+            "${KEEPER_URL%/}/authorize/start")" || {
+            echo "::error::the keeper refused to open a ceremony. If the keeper itself is down or broken, re-dispatch with keeper_break_glass: true — and say so in the run."
+            exit 1
+          }
+          ceremony="$(jq -r '.ceremonyId // empty' <<<"$start")"
+          approve_url="$(jq -r '.approveUrl // empty' <<<"$start")"
+          [ -n "$ceremony" ] && [ -n "$approve_url" ] || { echo "::error::keeper returned no ceremony"; exit 1; }
+          echo "ceremony=$ceremony" >> "$GITHUB_OUTPUT"
+          echo "request=$req" >> "$GITHUB_OUTPUT"
+          # The issue is a NOTIFICATION, not a credential: commenting on it does
+          # nothing. The approval is the Face ID at the URL.
+          issue_url="$(gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Face ID: approve site promote to ${DOMAIN#https://} (run ${GITHUB_RUN_ID})" \
+            --body "$(printf 'A site promote wants to ship the cryptographically verified preview below to %s.\n\nReview the preview, then approve with your passkey (15-minute window):\n\n- Preview: %s\n- Version: %s\n- Approve: %s\n\nThis issue is a notification only — comments here authorize nothing (infra#480 retired the comment/click gate). Run: https://github.com/%s/actions/runs/%s' "$DOMAIN" "$PREVIEW_URL" "$VERSION_ID" "$approve_url" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")")"
+          echo "issue_url=$issue_url" >> "$GITHUB_OUTPUT"
+          echo "ceremony open — approve at $approve_url"
+
+      - name: Wait for the Face ID, then redeem — fail closed
+        if: ${{ inputs.keeper_url != '' && !inputs.keeper_break_glass }}
+        env:
+          KEEPER_URL: ${{ inputs.keeper_url }}
+          CEREMONY: ${{ steps.ceremony.outputs.ceremony }}
+          REQ: ${{ steps.ceremony.outputs.request }}
+        run: |
+          set -euo pipefail
+          # Poll until the human approves, the ceremony expires (15 min), or the
+          # keeper says GONE. pending/gone being distinct answers is what makes
+          # this loop's failure mean "never approved", not "lost a race".
+          deadline="$(( $(date +%s) + 900 ))"
+          auth=""
+          while :; do
+            code="$(curl -s --max-time 20 -o /tmp/result.json -w '%{http_code}' "${KEEPER_URL%/}/result?id=${CEREMONY}")" || code=000
+            if [ "$code" = "200" ]; then
+              if jq -e '.pending' /tmp/result.json >/dev/null 2>&1; then :; else
+                auth="$(jq -r '.authorizationId // empty' /tmp/result.json)"
+                [ -n "$auth" ] && break
+              fi
+            elif [ "$code" = "410" ]; then
+              echo "::error::the ceremony ended without an authorization: $(jq -r '.error // "gone"' /tmp/result.json 2>/dev/null). Nobody Face ID'd this run."
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::no Face ID within the 15-minute window — the promote was not authorized."
+              exit 1
+            fi
+            sleep 10
+          done
+          redeem="$(curl -sS --max-time 20 -X POST -H 'content-type: application/json' \
+            -d "{\"authorizationId\":\"$auth\",\"requestType\":\"bounded.deploy-request.v1\",\"request\":$REQ}" \
+            "${KEEPER_URL%/}/redeem")"
+          person="$(jq -r '.redeemed.person // empty' <<<"$redeem")"
+          if [ -z "$person" ]; then
+            echo "::error::redemption refused: $(jq -r '.error // "unknown"' <<<"$redeem"). The grant did not match this run's request — failing closed."
+            exit 1
+          fi
+          cred="$(jq -r '.redeemed.credentialId' <<<"$redeem")"
+          be="$(jq -r '.redeemed.backupEligible' <<<"$redeem")"
+          {
+            echo "## Authorized by Face ID"
+            echo "- person: \`$person\`"
+            echo "- credential: \`$cred\`"
+            echo "- backupEligible: \`$be\` (synced passkey ⇒ aal2 — recorded, not assumed away)"
+            echo "- request digest bound to run ${GITHUB_RUN_ID} @ ${GITHUB_SHA}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "✓ authorized by $person (credential $cred)"
+
+      - name: Close the ceremony notification
+        if: ${{ steps.ceremony.outputs.issue_url != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_URL: ${{ steps.ceremony.outputs.issue_url }}
+        run: gh issue close "$ISSUE_URL" --comment "Authorized by Face ID; ceremony complete." || true
+
+      # BREAK GLASS — the retired comment gate, kept solely for a keeper that
+      # cannot serve a ceremony. Loud in the summary. Only honored when the
+      # caller opted into the ceremony in the first place.
+      - name: Await approval (BREAK GLASS — comment gate, retired for routine use)
+        if: ${{ inputs.keeper_url != '' && inputs.keeper_break_glass }}
+        uses: bounded-systems/await-approval@3eda4124e16463741037ebe8e546419eaaa4824b # main
+        with:
+          approvers: ${{ inputs.break_glass_approvers }}
+          issue-title: "BREAK GLASS: approve site promote by comment (keeper cannot serve a ceremony)"
+          issue-body: >
+            A site promote was dispatched with keeper_break_glass: true — the Face ID gate
+            was BYPASSED on the stated grounds that the keeper itself cannot serve a
+            ceremony. If the keeper is actually healthy, deny this and ask why.
+
+      - name: Record the break-glass in the summary
+        if: ${{ inputs.keeper_url != '' && inputs.keeper_break_glass }}
+        run: |
+          {
+            echo "## ⚠ BREAK GLASS promote"
+            echo "The Face ID gate was bypassed via keeper_break_glass — authorized by COMMENT, the retired mechanism. Grounds must be that the keeper itself could not serve a ceremony."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Re-establish trust at promote time: pull + cosign-verify the signed artifact again, unpack
       # (needed by the prod-routes check below).
