@@ -304,6 +304,17 @@ test("org-defaults.yml actually runs this suite", () => {
   assert.match(wf, /node --test claim-authorization\.test\.mjs/);
 });
 
+test("claim-ticket.yml carries a real keeper URL, not an empty variable", () => {
+  // #253. This was `vars.KEEPER_URL` when the leg landed, and the variable did not
+  // exist — so every supplied token failed on "KEEPER_URL is unset" and the input
+  // was decorative. The literal cannot be un-set by a settings page; this asserts
+  // it cannot quietly become empty again either.
+  const wf = readFileSync(join(ROOT, ".github/workflows/claim-ticket.yml"), "utf8");
+  const m = wf.match(/^\s*KEEPER_URL:\s*(.+)$/m);
+  assert.ok(m, "claim-ticket.yml no longer sets KEEPER_URL for the authorization step");
+  assert.match(m[1].trim(), /^"https:\/\/\S+"$/, `KEEPER_URL is ${m[1].trim()}, not an https literal`);
+});
+
 test("claim-ticket.yml passes the door's own inputs to this module, not the token's", () => {
   // The security argument lives half in this file and half in the workflow. If
   // the door ever started sourcing CLAIM_REPO from anywhere but its own input,

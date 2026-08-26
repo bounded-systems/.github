@@ -160,9 +160,26 @@ jobs:
       # record instead of left implied by a claim comment that names a dispatcher
       # as though naming were authenticating.
       #
-      # KEEPER_URL unset is fine while no token is supplied, and fatal the moment
-      # one is: falling back to the honest default there would let anyone turn a
-      # refused authorization into a green claim by unsetting a variable.
+      # THE KEEPER URL IS A LITERAL, NOT A VARIABLE (#253). It was `vars.KEEPER_URL`
+      # when #252 landed, which made the input inert until someone clicked a setting
+      # — and the click could not be delegated to the factory either: the repo-admin
+      # door is pinned at `administration: write` in doors.json and an Actions
+      # variable needs `variables: write`, so declaring it would have cost a
+      # permanent grant widening on the org's most privileged door to manage one
+      # public URL string.
+      #
+      # A literal is the cheaper AND stronger answer here. It is what both site
+      # repos already pass to site-deploy.yml, it needs no grant and no click, and
+      # it keeps the property the surrounding work exists to enforce: this value can
+      # only change through a reviewed diff, on a workflow that is SHA-pinned by its
+      # callers besides. A variable buys repointing-without-touching-consumers —
+      # genuinely why CF_BROKER_URL is one (see cloudflare/broker/CUSTOM-DOMAIN.md's
+      # migration dance) — but two of this URL's three consumers are literals
+      # already, so it would buy that for one of three.
+      #
+      # claim-authorization.mjs still refuses when it reads no keeper URL, and that
+      # guard is NOT dead code: claim-ceremony.mjs and the CLI take the value from
+      # the environment, where it can genuinely be missing.
       - name: Verify the human authorization, and say which rung it proved
         id: authorization
         env:
@@ -173,7 +190,7 @@ jobs:
           CLAIM_ISSUE: ${{ inputs.issue }}
           CLAIMANT: ${{ inputs.claimant }}
           HUMAN_AUTHORIZATION: ${{ inputs.human_authorization }}
-          KEEPER_URL: ${{ vars.KEEPER_URL }}
+          KEEPER_URL: "https://keeper.bounded.tools"
           DISPATCHER: ${{ github.actor }}
         run: node claim-authorization.mjs
 
