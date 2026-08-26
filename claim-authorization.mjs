@@ -225,6 +225,42 @@ export function relyingPartyFor(keeperUrl) {
   return new URL(keeperUrl).host;
 }
 
+/** The longest a relying-party string may be before it is truncated. */
+export const RP_TEXT_MAX = 200;
+
+/**
+ * Everything the relying party says, before it is allowed anywhere near an
+ * output. Raised by CodeQL on the first push of #642 (alert 11, network data
+ * reaching a file write) and it is a real finding, not a false positive.
+ *
+ * The keeper is ours, but "ours" is not a boundary — the door talks to whatever
+ * answers at `KEEPER_URL`, and the text it returns lands in THREE places that
+ * each interpret it:
+ *
+ *   1. `$GITHUB_OUTPUT`, where a newline starts a new key. The heredoc
+ *      delimiter is a fresh UUID, so a value cannot close it — but that is
+ *      luck standing in for a check, and a reader cannot see it from here.
+ *   2. The runner's log, where a line beginning `::` IS A WORKFLOW COMMAND. A
+ *      newline followed by `::add-mask::` or `::error::` in an error string is
+ *      executed, not printed. This one was live.
+ *   3. The claim comment, which is the permanent record — where backticks and
+ *      markdown structure would let the RP's text impersonate the door's own.
+ *
+ * So: no control characters (which covers 1 and 2 at once), no backticks, and a
+ * length cap, applied once at the boundary rather than at each of the three
+ * sinks. Truncation is marked rather than silent — a message cut short without
+ * saying so is a diagnosis that lies about being complete.
+ */
+export function sanitizeFromRp(text, max = RP_TEXT_MAX) {
+  if (typeof text !== "string") return "";
+  // eslint-disable-next-line no-control-regex
+  const flat = text
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/`/g, "'")
+    .trim();
+  return flat.length > max ? `${flat.slice(0, max)}…(truncated)` : flat;
+}
+
 /**
  * Redeem a token at the RP and classify what it proved.
  *
@@ -280,14 +316,14 @@ export async function verifyClaimAuthorization(
     return {
       ok: false,
       rung: "unauthenticated",
-      reasons: [`the relying party could not be reached to verify the token: ${err.message}`],
+      reasons: [`the relying party could not be reached to verify the token: ${sanitizeFromRp(err.message)}`],
       aal: "unknown",
       relyingParty,
     };
   }
 
   if (!res.ok || !body || typeof body.redeemed !== "object" || body.redeemed === null) {
-    const why = body && typeof body.error === "string" ? body.error : `HTTP ${res.status}`;
+    const why = body && typeof body.error === "string" ? sanitizeFromRp(body.error) : `HTTP ${res.status}`;
     return {
       ok: false,
       rung: "unauthenticated",
@@ -309,8 +345,9 @@ export async function verifyClaimAuthorization(
       ? reasons
       : [...reasons, `rung ${rung} is below the ${MIN_ACCEPTED_RUNG} this door accepts for a supplied token`],
     aal,
-    person: redeemed.person,
-    credentialId: redeemed.credentialId,
+    // Sanitized at the boundary, not at the three sinks that render them.
+    person: sanitizeFromRp(redeemed.person),
+    credentialId: sanitizeFromRp(redeemed.credentialId),
     signCountRegressed: record.signCountRegressed,
     digest,
     relyingParty,

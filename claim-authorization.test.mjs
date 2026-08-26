@@ -29,6 +29,8 @@ import {
   claimRequestFrom,
   parseAuthorizationToken,
   recordAbsent,
+  sanitizeFromRp,
+  RP_TEXT_MAX,
   renderClaimAuthorization,
   verifyAbsent,
   verifyClaimAuthorization,
@@ -310,4 +312,47 @@ test("claim-ticket.yml passes the door's own inputs to this module, not the toke
   assert.match(wf, /CLAIM_REPO:\s*\$\{\{\s*inputs\.repo\s*\}\}/);
   assert.match(wf, /CLAIM_ISSUE:\s*\$\{\{\s*inputs\.issue\s*\}\}/);
   assert.match(wf, /CLAIMANT:\s*\$\{\{\s*inputs\.claimant\s*\}\}/);
+});
+
+// ── what the relying party says is not trusted to be text ────────────────────
+
+test("control characters from the relying party never survive to an output", async () => {
+  // CodeQL alert 11 on the first push of #642, and it was a real finding. The
+  // RP's text reaches three sinks that each interpret it: $GITHUB_OUTPUT (a
+  // newline starts a new key), the runner log (a line beginning `::` IS a
+  // workflow command), and the permanent claim comment.
+  const evil = "ok\n::add-mask::hunter2\n::error::owned";
+  const verdict = await verifyClaimAuthorization(
+    { token: JSON.stringify(TOKEN_FIELDS_OK), ...DOOR },
+    { fetchImpl: keeperReturning({ error: evil }, { status: 403 }) },
+  );
+  assert.equal(verdict.ok, false);
+  const rendered = renderClaimAuthorization(verdict);
+  assert.doesNotMatch(rendered, /\n::/);
+  assert.match(rendered, /add-mask/); // flattened, not dropped — the diagnosis survives
+});
+
+test("a person or credential the RP names cannot break out of its markdown span", async () => {
+  const request = claimRequestFrom(DOOR, TOKEN_FIELDS_OK);
+  const verdict = await verifyClaimAuthorization(
+    { token: JSON.stringify(TOKEN_FIELDS_OK), ...DOOR },
+    {
+      fetchImpl: keeperReturning(
+        await goodRedemption(request, { person: "a`x`b", credentialId: "c\nd" }),
+      ),
+    },
+  );
+  assert.equal(verdict.person, "a'x'b");
+  assert.equal(verdict.credentialId, "c d");
+});
+
+test("an overlong relying-party string is truncated, and says so", () => {
+  const out = sanitizeFromRp("z".repeat(RP_TEXT_MAX + 50));
+  assert.equal(out.length, RP_TEXT_MAX + "…(truncated)".length);
+  assert.match(out, /…\(truncated\)$/);
+});
+
+test("sanitizeFromRp refuses to invent text for a non-string", () => {
+  assert.equal(sanitizeFromRp(undefined), "");
+  assert.equal(sanitizeFromRp({ toString: () => "::error::" }), "");
 });
