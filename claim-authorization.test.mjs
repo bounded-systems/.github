@@ -129,22 +129,23 @@ test("the door's policy version is a constant the caller cannot reach", () => {
 
 // ── the happy path ───────────────────────────────────────────────────────────
 
-test("a valid authorization is accepted, names the credential, and stops at human-attended", async () => {
+test("a valid authorization is accepted as human-authorized, and names the credential", async () => {
   const request = claimRequestFrom(DOOR, TOKEN_FIELDS_OK);
   const verdict = await verifyClaimAuthorization(
     { token: JSON.stringify(TOKEN_FIELDS_OK), ...DOOR },
     { fetchImpl: keeperReturning(await goodRedemption(request)) },
   );
   assert.equal(verdict.ok, true);
-  // human-attended, not human-authorized: the keeper's ceremony carries no
-  // operation-specific attention check, and the ladder caps the claim there.
-  assert.equal(verdict.rung, "human-attended");
+  // human-authorized: a fresh, user-verified assertion bound to this request's
+  // digest is that rung's definition. The ceremony's lack of an attention check
+  // does not cap a bound approval (#706) and names no missing rung in reasons.
+  assert.equal(verdict.rung, "human-authorized");
   assert.equal(verdict.person, "person:bdelanghe");
   assert.equal(verdict.credentialId, "cred_abc");
   assert.equal(verdict.relyingParty, RP);
   // A synced passkey is exportable, so aal2 — recorded, never rounded up.
   assert.equal(verdict.aal, "aal2");
-  assert.match(verdict.reasons.join(" "), /attention check/);
+  assert.deepEqual(verdict.reasons, []);
 });
 
 test("a device-bound credential reports aal3-eligible, never aal3", async () => {
@@ -282,6 +283,9 @@ test("the accepted rung is compared by position in the shared RUNGS list", () =>
   assert.ok(RUNGS.includes(MIN_ACCEPTED_RUNG));
   assert.ok(RUNG_AT_LEAST("human-authorized", MIN_ACCEPTED_RUNG));
   assert.ok(RUNG_AT_LEAST(MIN_ACCEPTED_RUNG, MIN_ACCEPTED_RUNG));
+  // human-attended sits BELOW the floor: an attention check over an unbound
+  // challenge approves no particular claim (#706).
+  assert.ok(!RUNG_AT_LEAST("human-attended", MIN_ACCEPTED_RUNG));
   assert.ok(!RUNG_AT_LEAST("human-authenticated", MIN_ACCEPTED_RUNG));
   assert.ok(!RUNG_AT_LEAST("human-associated", MIN_ACCEPTED_RUNG));
   assert.ok(!RUNG_AT_LEAST("nonsense", MIN_ACCEPTED_RUNG));

@@ -39,7 +39,7 @@
 # its own, for the reason stated further down beside the assignee projection:
 # github.actor is owner-grade identity and cannot name a guest.
 #
-# Supply `human_authorization` and the claim can rise to `human-attended`: a
+# Supply `human_authorization` and the claim can rise to `human-authorized`: a
 # passkey assertion whose CHALLENGE IS THE CLAIM DIGEST, verified by the keeper
 # — a relying party that is deliberately not this run, because an approval the
 # requester renders is self-attestation. That token is optional and it is not a
@@ -148,7 +148,7 @@ jobs:
       # — not whether the claim happens. Three outcomes, and the middle one is the
       # ordinary case:
       #
-      #   token present, verifies    → human-attended (or higher), credential named
+      #   token present, verifies    → human-authorized (or higher), credential named
       #   no token                   → human-associated, green — see below
       #   token present, unverifiable→ RED, and the run says which property failed
       #

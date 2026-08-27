@@ -62,18 +62,20 @@ export const CLAIM_POLICY_V1 = "2026-08-20.1";
 /**
  * The rung at or above which a supplied authorization is accepted.
  *
- * `human-attended` is what the keeper's ceremony produces today: a fresh,
- * user-verified assertion bound to this request's digest, with no
- * operation-specific attention check (control 6) — so `authorizationRung()`
- * caps it there and names the cap in `reasons`. Anything BELOW this means the
- * redemption succeeded but the ceremony did not prove what the door is about to
- * write down, and the door fails closed rather than recording a weaker rung it
- * was not asked for.
+ * `human-authorized` is what the keeper's ceremony produces: a fresh,
+ * user-verified assertion bound to this request's digest — which is that rung's
+ * exact definition, attention check or none (binding outranks attention,
+ * `.github-private`#706; it was misnamed `human-attended` before that). The
+ * floor IS the fresh-and-bound predicate: anything below it means the
+ * redemption succeeded but the ceremony did not prove the binding the door is
+ * about to write down — `human-attended` included, because an attention check
+ * over an unbound challenge approves no particular claim — and the door fails
+ * closed rather than recording a weaker rung it was not asked for.
  *
  * Note this threshold is about a token that WAS supplied. A claim with no token
  * at all is a different case entirely — see `recordAbsent()`.
  */
-export const MIN_ACCEPTED_RUNG = "human-attended";
+export const MIN_ACCEPTED_RUNG = "human-authorized";
 
 /** Fields a token may carry. Anything else is a refusal, not something to ignore. */
 export const TOKEN_FIELDS = Object.freeze(["authorizationId", "nonce", "issuedAt"]);
