@@ -33,6 +33,24 @@
 # operator has read exactly what would merge before flipping the input. The
 # dispatch-plus-flip IS the human call.
 #
+# THE SCHEDULED LANE (#713, superseding the paragraph above for cron runs
+# only). On 2026-08-27 the maintainer directed that the backlog drain must
+# never again need a session: the weekly cron below is a REAL run over every
+# repo — merge clean, close stale — with no dry-run first. What made the
+# hand-run sweep safe that day was never really the human reading the table;
+# it was the merge API re-checking each repo's protection at admission
+# (keycard#23 refused exactly as it should while 60 clean PRs landed). That
+# predicate holds identically on a schedule, so the standing decision is:
+# `clean` under a repo's own gate is sufficient evidence to merge, and a repo
+# that wants majors held back encodes that in its required checks, not in a
+# human's dispatch habit. Dispatch runs keep the dry-run default unchanged.
+#
+# PORTABLE BY CONSTRUCTION. The owner is github.repository_owner and the
+# target token arrives through one env var, so copying this file into any
+# account's repo retargets the whole sweep — a personal account supplies its
+# token however it likes (its own broker entry, or a fine-grained PAT in the
+# mint step's place). See .github-private#713 for the personal-account plan.
+#
 # THE IDENTITY. Cross-repo sweeps (any target that is not this repo, `*`
 # included) mint via the OIDC broker under `pr-sweep` — its own registry entry,
 # same reasoning as branch-sweep's `front-desk-sweep`: the fan-in `front-desk`
@@ -45,6 +63,13 @@
 name: pr-sweep
 
 on:
+  schedule:
+    # Weekly is the backstop cadence: the per-repo auto-merge arming lane
+    # (.github-private#516/#665) drains green Dependabot PRs event-by-event
+    # where repos are gated; this catches everything else before it can
+    # re-accumulate to the 141 that #480 measured. Monday morning UTC,
+    # off-hour minute per the org's schedule-spreading habit.
+    - cron: "13 9 * * 1"
   workflow_dispatch:
     inputs:
       repo:
@@ -73,7 +98,7 @@ permissions:
 # and double-close. Never cancel a started run — a half-acted sweep with its
 # report killed is worse than a queued duplicate.
 concurrency:
-  group: pr-sweep-${{ inputs.repo }}
+  group: pr-sweep-${{ inputs.repo || '*' }}
   cancel-in-progress: false
 
 jobs:
@@ -82,8 +107,9 @@ jobs:
     steps:
       - name: Preflight — inputs are well-formed
         env:
-          REPO: ${{ inputs.repo }}
-          STALE_DAYS: ${{ inputs.stale_days }}
+          # Scheduled runs carry no inputs: they sweep everything, for real.
+          REPO: ${{ inputs.repo || '*' }}
+          STALE_DAYS: ${{ inputs.stale_days || '30' }}
         run: |
           set -euo pipefail
           case "$REPO" in
@@ -107,10 +133,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           OWNER: ${{ github.repository_owner }}
-          TARGET: ${{ inputs.repo }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          MERGE_GREEN: ${{ inputs.merge_green }}
-          STALE_DAYS: ${{ inputs.stale_days }}
+          TARGET: ${{ inputs.repo || '*' }}
+          # Cron is a real run by standing decision (header, #713); only a
+          # dispatch carries the dry-run default.
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+          MERGE_GREEN: ${{ github.event_name == 'schedule' && 'true' || inputs.merge_green }}
+          STALE_DAYS: ${{ inputs.stale_days || '30' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
