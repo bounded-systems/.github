@@ -1,0 +1,182 @@
+# Merge the PRs that are done and close the ones that are dead, because the
+# board says nothing else will (.github-private#480: ~138 open PRs sit as Todo
+# with no mechanism that owns them).
+#
+# WHY THIS EXISTS. Open PRs accumulate the same way branches do, and the two
+# standing drains both have a hole this window covers. The Dependabot
+# auto-merge arming lane (.github-private#516/#665) is per-repo and dormant
+# until a repo's merge gate rolls out — its effective set was measured EMPTY on
+# 2026-08-21. And the one sweep that has actually happened was done by hand,
+# bot-authored PRs only. So the backlog has no door: this is it, same doctrine
+# as branch-sweep.yml — build the window in the lane that holds the credential.
+#
+# WHAT HAPPENS TO EACH OPEN PR, in order:
+#   1. MERGE (squash — the org requires linear history) iff it is not a draft
+#      and its mergeable_state is `clean`: no conflict, checks green, branch
+#      protection satisfied. The merge API re-checks protection at admission,
+#      so a merge the gate refuses is reported and kept, never forced.
+#   2. CLOSE, with a comment naming this run, iff nothing has touched it in
+#      `stale_days` (default 30). Recency is a claim of intent — a fresh PR
+#      survives even when red — and re-opening is honored the same way: the
+#      re-open bumps updated_at, which spares it for another window.
+#   3. KEEP everything else (young but not mergeable — in-flight work), with
+#      the reason printed.
+# Drafts are never merged — draft IS the author saying "not ready" — but stale
+# drafts close like anything else. A closed PR's branch then becomes
+# branch-sweep's candidate once the tip passes ITS staleness window; the two
+# sweeps compose rather than overlap.
+#
+# WHY MERGING HERE DOES NOT REOPEN #516's EXCLUSION. The arming lane is
+# unattended, so it refuses what a green check cannot evidence (major Actions
+# bumps stay a human's call). This window is human-dispatched and DRY RUN IS
+# THE DEFAULT: the dry run prints the same table the real run acts on, so the
+# operator has read exactly what would merge before flipping the input. The
+# dispatch-plus-flip IS the human call.
+#
+# THE IDENTITY. Cross-repo sweeps (any target that is not this repo, `*`
+# included) mint via the OIDC broker under `pr-sweep` — its own registry entry,
+# same reasoning as branch-sweep's `front-desk-sweep`: the fan-in `front-desk`
+# app must not grow `contents`/`pull_requests` because one window needs them.
+# Until the broker registry (infra) carries the entry pinned to this workflow
+# at refs/heads/main, cross-repo runs fail at mint naming the gap — the
+# intended arrival state. Same-repo sweeps run today on the workflow's own
+# token, which is why the permissions block below exceeds the org's
+# contents-read default.
+name: pr-sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Repository name (owner fixed to this org), or "*" for every non-archived repo'
+        type: string
+        required: true
+      dry_run:
+        description: "Preview only (print the merge/close/keep table, touch nothing)"
+        type: boolean
+        default: true
+      merge_green:
+        description: "Squash-merge non-draft PRs whose mergeable_state is clean"
+        type: boolean
+        default: true
+      stale_days:
+        description: "Close PRs not updated in this many days; 0 closes nothing"
+        type: string
+        default: "30"
+
+permissions:
+  contents: write # same-repo merge on github.token
+  pull-requests: write # same-repo close + comment on github.token
+  id-token: write # OIDC → cf-token-broker for everything else
+
+# One sweep per target at a time: two racing real runs would double-comment
+# and double-close. Never cancel a started run — a half-acted sweep with its
+# report killed is worse than a queued duplicate.
+concurrency:
+  group: pr-sweep-${{ inputs.repo }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preflight — inputs are well-formed
+        env:
+          REPO: ${{ inputs.repo }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+        run: |
+          set -euo pipefail
+          case "$REPO" in
+            ("*") ;;
+            (*[!A-Za-z0-9._-]*|"") echo "::error::repo '$REPO' is not a plain repository name or '*'"; exit 1 ;;
+          esac
+          case "$STALE_DAYS" in
+            (*[!0-9]*|"") echo "::error::stale_days '$STALE_DAYS' is not a number"; exit 1 ;;
+          esac
+      - name: Checkout (for the broker action)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Mint cross-repo token via the OIDC broker
+        id: app-token
+        if: ${{ inputs.repo != github.event.repository.name }}
+        uses: ./.github/actions/broker-gh-token
+        with:
+          app: pr-sweep
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          require: contents, pull_requests
+      - name: Sweep
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+          OWNER: ${{ github.repository_owner }}
+          TARGET: ${{ inputs.repo }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MERGE_GREEN: ${{ inputs.merge_green }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          cutoff="$(date -u -d "$STALE_DAYS days ago" +%s)"
+
+          if [ "$TARGET" = "*" ]; then
+            # Archived and disabled repos refuse writes; skipping them here is
+            # reporting hygiene, not a safety mechanism.
+            repos="$(gh api --paginate "orgs/$OWNER/repos?per_page=100" \
+              --jq '.[] | select((.archived or .disabled) | not) | .name' | sort)"
+          else
+            repos="$TARGET"
+          fi
+
+          merged=0 closed=0 kept=0
+          for name in $repos; do
+            R="$OWNER/$name"
+            for n in $(gh api --paginate "repos/$R/pulls?state=open&per_page=100" --jq '.[].number' | sort -n); do
+              pr="$(gh api "repos/$R/pulls/$n")"
+              state="$(jq -r .mergeable_state <<<"$pr")"
+              if [ "$state" = "unknown" ]; then
+                # mergeability is computed lazily; the first GET after a quiet
+                # spell often answers before it is ready. One re-read, then take
+                # the answer as-is — unknown falls through to keep/close below.
+                sleep 5
+                pr="$(gh api "repos/$R/pulls/$n")"
+                state="$(jq -r .mergeable_state <<<"$pr")"
+              fi
+              draft="$(jq -r .draft <<<"$pr")"
+              updated="$(jq -r .updated_at <<<"$pr")"
+              title="$(jq -r '.title | gsub("[\\r\\n\\t]"; " ")' <<<"$pr")"
+              updated_epoch="$(date -u -d "$updated" +%s)"
+
+              if [ "$MERGE_GREEN" = "true" ] && [ "$draft" != "true" ] && [ "$state" = "clean" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "WOULD MERGE  $R#$n  $title"
+                  merged=$((merged+1))
+                elif gh api -X PUT "repos/$R/pulls/$n/merge" -f merge_method=squash >/dev/null; then
+                  echo "merged       $R#$n  $title"
+                  merged=$((merged+1))
+                else
+                  # `clean` went stale between the read and the PUT, or a
+                  # protection rule the state does not surface refused it. The
+                  # gate's answer stands.
+                  echo "keep         $R#$n (merge refused at admission)  $title"
+                  kept=$((kept+1))
+                fi
+              elif [ "$STALE_DAYS" -gt 0 ] && [ "$updated_epoch" -lt "$cutoff" ]; then
+                if [ "$DRY_RUN" = "true" ]; then
+                  echo "WOULD CLOSE  $R#$n (updated ${updated%T*})  $title"
+                else
+                  gh api "repos/$R/issues/$n/comments" -f body="Closed by [pr-sweep]($RUN_URL): not updated since ${updated%T*}, past the ${STALE_DAYS}-day staleness window and not in a mergeable state. Re-open if this work is still live — a re-opened PR's fresh update spares it from the next sweep." >/dev/null
+                  gh api -X PATCH "repos/$R/pulls/$n" -f state=closed >/dev/null
+                  echo "closed       $R#$n (updated ${updated%T*})  $title"
+                fi
+                closed=$((closed+1))
+              else
+                if [ "$draft" = "true" ]; then reason="draft, updated ${updated%T*}"
+                else reason="$state, updated ${updated%T*}"; fi
+                echo "keep         $R#$n ($reason)  $title"
+                kept=$((kept+1))
+              fi
+            done
+          done
+
+          mv="would merge"; cv="would close"
+          [ "$DRY_RUN" = "true" ] || { mv="merged"; cv="closed"; }
+          echo "pr-sweep: $mv $merged, $cv $closed, kept $kept open PR(s) across ${TARGET/#\*/all repos}."
