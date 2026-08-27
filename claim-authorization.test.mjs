@@ -267,6 +267,27 @@ test("the claim comment carries the rung and the reasons, never a bare tick", ()
   assert.doesNotMatch(md, /^✅/m);
 });
 
+test("a verified authorization's comment carries the claim-request digest, in both renderings", async () => {
+  // infra#501: the keeper's approval page shows the digest, but only the keeper
+  // says so. The claim comment is authored by the workflow, so echoing the
+  // recomputed digest there gives the approver a second, independently-authored
+  // surface to compare — hex for the ladder's spelling, base64url for the
+  // keeper's.
+  const request = claimRequestFrom(DOOR, TOKEN_FIELDS_OK);
+  const verdict = await verifyClaimAuthorization(
+    { token: JSON.stringify(TOKEN_FIELDS_OK), ...DOOR },
+    { fetchImpl: keeperReturning(await goodRedemption(request)) },
+  );
+  const digest = await claimDigest(request);
+  const md = renderClaimAuthorization(verdict);
+  assert.match(md, new RegExp(`Claim-request digest.*\`${digest}\``));
+  assert.match(md, new RegExp(`\`${hexToB64url(digest)}\``));
+});
+
+test("a claim with no token renders no digest line — there is no request to digest", () => {
+  assert.doesNotMatch(renderClaimAuthorization(verifyAbsent("bdelanghe")), /digest/i);
+});
+
 test("a regressed signature counter is surfaced, not judged away", async () => {
   const request = claimRequestFrom(DOOR, TOKEN_FIELDS_OK);
   const verdict = await verifyClaimAuthorization(
