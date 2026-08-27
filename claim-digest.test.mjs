@@ -158,20 +158,27 @@ test("no record at all is unauthenticated", () => {
   assert.equal(authorizationRung("yes", expected).rung, "unauthenticated");
 });
 
-test("an UNBOUND assertion is human-authenticated, never human-authorized", () => {
+test("an UNBOUND assertion never reaches human-authorized", () => {
   // The single most important negative in this file. A passkey ceremony over a
   // server-random challenge is a real ceremony and proves a real thing — just
-  // not the thing the claim record would be claiming.
-  const got = authorizationRung({ ...authorized, challenge: "b".repeat(64) }, expected);
-  assert.equal(got.rung, "human-authenticated");
-  assert.match(got.reasons.join(" "), /presence, not authorization of this claim/);
+  // not the thing the claim record would be claiming. With an operation-specific
+  // attention check it rises to human-attended, that rung's exact definition;
+  // without one it is presence, which is human-authenticated.
+  const unbound = { ...authorized, challenge: "b".repeat(64) };
+  const attended = authorizationRung(unbound, expected);
+  assert.equal(attended.rung, "human-attended");
+  assert.match(attended.reasons.join(" "), /presence, not authorization of this claim/);
+  const bare = authorizationRung({ ...unbound, attentionCheckPassed: undefined }, expected);
+  assert.equal(bare.rung, "human-authenticated");
+  assert.match(bare.reasons.join(" "), /control 6/);
 });
 
 test("a missing or malformed expected digest cannot be satisfied", () => {
-  // A verifier that forgot to recompute the digest must not accidentally pass.
+  // A verifier that forgot to recompute the digest must not accidentally pass:
+  // human-attended (this record carries an attention check) is its ceiling.
   for (const bad of [{}, { digest: undefined }, { digest: "short" }, { digest: DIGEST.slice(0, 63) }]) {
     const got = authorizationRung(authorized, { ...bad, relyingParty: RP });
-    assert.equal(got.rung, "human-authenticated", JSON.stringify(bad));
+    assert.equal(got.rung, "human-attended", JSON.stringify(bad));
   }
 });
 
@@ -194,10 +201,33 @@ test("an unverified assertion does not lift the record off the bottom", () => {
   assert.equal(got.rung, "unauthenticated");
 });
 
-test("no attention check caps at human-attended", () => {
+test("a bound approval without an attention check is still human-authorized", () => {
+  // Binding outranks attention (#706): the doc's definition of this rung is
+  // "explicitly approved the exact bound operation", which this record is. The
+  // absent check stays visible in the record itself, not in the rung name.
   const got = authorizationRung({ ...authorized, attentionCheckPassed: undefined }, expected);
-  assert.equal(got.rung, "human-attended");
-  assert.match(got.reasons.join(" "), /control 6/);
+  assert.equal(got.rung, "human-authorized");
+  assert.deepEqual(got.reasons, []);
+});
+
+test("a failed attention check never yields the rung whose definition says it passed", () => {
+  // The negative #706 asked for by name: human-attended MEANS the person
+  // completed an operation-specific attention check, so no record with
+  // attentionCheckPassed !== true may ever be classified as it — whatever else
+  // the record proves or fails to prove.
+  const variants = [
+    authorized,                                             // bound and fresh
+    { ...authorized, challenge: "b".repeat(64) },           // unbound
+    { ...authorized, uvPerformed: false },                  // stale
+    { ...authorized, assertionVerified: false },            // unverified
+    { ...authorized, relyingParty: "the-session-itself" },  // self-attested
+  ];
+  for (const record of variants) {
+    for (const failed of [false, undefined, "true"]) {
+      const got = authorizationRung({ ...record, attentionCheckPassed: failed }, expected);
+      assert.notEqual(got.rung, "human-attended", JSON.stringify({ ...record, attentionCheckPassed: failed }));
+    }
+  }
 });
 
 test("two distinct approvers reach dual-human-authorized; one repeated does not", () => {

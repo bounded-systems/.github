@@ -211,14 +211,22 @@ export async function claimDigest(req) {
  *
  * The discipline the doc attaches to this list is the whole reason it is a list
  * and not a boolean: PICK THE WEAKEST TRUE CLAIM.
+ *
+ * The two middle rungs are a LINEARIZATION OF TWO AXES — attention (control 6)
+ * and transaction binding (control 4) — with binding ranked above attention,
+ * because a digest binds the approval to the exact operation cryptographically
+ * while an attention check ties it only behaviourally. So `human-authorized`
+ * does not require the rung below it, and `human-attended` must never be
+ * returned for a record whose attention check did not pass (#706). The doc's
+ * §"The claim ladder" states the same rule; change both together.
  */
 export const RUNGS = Object.freeze([
   "unauthenticated",        // nothing at all — no record
   "human-associated",       // an account is somewhere in the chain (today: github.actor)
   "human-reviewed",         // evidence was displayed; execution did not depend on it
   "human-authenticated",    // a credential bound to a person was freshly verified
-  "human-attended",         // + an operation-specific attention check was completed
-  "human-authorized",       // + the assertion is bound to THIS request's digest
+  "human-attended",         // an operation-specific attention check was completed (binding not proven)
+  "human-authorized",       // the assertion is bound to THIS request's digest — outranks, and does not require, the attention rung (#706)
   "dual-human-authorized",  // + a second independent person approved the same digest
 ]);
 
@@ -294,16 +302,26 @@ export function authorizationRung(record, expected = {}) {
     );
   }
 
-  if (!fresh || !bound) {
+  // A stale ceremony proves nothing was freshly decided, so nothing below may
+  // lift it — an attention check completed inside a cached approval is cached
+  // attention.
+  if (!fresh) {
     return { rung: "human-authenticated", reasons, aal };
   }
 
-  // Control 6. Absence is not a failure — it caps the rung, which is what the
-  // ladder is for. An attention check reduces blind approval; it never proves
-  // comprehension, and `attentionCheckPassed` must never be read as if it did.
-  if (record.attentionCheckPassed !== true) {
+  // Control 6 decides how far a fresh-but-UNBOUND ceremony rises. An
+  // operation-specific check ties the person's attention to the operation even
+  // without a digest — that is `human-attended`, and it is the ceiling: an
+  // attention check reduces blind approval, it never proves comprehension, and
+  // `attentionCheckPassed` must never be read as if it did. Once the assertion
+  // IS bound, the check no longer gates the rung (RUNGS: binding outranks
+  // attention, #706); its absence stays visible in the record, not the name.
+  if (!bound) {
+    if (record.attentionCheckPassed === true) {
+      return { rung: "human-attended", reasons, aal };
+    }
     reasons.push("no operation-specific attention check was passed (control 6)");
-    return { rung: "human-attended", reasons, aal };
+    return { rung: "human-authenticated", reasons, aal };
   }
 
   // Control 10. Two approvers, both over the SAME digest, and genuinely two.
