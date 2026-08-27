@@ -31,6 +31,14 @@ name: site-deploy
 #
 # The heavy cryptographic check runs once, deterministically, in preview; promote only proves prod
 # now serves the already-verified bytes. The caller keeps its own (site-specific) build job.
+#
+# deferred_sign (site#243) reorders the attestation to stage → approve → sign → release: the
+# caller pushes the artifact UNSIGNED (digest-pinned), preview pulls by the run's own digest
+# instead of cosign-verifying, and promote keyless-signs the digest only AFTER the human gate —
+# so a signature can only exist for an approved artifact, and "unsigned" and "unreleased" are
+# the same fact. The release leg then verifies that FRESH signature (whose Fulcio identity is
+# THIS workflow's job_workflow_ref — the gate-holding lane) before anything routes. Off by
+# default: sign-at-build callers are byte-for-byte unchanged.
 on:
   workflow_call:
     inputs:
@@ -46,6 +54,18 @@ on:
         description: "cosign --certificate-identity-regexp for this repo, e.g. ^https://github.com/OWNER/REPO/."
         required: true
         type: string
+      deferred_sign:
+        description: >-
+          Reorder to stage → approve → sign → release (site#243). The caller must push the
+          artifact UNSIGNED and pass a digest-pinned `oci` ref: preview then rests on the
+          run's own digest (no cosign there — preview is not prod), and promote mints the
+          artifact's first and only signature after the human gate, so a rejected build
+          never acquires one. `identity_regexp` must then match the post-approval signer:
+          THIS workflow's job_workflow_ref, not the caller's build lane. The caller must
+          also grant `packages: write` (the signature is pushed to the registry).
+        required: false
+        type: boolean
+        default: false
       probe_config:
         description: "Path to the RFC 9110 http-probe config in the caller repo."
         required: false
@@ -113,7 +133,10 @@ on:
 # the credential step's clear failure, exactly as before.
 permissions:
   contents: read
-  packages: read
+  # write, not read: deferred_sign's post-approval `cosign sign` pushes the signature to the
+  # registry. Same intersection rule as below — a caller that grants only packages: read (all
+  # sign-at-build callers) intersects down to read and nothing changes for it.
+  packages: write
   id-token: write
   # For the keeper ceremony's notification issue (and the break-glass approval issue).
   # A declared block zeroes every unlisted scope, so without this line even a caller
@@ -220,13 +243,26 @@ jobs:
         env:
           OCI: ${{ inputs.oci }}
           IDENTITY_REGEXP: ${{ inputs.identity_regexp }}
+          DEFERRED: ${{ inputs.deferred_sign }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nix develop .#deploy --command bash -euo pipefail -c '
-            printf "%s" "$GITHUB_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-            cosign verify "$OCI" \
-              --certificate-identity-regexp "$IDENTITY_REGEXP" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+            # deferred_sign: no artifact signature exists yet BY DESIGN — it is minted only
+            # after the promote gate (site#243). Preview integrity rests on pulling by the
+            # digest this run itself produced, so a tag-only ref is refused, not trusted. The
+            # blob signatures inside the artifact (manifest, in-toto) are build provenance and
+            # still verify at the preview URL below.
+            if [ "$DEFERRED" = "true" ]; then
+              case "$OCI" in
+                *@sha256:*) ;;
+                *) echo "::error::deferred_sign requires a digest-pinned oci ref, got $OCI"; exit 1 ;;
+              esac
+            else
+              printf "%s" "$GITHUB_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+              cosign verify "$OCI" \
+                --certificate-identity-regexp "$IDENTITY_REGEXP" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
+            fi
             printf "%s" "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             rm -rf oci-out dist && mkdir -p oci-out dist
             oras pull "$OCI" -o oci-out
@@ -337,6 +373,7 @@ jobs:
           echo "ceremony open — approve at $approve_url"
 
       - name: Wait for the Face ID, then redeem — fail closed
+        id: redeem
         if: ${{ inputs.keeper_url != '' && !inputs.keeper_break_glass }}
         env:
           KEEPER_URL: ${{ inputs.keeper_url }}
@@ -376,6 +413,10 @@ jobs:
           fi
           cred="$(jq -r '.redeemed.credentialId' <<<"$redeem")"
           be="$(jq -r '.redeemed.backupEligible' <<<"$redeem")"
+          # The post-approval sign step annotates the signature with the redemption record —
+          # the keeper fields (person, credentialId) are exactly what "Authorized" names.
+          echo "person=$person" >> "$GITHUB_OUTPUT"
+          echo "credential=$cred" >> "$GITHUB_OUTPUT"
           {
             echo "## Authorized by Face ID"
             echo "- person: \`$person\`"
@@ -413,6 +454,30 @@ jobs:
             echo "## ⚠ BREAK GLASS promote"
             echo "The Face ID gate was bypassed via keeper_break_glass — authorized by COMMENT, the retired mechanism. Grounds must be that the keeper itself could not serve a ceremony."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # SIGN AFTER APPROVAL (site#243): in deferred_sign mode this mints the artifact's first
+      # and only signature, after whichever human gate above passed — so a signature can only
+      # exist for an approved artifact, and an unapproved build simply never acquires one.
+      # Fulcio binds it to THIS workflow's job_workflow_ref (the gate-holding lane), which is
+      # what the caller's identity_regexp must match in this mode; the keeper redemption rides
+      # as annotations (empty under break-glass — the record is the issue there).
+      - name: Sign the approved artifact (keyless Sigstore, post-approval)
+        if: ${{ inputs.deferred_sign }}
+        env:
+          OCI: ${{ inputs.oci }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVED_BY: ${{ steps.redeem.outputs.person }}
+          APPROVED_CRED: ${{ steps.redeem.outputs.credential }}
+        run: |
+          nix develop .#deploy --command bash -euo pipefail -c '
+            printf "%s" "$GITHUB_TOKEN" | cosign login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            cosign sign --yes \
+              -a approved-run-id="$GITHUB_RUN_ID" \
+              -a approved-head-sha="$GITHUB_SHA" \
+              ${APPROVED_BY:+-a approved-by="$APPROVED_BY"} \
+              ${APPROVED_CRED:+-a approved-credential="$APPROVED_CRED"} \
+              "$OCI"
+          '
 
       # Re-establish trust at promote time: pull + cosign-verify the signed artifact again, unpack
       # (needed by the prod-routes check below).
