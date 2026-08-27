@@ -376,11 +376,23 @@ export function RUNG_AT_LEAST(rung, floor) {
  * saying which one ran (`claim-boundary.md` P4). It is also what keeps the
  * honest default honest: a claim with no token prints `human-associated` and
  * the sentence explaining that naming a dispatcher is association.
+ *
+ * When a token was verified, the block also carries the claim-request digest —
+ * recomputed HERE from the door's own inputs, never taken from the token or
+ * the keeper — in both renderings the keeper uses, so the approver can compare
+ * this issue-authored record against the keeper's approval page: two surfaces,
+ * two authors, one digest (infra#501). Absent a token there is no request to
+ * digest, and the line is absent too.
  */
 export function renderClaimAuthorization(verdict) {
   const lines = [`**Authorization:** \`${verdict.rung}\` · assurance \`${verdict.aal}\``];
   if (verdict.person) {
     lines.push(`Authorized by \`${verdict.person}\` with credential \`${verdict.credentialId}\` (relying party \`${verdict.relyingParty}\`).`);
+  }
+  if (verdict.digest) {
+    lines.push(
+      `Claim-request digest (the passkey's challenge, recomputed by this door): \`${verdict.digest}\` · base64url \`${Buffer.from(verdict.digest, "hex").toString("base64url")}\``,
+    );
   }
   if (verdict.signCountRegressed) {
     lines.push("⚠ The authenticator's signature counter REGRESSED — a possible cloned credential. Recorded, not judged.");

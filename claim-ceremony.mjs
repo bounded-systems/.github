@@ -29,9 +29,50 @@
 import { CLAIM_REQUEST_V1 } from "./claim-digest.mjs";
 import { CLAIM_POLICY_V1 } from "./claim-authorization.mjs";
 
-/** The keeper's ceremony window; polling past it can only report a failure. */
+/**
+ * FALLBACK CAP, not the ceremony's own window. The keeper sets the real window
+ * per request type (infra#487) and names it in the `authorize/start` response
+ * (`expiresAt`/`ttlSeconds`); when it does, polling stops there. This value
+ * bounds polling only against a keeper that names no expiry — and even then it
+ * is how long WE wait, never a promise about how long the ceremony lives:
+ * #256 is three ceremonies dead at the keeper's 2 minutes while this file
+ * printed 15.
+ */
 export const CEREMONY_WINDOW_MS = 15 * 60 * 1000;
+/** Slack past the keeper's stated expiry, so a poll at the boundary still collects. */
+export const EXPIRY_GRACE_MS = 10 * 1000;
 export const POLL_INTERVAL_MS = 5000;
+
+/**
+ * The window the keeper's start response actually names, in ms — or null when
+ * it names none (an older keeper). `ttlSeconds` outranks `expiresAt` because a
+ * duration cannot be skewed by either side's clock. Defensive on both fields:
+ * a malformed or already-elapsed value must read as "absent", never become a
+ * NaN deadline. Capped at CEREMONY_WINDOW_MS — past that, polling can only
+ * report a failure slowly.
+ */
+export function ceremonyWindowMs(start, nowMs) {
+  const ttl = Number(start?.ttlSeconds);
+  if (Number.isFinite(ttl) && ttl > 0) return Math.min(ttl * 1000, CEREMONY_WINDOW_MS);
+  const at = typeof start?.expiresAt === "string" ? Date.parse(start.expiresAt) : NaN;
+  if (Number.isFinite(at) && at > nowMs) return Math.min(at - nowMs, CEREMONY_WINDOW_MS);
+  return null;
+}
+
+/**
+ * The sentence printed beside the approval URL. With a keeper-named window it
+ * states that window; without one it must not invent a number — the keeper
+ * sets the TTL per request type, and a claim's may be as short as 2 minutes
+ * (#256).
+ */
+export function approvalPrompt(windowMs) {
+  if (windowMs == null) {
+    return "Approve with your passkey — the keeper sets the window per request type, and it may be as short as 2 minutes:";
+  }
+  const minutes = windowMs / 60_000;
+  const n = Number.isInteger(minutes) ? minutes : Math.round(minutes * 10) / 10;
+  return `Approve with your passkey (${n} minute${n === 1 ? "" : "s"}):`;
+}
 
 /** 256 bits, base64url, unpadded — the 43 characters `claim-digest.mjs` requires. */
 export function freshNonce() {
@@ -69,9 +110,11 @@ export function encodeToken({ authorizationId, nonce, issuedAt }) {
  * wait for; a transport error means we never found out. Collapsing them into one
  * "failed" is what turns a timeout into a shrug.
  *
- * @param onOpen called once with the approval URL, so a caller can print it,
- *   post it, or read it aloud. Injected rather than hardcoded to `console.log`
- *   because in CI this line is the entire user interface.
+ * @param onOpen called once with the approval URL, the keeper's display object,
+ *   and the window in ms the keeper's response named (null when it named none),
+ *   so a caller can print it, post it, or read it aloud. Injected rather than
+ *   hardcoded to `console.log` because in CI this line is the entire user
+ *   interface.
  */
 export async function runCeremony(
   { repo, issue, claimant, keeperUrl },
@@ -95,9 +138,13 @@ export async function runCeremony(
   // keeps a keeper that stops sending it from making the ceremony unusable,
   // rather than silently unapprovable.
   const approveUrl = start.approveUrl ?? `${base}/a/${start.ceremonyId}`;
-  onOpen(approveUrl, start.display);
+  const windowMs = ceremonyWindowMs(start, now());
+  onOpen(approveUrl, start.display, windowMs);
 
-  const deadline = now() + CEREMONY_WINDOW_MS;
+  // The keeper's own expiry (plus grace for a boundary poll) when it named
+  // one; the fallback cap only when it did not. Polling past the keeper's
+  // window can only report a failure — see CEREMONY_WINDOW_MS.
+  const deadline = now() + (windowMs == null ? CEREMONY_WINDOW_MS : windowMs + EXPIRY_GRACE_MS);
   for (;;) {
     const res = await fetchImpl(`${base}/result?id=${encodeURIComponent(start.ceremonyId)}`);
     if (res.status === 410) {
@@ -128,8 +175,8 @@ async function main() {
   const { token } = await runCeremony(
     { repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, keeperUrl: KEEPER_URL },
     {
-      onOpen: (url, display) => {
-        console.error(`Approve with your passkey (15 minutes): ${url}`);
+      onOpen: (url, display, windowMs) => {
+        console.error(`${approvalPrompt(windowMs)} ${url}`);
         console.error(`The keeper will show you: ${JSON.stringify(display)}`);
       },
     },

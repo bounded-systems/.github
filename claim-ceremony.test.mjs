@@ -21,7 +21,10 @@ import { validateClaimRequest, claimDigest } from "./claim-digest.mjs";
 import { parseAuthorizationToken, claimRequestFrom, CLAIM_POLICY_V1 } from "./claim-authorization.mjs";
 import {
   CEREMONY_WINDOW_MS,
+  EXPIRY_GRACE_MS,
+  approvalPrompt,
   buildRequest,
+  ceremonyWindowMs,
   encodeToken,
   freshNonce,
   runCeremony,
@@ -145,6 +148,72 @@ test("GONE and TIMEOUT are distinct failures, because they mean different things
       }),
     /no passkey approval within the ceremony window/,
   );
+});
+
+test("the printed window derives from the keeper's response, never from this file", async () => {
+  // #256: the script promised 15 minutes while the keeper expired claims at 2.
+  // `ttlSeconds` outranks `expiresAt` (a duration cannot be clock-skewed), and
+  // both spellings must work — a sibling lane lands the field, so it is
+  // consumed defensively.
+  assert.equal(ceremonyWindowMs({ ttlSeconds: 120 }, 0), 120_000);
+  assert.equal(ceremonyWindowMs({ expiresAt: new Date(300_000).toISOString() }, 0), 300_000);
+  assert.equal(ceremonyWindowMs({ ttlSeconds: 120, expiresAt: new Date(9_000_000).toISOString() }, 0), 120_000);
+  // a keeper naming a window past the fallback cap is capped, not believed
+  assert.equal(ceremonyWindowMs({ ttlSeconds: 86_400 }, 0), CEREMONY_WINDOW_MS);
+  // malformed or absent reads as "no window named", never as a NaN deadline
+  assert.equal(ceremonyWindowMs({}, 0), null);
+  assert.equal(ceremonyWindowMs({ ttlSeconds: "soon", expiresAt: "tomorrowish" }, 0), null);
+  assert.equal(approvalPrompt(120_000), "Approve with your passkey (2 minutes):");
+
+  // and runCeremony hands that window to the caller who prints it
+  const { fetchImpl } = scriptedKeeper([
+    jsonRes({ ceremonyId: "cer_5", ttlSeconds: 120 }),
+    jsonRes({ authorizationId: "auth_5" }),
+  ]);
+  let window = null;
+  await runCeremony(DOOR, {
+    fetchImpl,
+    sleep: async () => {},
+    onOpen: (_url, _display, windowMs) => (window = windowMs),
+  });
+  assert.equal(window, 120_000);
+});
+
+test("polling stops at the keeper's stated expiry, not the fallback cap", async () => {
+  // ttl 120s plus the grace puts the deadline at 130s. Polls land at 0s, 60s,
+  // 120s and 180s — exactly four; the script holds no fifth response, so a loop
+  // that ran on to the 15-minute cap would die on the script, not the window.
+  let clock = 0;
+  const steps = [jsonRes({ ceremonyId: "cer_6", ttlSeconds: 120 })];
+  for (let i = 0; i < 4; i++) steps.push(jsonRes({ pending: true }));
+  const { fetchImpl, calls } = scriptedKeeper(steps);
+  await assert.rejects(
+    () =>
+      runCeremony(DOOR, {
+        fetchImpl,
+        sleep: async () => {
+          clock += 60_000;
+        },
+        now: () => clock,
+      }),
+    /no passkey approval within the ceremony window/,
+  );
+  assert.equal(calls.length, 5); // the start call + four polls, none past the expiry
+  assert.ok(EXPIRY_GRACE_MS < 60_000); // the poll arithmetic above depends on it
+});
+
+test("with no expiry from the keeper, the wording never claims 15 minutes as the ceremony's own window", () => {
+  // CEREMONY_WINDOW_MS is how long WE poll an older keeper, not how long the
+  // ceremony lives — the keeper sets that per request type, and a claim's has
+  // been 2 minutes (#256).
+  const fallback = approvalPrompt(null);
+  assert.match(fallback, /Approve with your passkey/);
+  assert.match(fallback, /as short as 2 minutes/);
+  assert.doesNotMatch(fallback, /15 minutes/);
+  // and the CLI prints through approvalPrompt — the hardcoded promise is gone
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "claim-ceremony.mjs"), "utf8");
+  assert.match(src, /\$\{approvalPrompt\(windowMs\)\}/);
+  assert.doesNotMatch(src, /passkey \(15 minutes\)/);
 });
 
 test("org-defaults.yml actually runs this suite", () => {

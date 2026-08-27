@@ -258,6 +258,10 @@ jobs:
           # it is not higher. Both halves, always: a rung with no reasons is a
           # verdict nobody can check, and .github-private/docs/claim-boundary.md
           # P4 is specifically about mechanisms that are named but do not resolve.
+          # When a token verified, it also carries the claim-request digest the
+          # passkey signed (infra#501) — this comment is workflow-authored, so
+          # the approver can compare it against the keeper's approval page
+          # without trusting the keeper's own rendering of itself.
           body="$(printf '🎫 **Claimed** by %s — dispatched by `%s` — [run](%s)\n\n%s\n\n<!-- claim-ticket -->\nRelease by removing the `claimed` label (and unassigning) if work stops without a merged PR.' \
             "$CLAIMANT" "$ACTOR" "$RUN_URL" "$AUTHORIZATION")"
           gh api -X POST "$api/comments" -f body="$body" >/dev/null
