@@ -55,12 +55,21 @@ you change the flags, change both texts together.
 
 Doors, best reachable first (#529):
 
+Both mechanized doors REQUIRE a passkey since #264. Get the token first:
+`CLAIM_REPO=… CLAIM_ISSUE=… CLAIMANT=… KEEPER_URL=https://keeper.bounded.tools
+node claim-ceremony.mjs`, approve on your device, pass what it prints. **No
+token is a red run and there is no break-glass.** The window can be as short as
+two minutes, so fetch the token immediately before dispatching. Releasing a
+claim needs no token.
+
 1. `claim-ticket.yml` in this repo (`workflow_dispatch`: `repo`, `issue`,
-   `claimant`) — the real door, lease-backed. Reachable only if `.github` was
-   attached at session creation; `add_repo` refuses dot-prefixed names.
-2. `claim-relay.yml` in `.github-private` (`issue`, `claimant`) — for
-   `.github-private` issues when door 1 is unreachable. Bot-authored and
-   run-backed, but does **not** authenticate the claimant (#530).
+   `claimant`, `human_authorization`) — the real door, lease-backed. Reachable
+   only if `.github` was attached at session creation; `add_repo` refuses
+   dot-prefixed names.
+2. `claim-relay.yml` in `.github-private` (`issue`, `claimant`,
+   `human_authorization`) — for `.github-private` issues when door 1 is
+   unreachable. Attests that a KEYHOLDER approved this exact
+   (repo, issue, claimant); still not that the session IS the claimant (#530).
 3. Hand-claim (assign + comment) — last resort, and it provides **no exclusion**
    (keycard#7, `signerSelfAsserted`). Say plainly the window was down.
 
@@ -97,11 +106,13 @@ and what each fallback exists for) · `.github-private` → `claude/context.md`,
    hash to the resolved digest, and refuses otherwise. `bootstrap in effect`
    → continue. `REFUSED` or a permission denial → stop and report; do not
    work around it.
-2. **Claim before working**: dispatch `claim-ticket.yml` in
-   `bounded-systems/.github` (workflow_dispatch: `repo`, `issue`, `claimant`),
-   then confirm the claim comment ON THE ISSUE names your claimant. Any
-   assignee or `claimed` label → someone else's. Window unreachable → claim by
-   hand (assign + comment) and say the window was down. No issue → open one.
+2. **Claim before working**: get a passkey token (`node claim-ceremony.mjs`,
+   see §2 — required since #264, no break-glass), then dispatch
+   `claim-ticket.yml` in `bounded-systems/.github` (workflow_dispatch: `repo`,
+   `issue`, `claimant`, `human_authorization`), then confirm the claim comment
+   ON THE ISSUE names your claimant AND reads `human-authorized`. Any assignee
+   or `claimed` label → someone else's. Window unreachable → claim by hand
+   (assign + comment) and say the window was down. No issue → open one.
 3. **Degraded mode**: no "bounded-systems — Claude context" block in your
    session context means the org context did not load. You may claim and work
    THIS repo only — no org-level `[settings]`/`[org]` changes, no cross-repo
