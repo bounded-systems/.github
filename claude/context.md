@@ -28,13 +28,19 @@ _(Org posture: outward-only, composably-published.)_
   required, and is not the gate** — one maintainer, so the enforceable predicate is
   a *check*, not an approval (`docs/merge-gate.md`).
 - **Claim before working.** Doors, best reachable first (#529):
+  Both mechanized doors REQUIRE a passkey approval since #264: run
+  `node claim-ceremony.mjs`, approve on your device, pass the token. No token is
+  a red run, and there is no break-glass. Releasing a claim needs no token.
   1. `claim-ticket.yml` (`bounded-systems/.github`, workflow_dispatch: repo,
-     issue, claimant) — the real door, lease-backed. Reachable only if
-     `.github` was attached at session creation (`add_repo` refuses it).
-  2. `claim.yml` (`.github-private`, workflow_dispatch: issue, claimant — a
-     caller of `_claim.yml` in `.github`)
+     issue, claimant, human_authorization) — the real door, lease-backed.
+     Reachable only if `.github` was attached at session creation
+     (`add_repo` refuses it).
+  2. `claim.yml` (`.github-private`, workflow_dispatch: issue, claimant,
+     human_authorization — a caller of `_claim.yml` in `.github`)
      — for `.github-private` issues when door 1 is unreachable. Bot-authored,
-     run-backed record; does **not** authenticate the claimant (#530).
+     run-backed. It now attests that a KEYHOLDER approved this exact
+     (repo, issue, claimant) — but still not that the session IS the claimant
+     (#530; the remaining gap is the #113 family).
   3. Hand-claim (assign + comment) — last resort only, when no door is
      reachable. It provides **no exclusion** (keycard#7, `signerSelfAsserted`);
      say plainly the window was down.

@@ -29,6 +29,10 @@ on:
         description: "Release an existing claim instead of taking one"
         type: boolean
         default: false
+      human_authorization:
+        description: "Keeper token from `node claim-ceremony.mjs`. Required to claim; ignored to release."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -43,9 +47,21 @@ jobs:
       issue: ${{ inputs.issue }}
       claimant: ${{ inputs.claimant }}
       release: ${{ inputs.release }}
+      human_authorization: ${{ inputs.human_authorization }}
 ```
 
 That is the whole adoption. Pin `@<commit-sha>`, not a branch.
+
+**Taking a claim needs a passkey (#264).** Run `node claim-ceremony.mjs` with
+`CLAIM_REPO` / `CLAIM_ISSUE` / `CLAIMANT` / `KEEPER_URL` set, approve on your
+device, and pass the token it prints. No token is a red run — there is no green
+path that skips the ceremony and no break-glass. The keeper sets the window per
+request type and a claim's may be as short as two minutes, so fetch the token
+immediately before dispatching.
+
+**Releasing does not.** The asymmetry is deliberate: gating release would strand
+every claim whose session died, since the holder is gone and the ceremony can
+never be completed. Fail closed on acquiring authority, open on giving it up.
 
 **No secret is needed.** The door runs against the caller's own repository with
 the caller's built-in `GITHUB_TOKEN`, and `issues: write` is exactly and only
@@ -77,15 +93,23 @@ fails a run whose record already landed.
 It establishes that the record was written by a workflow rather than authored by
 the guest, and that a run exists as an audit trail.
 
-It does **not** authenticate the claimant. Anyone who can dispatch the caller can
-pass any `claimant` string. **It buys exclusion between concurrent sessions, not
-proof of authorization** (`.github-private`#530). Do not read a green run as
-issuer-attested; closing that gap needs an authenticated guest identity, not
-more workflow plumbing.
+Since #264 it also establishes that **a human holding an enrolled passkey
+approved this exact request** — the ceremony's challenge is a digest over
+(repo, issue, claimant), verified by the keeper, which is deliberately not this
+run. That is evidence rather than assertion, and it is what the door was missing.
+
+**Read the limit precisely, because it has not moved.** What is attested is that
+a keyholder approved *that claimant string* for *that ticket*. It is not proof
+that the session doing the work IS the named claimant — a keyholder can approve
+any string, and nothing here binds the string to the runtime that presents it.
+So the door still buys exclusion plus keyholder authorization, and still not an
+**issuer-attested guest identity** (`.github-private`#530). Closing that last gap
+needs a session identity to attest, which is the #113 family, not more workflow
+plumbing.
 
 ## Relationship to the other doors
 
-- **`claim-ticket.yml`** (this repo) stays as it is: the lease-backed door, with
+- **`claim-ticket.yml`** (this repo) is the lease-backed door, with
   a brokered App identity and a different threat model. It writes claims *into
   other repos* in this org, which is why it needs a minted credential.
 - **`_claim.yml`** is the door that was always meant to travel — it writes a
