@@ -431,3 +431,54 @@ test("sanitizeFromRp refuses to invent text for a non-string", () => {
   assert.equal(sanitizeFromRp(undefined), "");
   assert.equal(sanitizeFromRp({ toString: () => "::error::" }), "");
 });
+
+// ── the verifying room holds no credential (#264, CodeQL alert 12) ───────────
+//
+// `_claim.yml` executes bytes it checked out. The first version did that in the
+// same job that holds the caller's `issues: write` token, and CodeQL's
+// actions/unsafe-checkout was right to flag it. These pin the split so it cannot
+// quietly collapse back into one job — which would not fail any other test.
+
+function claimRelayJobs() {
+  const wf = readFileSync(join(ROOT, ".github/workflows/_claim.yml"), "utf8");
+  const a = wf.indexOf("\n  authorize:");
+  const c = wf.indexOf("\n  claim:");
+  assert.ok(a > 0, "_claim.yml no longer has an `authorize` job — the verifying room is gone");
+  assert.ok(c > a, "_claim.yml's `claim` job must follow `authorize`");
+  return { authorize: wf.slice(a, c), claim: wf.slice(c), whole: wf };
+}
+
+test("_claim.yml runs the verifier in a job that cannot write", () => {
+  const { authorize } = claimRelayJobs();
+  assert.match(authorize, /node claim-authorization\.mjs/, "the verifier does not run in the authorize job");
+  // The only grant it may hold. `issues: write` here would hand the checked-out
+  // bytes the very credential the door exists to protect.
+  assert.match(authorize, /permissions:\s*\n\s+contents: read\s*\n/);
+  assert.doesNotMatch(authorize, /issues:\s*write/);
+  assert.doesNotMatch(authorize, /secrets\.GITHUB_TOKEN/);
+});
+
+test("_claim.yml does not run the verifier in the job that holds the token", () => {
+  const { claim } = claimRelayJobs();
+  assert.match(claim, /secrets\.GITHUB_TOKEN/, "the claim job should still hold the write token");
+  assert.doesNotMatch(claim, /node claim-authorization\.mjs/);
+  assert.doesNotMatch(claim, /actions\/checkout/);
+});
+
+test("_claim.yml fails closed across the job boundary", () => {
+  const { claim } = claimRelayJobs();
+  // `always()` alone would let a FAILED authorization through. The success
+  // check is what makes the boundary fail closed, and it is the line most
+  // likely to be "simplified" away.
+  assert.match(claim, /needs\.authorize\.result == 'success'/);
+  assert.match(claim, /needs: \[authorize\]/);
+});
+
+test("_claim.yml pins the verifier to this workflow's own commit", () => {
+  const { authorize } = claimRelayJobs();
+  // Not the caller's default branch: the verifying bytes and the gating bytes
+  // must be fixed by the same `@sha` the caller already pins.
+  assert.match(authorize, /ref: \$\{\{ github\.job_workflow_sha \}\}/);
+  assert.match(authorize, /repository: bounded-systems\/\.github/);
+  assert.match(authorize, /persist-credentials: false/);
+});

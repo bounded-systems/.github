@@ -66,17 +66,30 @@ on:
         default: claimed
 
 jobs:
-  claim:
+  # ── THE VERIFYING ROOM (#264) ───────────────────────────────────────────────
+  #
+  # A JOB OF ITS OWN, holding `contents: read` and nothing else, because it
+  # RUNS CODE IT CHECKED OUT. CodeQL flagged the first version of this
+  # (`actions/unsafe-checkout`, alert 12 on #265) when the checkout and the
+  # `issues: write` token lived in one job, and it was right to: a room that
+  # executes fetched bytes must not also hold the credential those bytes could
+  # spend. The ref is not attacker-controlled — `github.job_workflow_sha` is
+  # fixed by the caller's own `@sha` pin, and a PR author cannot move it — but
+  # "the input happens to be trusted" is an argument about today's callers, not
+  # a property of the workflow. Splitting the rooms is the property.
+  #
+  # This is the same shape the keeper already has against this door: the party
+  # that verifies is deliberately not the party that acts.
+  #
+  # Skipped entirely on a release — see the asymmetry note on `claim` below.
+  authorize:
+    if: ${{ !inputs.release }}
     runs-on: ubuntu-latest
-
-    # Serialise per (repo, issue): two callers racing for one ticket must not
-    # both read "unclaimed" and both write. Declared at JOB level so it applies
-    # when this workflow is called, and never cancelling — a claim half
-    # recorded and then killed is the worst of both outcomes.
-    concurrency:
-      group: claim-${{ github.repository }}-${{ inputs.issue }}
-      cancel-in-progress: false
-
+    permissions:
+      contents: read
+    outputs:
+      authorization: ${{ steps.authorization.outputs.authorization }}
+      rung: ${{ steps.authorization.outputs.rung }}
     steps:
       # ── THE AUTHORIZATION LEG (#264) ────────────────────────────────────────
       #
@@ -101,7 +114,6 @@ jobs:
       # single `@sha`. Taking the caller's default branch instead would let the
       # verifier move under a pin that looks fixed.
       - name: Check out the verifier at this workflow's own commit
-        if: ${{ !inputs.release }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: bounded-systems/.github
@@ -109,13 +121,11 @@ jobs:
           path: .claim-door
           persist-credentials: false
       - name: Set up Node for the verifier
-        if: ${{ !inputs.release }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
       - name: Verify the human authorization, and say which rung it proved
         id: authorization
-        if: ${{ !inputs.release }}
         working-directory: .claim-door
         env:
           # THE DOOR'S OWN INPUTS, never the token's — the token contributes only
@@ -132,10 +142,34 @@ jobs:
           set -euo pipefail
           export CLAIM_REPO="${GITHUB_REPOSITORY#*/}"
           node claim-authorization.mjs
+
+  claim:
+    runs-on: ubuntu-latest
+
+    # FAIL CLOSED ACROSS THE JOB BOUNDARY. `always()` is needed only because
+    # `authorize` is skipped on a release; without the explicit result check it
+    # would also let a FAILED authorization through, which is the exact
+    # fail-open this door must never have. Spelled out rather than compressed:
+    # claim runs iff authorization succeeded, or iff this is a release and
+    # authorization was skipped for that reason.
+    needs: [authorize]
+    if: >-
+      ${{ always() && (needs.authorize.result == 'success'
+          || (inputs.release && needs.authorize.result == 'skipped')) }}
+
+    # Serialise per (repo, issue): two callers racing for one ticket must not
+    # both read "unclaimed" and both write. Declared at JOB level so it applies
+    # when this workflow is called, and never cancelling — a claim half
+    # recorded and then killed is the worst of both outcomes.
+    concurrency:
+      group: claim-${{ github.repository }}-${{ inputs.issue }}
+      cancel-in-progress: false
+
+    steps:
       - name: Record or release the claim
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AUTHORIZATION: ${{ steps.authorization.outputs.authorization }}
+          AUTHORIZATION: ${{ needs.authorize.outputs.authorization }}
           ISSUE: ${{ inputs.issue }}
           CLAIMANT: ${{ inputs.claimant }}
           RELEASE: ${{ inputs.release }}
