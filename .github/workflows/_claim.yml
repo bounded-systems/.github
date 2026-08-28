@@ -51,14 +51,111 @@ on:
         description: "Release an existing claim instead of taking one"
         type: boolean
         default: false
+      human_authorization:
+        description: >-
+          Keeper authorization token — base64url of {authorizationId, nonce, issuedAt},
+          from `node claim-ceremony.mjs` with CLAIM_REPO/CLAIM_ISSUE/CLAIMANT/KEEPER_URL
+          set, approved with a passkey. REQUIRED TO TAKE A CLAIM (#264); ignored when
+          `release: true`. Not `required: true` at the schema level precisely because
+          releasing must not need one — see the asymmetry note in the job below.
+        required: false
+        type: string
       label:
         description: "Label used to mark a claim. Override only if `claimed` collides with an existing label in the caller."
         type: string
         default: claimed
 
 jobs:
+  # ── THE VERIFYING ROOM (#264) ───────────────────────────────────────────────
+  #
+  # A JOB OF ITS OWN, holding `contents: read` and nothing else, because it
+  # RUNS CODE IT CHECKED OUT. CodeQL flagged the first version of this
+  # (`actions/unsafe-checkout`, alert 12 on #265) when the checkout and the
+  # `issues: write` token lived in one job, and it was right to: a room that
+  # executes fetched bytes must not also hold the credential those bytes could
+  # spend. The ref is not attacker-controlled — `github.job_workflow_sha` is
+  # fixed by the caller's own `@sha` pin, and a PR author cannot move it — but
+  # "the input happens to be trusted" is an argument about today's callers, not
+  # a property of the workflow. Splitting the rooms is the property.
+  #
+  # This is the same shape the keeper already has against this door: the party
+  # that verifies is deliberately not the party that acts.
+  #
+  # Skipped entirely on a release — see the asymmetry note on `claim` below.
+  authorize:
+    if: ${{ !inputs.release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      authorization: ${{ steps.authorization.outputs.authorization }}
+      rung: ${{ steps.authorization.outputs.rung }}
+    steps:
+      # ── THE AUTHORIZATION LEG (#264) ────────────────────────────────────────
+      #
+      # This door had none until #264. Door 1 (`claim-ticket.yml`) carried the
+      # passkey gate while this one recorded claims on the caller's built-in
+      # GITHUB_TOKEN with no ceremony at all — so requiring authorization there
+      # and not here would not have made it required, only made it avoidable by
+      # dispatching a different workflow. A named mechanism that does not resolve
+      # is what `docs/claim-boundary.md` P4 forbids, and a gate you route around
+      # is that shape exactly.
+      #
+      # THE ASYMMETRY IS DELIBERATE: taking a claim needs a passkey, RELEASING
+      # one does not. Fail closed on acquiring authority, open on relinquishing
+      # it. The opposite would strand every claim whose session died — the holder
+      # is gone, so the ceremony can never be completed, and the ticket is held
+      # forever by a dead container. Releasing takes nothing, so gating it buys
+      # no safety and costs the only cleanup path there is.
+      #
+      # THE VERIFIER IS CHECKED OUT AT THIS WORKFLOW'S OWN COMMIT.
+      # `github.job_workflow_sha` is the SHA of THIS reusable file, so the
+      # verifying bytes and the gating bytes are pinned together by the caller's
+      # single `@sha`. Taking the caller's default branch instead would let the
+      # verifier move under a pin that looks fixed.
+      - name: Check out the verifier at this workflow's own commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bounded-systems/.github
+          ref: ${{ github.job_workflow_sha }}
+          path: .claim-door
+          persist-credentials: false
+      - name: Set up Node for the verifier
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - name: Verify the human authorization, and say which rung it proved
+        id: authorization
+        working-directory: .claim-door
+        env:
+          # THE DOOR'S OWN INPUTS, never the token's — the token contributes only
+          # the anti-replay values. CLAIM_REPO is derived in-shell rather than by
+          # expression because the digest's `repo` field is a BARE name while
+          # github.repository is owner-qualified; passing the qualified form makes
+          # every digest mismatch, and the failure would read as a bad token.
+          CLAIM_ISSUE: ${{ inputs.issue }}
+          CLAIMANT: ${{ inputs.claimant }}
+          HUMAN_AUTHORIZATION: ${{ inputs.human_authorization }}
+          KEEPER_URL: "https://keeper.bounded.tools"
+          DISPATCHER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          export CLAIM_REPO="${GITHUB_REPOSITORY#*/}"
+          node claim-authorization.mjs
+
   claim:
     runs-on: ubuntu-latest
+
+    # FAIL CLOSED ACROSS THE JOB BOUNDARY. `always()` is needed only because
+    # `authorize` is skipped on a release; without the explicit result check it
+    # would also let a FAILED authorization through, which is the exact
+    # fail-open this door must never have. Spelled out rather than compressed:
+    # claim runs iff authorization succeeded, or iff this is a release and
+    # authorization was skipped for that reason.
+    needs: [authorize]
+    if: >-
+      ${{ always() && (needs.authorize.result == 'success'
+          || (inputs.release && needs.authorize.result == 'skipped')) }}
 
     # Serialise per (repo, issue): two callers racing for one ticket must not
     # both read "unclaimed" and both write. Declared at JOB level so it applies
@@ -72,6 +169,7 @@ jobs:
       - name: Record or release the claim
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTHORIZATION: ${{ needs.authorize.outputs.authorization }}
           ISSUE: ${{ inputs.issue }}
           CLAIMANT: ${{ inputs.claimant }}
           RELEASE: ${{ inputs.release }}
@@ -228,8 +326,8 @@ jobs:
           fi
 
           post labels "$(jq -nc --arg l "$LABEL" '{labels: [$l]}')"
-          post comments "$(jq -nc --arg c "$CLAIMANT" --arg u "$RUN_URL" --arg a "$ACTOR" \
-            '{body: ("🎫 **Claimed** by \($c) — dispatched by `\($a)` — [run](\($u))\n\n<!-- front-desk-claim -->\nRecorded by the shared claim door, so this record is not guest-authored — but the door does **not** authenticate the claimant. It buys exclusion between concurrent sessions, not proof of authorization.\n\nRelease by re-running the caller with `release: true`, or by removing the label and unassigning.")}')"
+          post comments "$(jq -nc --arg c "$CLAIMANT" --arg u "$RUN_URL" --arg a "$ACTOR" --arg z "$AUTHORIZATION" \
+            '{body: ("🎫 **Claimed** by \($c) — dispatched by `\($a)` — [run](\($u))\n\n\($z)\n\n<!-- front-desk-claim -->\nRecorded by the shared claim door, so this record is not guest-authored. Since #264 the door also AUTHENTICATES: the rung above was proved by a passkey assertion the keeper verified as bound to this exact request, not asserted by this run.\n\nRelease by re-running the caller with `release: true`, or by removing the label and unassigning.")}')"
 
           # PROJECTION ONLY, AND DELIBERATELY LAST AND NON-FATAL. Most
           # dispatchers are bots and are not assignable. Failing here would

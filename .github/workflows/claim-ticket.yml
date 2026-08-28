@@ -32,19 +32,27 @@
 # stale claims yet; if that starts to hurt, it is a scheduled sweep in the
 # board-parity family, not more logic here.
 #
-# ── What a claim record now SAYS about itself (.github-private#642) ──────────
-# The record also carries a RUNG on the claim ladder, and the reasons it is not
-# higher. Ordinarily that rung is `human-associated` — an account is somewhere
-# in the chain — which is the strongest true thing this door could ever say on
-# its own, for the reason stated further down beside the assignee projection:
-# github.actor is owner-grade identity and cannot name a guest.
+# ── What a claim record SAYS about itself (.github-private#642, #264) ────────
+# The record carries a RUNG on the claim ladder, and the reasons it is not
+# higher. `human_authorization` is REQUIRED (#264): the rung must reach
+# `human-authorized` — a passkey assertion whose CHALLENGE IS THE CLAIM DIGEST,
+# verified by the keeper, a relying party that is deliberately not this run
+# because an approval the requester renders is self-attestation.
 #
-# Supply `human_authorization` and the claim can rise to `human-authorized`: a
-# passkey assertion whose CHALLENGE IS THE CLAIM DIGEST, verified by the keeper
-# — a relying party that is deliberately not this run, because an approval the
-# requester renders is self-attestation. That token is optional and it is not a
-# second identity for the door; it is the only thing here that is evidence
-# rather than assertion. See claim-authorization.mjs for what each rung costs.
+# It was optional until #264, and the default was `human-associated`: an account
+# is somewhere in the chain. That is still the honest rung for a record naming
+# only a dispatcher — github.actor is owner-grade identity and cannot name a
+# guest (.github-private#537, #558) — and it is exactly why it no longer passes.
+# A door whose ladder tops out at "someone was logged in" was enforcing the
+# ladder only against callers who bothered to present something.
+#
+# NO BREAK-GLASS, deliberately, and not an oversight — see #264. An exemption is
+# the path every caller learns to take, so while the keeper cannot serve a
+# ceremony, nothing is claimable through a mechanized door. The fallback is the
+# one it always was: claim by hand and say plainly that the window was down,
+# which buys no exclusion and advertises that it buys none (keycard#7).
+#
+# See claim-authorization.mjs for what each rung costs.
 #
 # ── Why it FAILS CLOSED ──────────────────────────────────────────────────────
 # The opposite posture from front-desk-add.yml, on claim-boundary.md's
@@ -89,12 +97,15 @@ on:
         type: string
       human_authorization:
         description: >-
-          OPTIONAL. An authorization token from the keeper — base64url of
+          REQUIRED (#264). An authorization token from the keeper — base64url of
           {authorizationId, nonce, issuedAt}. Get one by running `node claim-ceremony.mjs`
           with CLAIM_REPO/CLAIM_ISSUE/CLAIMANT/KEEPER_URL set and approving with a passkey;
-          it prints the token on stdout. Absent is the ordinary case and stays green;
-          PRESENT AND UNVERIFIABLE IS A RED RUN. See claim-authorization.mjs.
-        required: false
+          it prints the token on stdout. ABSENT IS A RED RUN, and so is present-and-
+          unverifiable — there is no green path that skips the ceremony. Note the
+          keeper sets the window per request type and a claim's may be as short as
+          two minutes, so fetch the token immediately before dispatching, not ahead
+          of time. See claim-authorization.mjs.
+        required: true
         type: string
 
 permissions:
@@ -144,21 +155,24 @@ jobs:
       # must stop the run while the ticket is still untouched. A check after the
       # claim was recorded would be a report, not a gate.
       #
-      # What this step decides is WHICH RUNG the claim record is entitled to name
-      # — not whether the claim happens. Three outcomes, and the middle one is the
-      # ordinary case:
+      # Since #264 this step decides WHETHER THE CLAIM HAPPENS, not merely which
+      # rung the record may name. Two outcomes:
       #
-      #   token present, verifies    → human-authorized (or higher), credential named
-      #   no token                   → human-associated, green — see below
-      #   token present, unverifiable→ RED, and the run says which property failed
+      #   token verifies at human-authorized or higher → green, credential named
+      #   anything else, INCLUDING NO TOKEN            → RED, naming the property
+      #                                                  that failed
       #
-      # THE HONEST DEFAULT IS THE PART WORTH READING. With no token, the door
-      # records `human-associated`: an account is somewhere in the chain and
-      # nothing more. That is not a downgrade, it is this door's own long-standing
-      # statement about itself — `github.actor is owner-grade identity and cannot
-      # name a guest` (.github-private#537, #558) — finally written into the
-      # record instead of left implied by a claim comment that names a dispatcher
-      # as though naming were authenticating.
+      # The rung a tokenless claim would have recorded — `human-associated` — is
+      # still the honest classification, and claim-authorization.mjs still
+      # computes it from the ladder rather than hardcoding a refusal. It simply
+      # no longer clears the floor. Keeping the classification honest while
+      # refusing it is the point: the run tells you what it had, and why that was
+      # not enough, instead of collapsing both into a boolean.
+      #
+      # The floor is applied in ONE place for every path (verifyAbsent and the
+      # redemption path share belowFloorReason), so re-adding an exemption for the
+      # tokenless case makes claim-authorization.test.mjs go red rather than
+      # quietly reopening the door.
       #
       # THE KEEPER URL IS A LITERAL, NOT A VARIABLE (#253). It was `vars.KEEPER_URL`
       # when #252 landed, which made the input inert until someone clicked a setting

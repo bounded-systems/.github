@@ -345,7 +345,7 @@ export async function verifyClaimAuthorization(
     rung,
     reasons: accepted
       ? reasons
-      : [...reasons, `rung ${rung} is below the ${MIN_ACCEPTED_RUNG} this door accepts for a supplied token`],
+      : [...reasons, belowFloorReason(rung)],
     aal,
     // Sanitized at the boundary, not at the three sinks that render them.
     person: sanitizeFromRp(redeemed.person),
@@ -365,6 +365,21 @@ export function RUNG_AT_LEAST(rung, floor) {
   const a = RUNGS.indexOf(rung);
   const b = RUNGS.indexOf(floor);
   return a >= 0 && b >= 0 && a >= b;
+}
+
+/**
+ * The one sentence explaining a refusal on the floor.
+ *
+ * Lives here, once, because the supplied-token path and the no-token path must
+ * not drift into describing the same rule differently — a caller reading two
+ * wordings cannot tell whether they are two rules.
+ */
+export function belowFloorReason(rung) {
+  return (
+    `rung ${rung} is below the ${MIN_ACCEPTED_RUNG} this door requires \u2014 a claim ` +
+    "needs a passkey assertion the keeper verified as bound to this exact " +
+    "request (#264)"
+  );
 }
 
 /**
@@ -404,15 +419,36 @@ export function renderClaimAuthorization(verdict) {
 }
 
 /**
- * Classify a claim with no token — the ordinary case, and green.
+ * Classify a claim with no token.
  *
  * Runs the same ladder as a real authorization rather than hardcoding the
- * string, so the honest default cannot drift away from what the ladder would
- * actually say about a record naming only a dispatcher.
+ * string, so the classification cannot drift away from what the ladder would
+ * actually say about a record naming only a dispatcher. That classification is
+ * unchanged and still honest: `human-associated` is exactly what a record
+ * naming a dispatcher and nothing else is worth.
+ *
+ * What #264 changed is the VERDICT, not the classification. This returned green
+ * until then — a claim with no passkey was the ordinary case, and the floor
+ * applied only to tokens that were actually supplied. A door that accepts the
+ * bottom of its own ladder whenever nothing is presented is not enforcing the
+ * ladder; it is enforcing it against the callers who bothered to try.
+ *
+ * There is deliberately NO exemption here and no break-glass anywhere in this
+ * file. An exemption is the path every caller learns to take, and a floor with
+ * an exemption is a guideline (`docs/merge-gate.md`). The accepted cost is
+ * stated plainly on #264: while the keeper is unreachable, nothing can be
+ * claimed through a mechanized door.
  */
 export function verifyAbsent(dispatcher) {
   const { rung, reasons, aal } = authorizationRung(recordAbsent(dispatcher), {});
-  return { ok: true, rung, reasons, aal, relyingParty: null };
+  const accepted = RUNG_AT_LEAST(rung, MIN_ACCEPTED_RUNG);
+  return {
+    ok: accepted,
+    rung,
+    reasons: accepted ? reasons : [...reasons, belowFloorReason(rung)],
+    aal,
+    relyingParty: null,
+  };
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────

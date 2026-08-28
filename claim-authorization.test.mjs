@@ -25,6 +25,7 @@ import {
   CLAIM_POLICY_V1,
   MIN_ACCEPTED_RUNG,
   RUNG_AT_LEAST,
+  belowFloorReason,
   b64urlDigestToHex,
   claimRequestFrom,
   parseAuthorizationToken,
@@ -242,20 +243,58 @@ test("a repo name the door's own preflight would refuse never reaches the keeper
   assert.match(verdict.reasons.join(" "), /invalid/);
 });
 
-// ── the honest default ───────────────────────────────────────────────────────
+// ── no token is a refusal (#264) ─────────────────────────────────────────────
 
-test("no token records human-associated and stays green", () => {
+test("no token still classifies as human-associated — the ladder did not move", () => {
+  // The CLASSIFICATION is unchanged and must stay unchanged: naming a
+  // dispatcher is association. #264 changed the verdict, not the rung, and
+  // conflating the two would be the easy wrong fix (raise the rung so it
+  // passes) rather than the right one (refuse the rung that does not).
   const verdict = verifyAbsent("bdelanghe");
-  assert.equal(verdict.ok, true);
   assert.equal(verdict.rung, "human-associated");
   assert.match(verdict.reasons.join(" "), /association, not authorization/);
 });
 
-test("the honest default is produced by the ladder, not hardcoded", () => {
+test("no token is REFUSED — a claim without a passkey is a red run", () => {
+  const verdict = verifyAbsent("bdelanghe");
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reasons.join(" "), /below the human-authorized this door requires/);
+});
+
+test("the floor is one rule: absent and below-floor token refuse identically", () => {
+  // The single most important pin in this file. If someone re-adds an
+  // exemption for the no-token case, the two paths stop agreeing and this
+  // goes red — which is the whole property #264 bought.
+  const absent = verifyAbsent("bdelanghe");
+  assert.equal(absent.ok, RUNG_AT_LEAST(absent.rung, MIN_ACCEPTED_RUNG));
+  assert.match(absent.reasons.at(-1), /below the .* this door requires/);
+  assert.equal(absent.reasons.at(-1), belowFloorReason(absent.rung));
+});
+
+test("no dispatcher at all is refused too, and lower", () => {
+  // An empty dispatcher cannot be association either; it must not accidentally
+  // pass by falling into a different branch.
+  const verdict = verifyAbsent("");
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.rung, "unauthenticated");
+});
+
+test("the classification is produced by the ladder, not hardcoded", () => {
   // If someone replaces the ladder call with a string literal, this goes red:
   // the record shape and the rung have to agree.
   assert.deepEqual(recordAbsent("bdelanghe"), { dispatcher: "bdelanghe" });
   assert.ok(RUNGS.includes(verifyAbsent("bdelanghe").rung));
+});
+
+test("there is no rung below the floor that this door accepts", () => {
+  // Exhaustive over the ladder rather than a spot check: every rung under the
+  // floor must be refused, so a future rung inserted below it cannot slip in.
+  for (const rung of RUNGS.slice(0, RUNGS.indexOf(MIN_ACCEPTED_RUNG))) {
+    assert.ok(!RUNG_AT_LEAST(rung, MIN_ACCEPTED_RUNG), `${rung} must not clear the floor`);
+  }
+  for (const rung of RUNGS.slice(RUNGS.indexOf(MIN_ACCEPTED_RUNG))) {
+    assert.ok(RUNG_AT_LEAST(rung, MIN_ACCEPTED_RUNG), `${rung} must clear the floor`);
+  }
 });
 
 // ── the rendered record ──────────────────────────────────────────────────────
@@ -391,4 +430,55 @@ test("an overlong relying-party string is truncated, and says so", () => {
 test("sanitizeFromRp refuses to invent text for a non-string", () => {
   assert.equal(sanitizeFromRp(undefined), "");
   assert.equal(sanitizeFromRp({ toString: () => "::error::" }), "");
+});
+
+// ── the verifying room holds no credential (#264, CodeQL alert 12) ───────────
+//
+// `_claim.yml` executes bytes it checked out. The first version did that in the
+// same job that holds the caller's `issues: write` token, and CodeQL's
+// actions/unsafe-checkout was right to flag it. These pin the split so it cannot
+// quietly collapse back into one job — which would not fail any other test.
+
+function claimRelayJobs() {
+  const wf = readFileSync(join(ROOT, ".github/workflows/_claim.yml"), "utf8");
+  const a = wf.indexOf("\n  authorize:");
+  const c = wf.indexOf("\n  claim:");
+  assert.ok(a > 0, "_claim.yml no longer has an `authorize` job — the verifying room is gone");
+  assert.ok(c > a, "_claim.yml's `claim` job must follow `authorize`");
+  return { authorize: wf.slice(a, c), claim: wf.slice(c), whole: wf };
+}
+
+test("_claim.yml runs the verifier in a job that cannot write", () => {
+  const { authorize } = claimRelayJobs();
+  assert.match(authorize, /node claim-authorization\.mjs/, "the verifier does not run in the authorize job");
+  // The only grant it may hold. `issues: write` here would hand the checked-out
+  // bytes the very credential the door exists to protect.
+  assert.match(authorize, /permissions:\s*\n\s+contents: read\s*\n/);
+  assert.doesNotMatch(authorize, /issues:\s*write/);
+  assert.doesNotMatch(authorize, /secrets\.GITHUB_TOKEN/);
+});
+
+test("_claim.yml does not run the verifier in the job that holds the token", () => {
+  const { claim } = claimRelayJobs();
+  assert.match(claim, /secrets\.GITHUB_TOKEN/, "the claim job should still hold the write token");
+  assert.doesNotMatch(claim, /node claim-authorization\.mjs/);
+  assert.doesNotMatch(claim, /actions\/checkout/);
+});
+
+test("_claim.yml fails closed across the job boundary", () => {
+  const { claim } = claimRelayJobs();
+  // `always()` alone would let a FAILED authorization through. The success
+  // check is what makes the boundary fail closed, and it is the line most
+  // likely to be "simplified" away.
+  assert.match(claim, /needs\.authorize\.result == 'success'/);
+  assert.match(claim, /needs: \[authorize\]/);
+});
+
+test("_claim.yml pins the verifier to this workflow's own commit", () => {
+  const { authorize } = claimRelayJobs();
+  // Not the caller's default branch: the verifying bytes and the gating bytes
+  // must be fixed by the same `@sha` the caller already pins.
+  assert.match(authorize, /ref: \$\{\{ github\.job_workflow_sha \}\}/);
+  assert.match(authorize, /repository: bounded-systems\/\.github/);
+  assert.match(authorize, /persist-credentials: false/);
 });
