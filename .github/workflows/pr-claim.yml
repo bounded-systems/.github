@@ -1,0 +1,37 @@
+name: pr-claim
+
+# This repo DEFINES the "every PR is claimed work" check (`_pr-claim.yml`), so
+# this repo is subject to it. A rule whose author is exempt is a rule that gets
+# written and never felt.
+#
+# STABLE CHECK NAME, ON PURPOSE. The job is `pr-claim`, with no `paths:` filter:
+# the predicate is about the PULL REQUEST, not about the diff, so there is no
+# such thing as a change this does not apply to. That also makes it the name a
+# ruleset can require.
+#
+# IT DOES NOT BLOCK YET, AND THAT IS STATED RATHER THAN ASSUMED. `.github` is
+# absent from `org/rulesets/ci-green.json` (which names `front-desk-scheduler`
+# only), and this repo's default branch carries `pull_request`,
+# `required_signatures`, `required_linear_history` and `non_fast_forward` — none
+# of which look at CI. So a red `pr-claim` here REPORTS; it does not refuse.
+# Closing that is a change to `ci-green.json` in `.github-private`, not to this
+# file, and `workflows.test.mjs` already carries the same measurement about the
+# `schema` job for the same reason.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-claim:
+    # Reading a PR and an issue. The reusable can only ever narrow what it is
+    # handed, so the grant has to be made HERE — a caller that forgets these
+    # leaves the check unable to read a private issue, which it reports as
+    # unreadable rather than passing.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/_pr-claim.yml

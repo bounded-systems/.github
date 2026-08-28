@@ -1,0 +1,344 @@
+name: _pr-claim
+
+# THE portable "this PR is claimed work" check. One implementation; every
+# consumer is a caller.
+#
+# WHAT IT ASSERTS
+# ---------------
+#   pr_claimed(pr) — the PR NAMES at least one issue, and at least one named
+#   issue is OPEN, carries a claim, and has not been released.
+#
+# By `docs/merge-gate.md`'s class split this is a FACT predicate: every
+# conjunct is re-derived from the GitHub API at admission time. Nothing is
+# taken on the PR's word except *which issue to look at*, and that residual is
+# stated below rather than papered over.
+#
+# WHY A REUSABLE AND NOT A FILE YOU COPY
+# --------------------------------------
+# The same reason as `_claim.yml` (#226): the claim convention was delivered as
+# prose in four places — `claude/context.md`, both `CLAUDE.md` files,
+# `docs/org-map.md` — and nothing checked it, so it drifted until the org's own
+# claim-door PR (#265) was itself unclaimed. This is the one place the rule
+# lives, so there is one place a bug can be and one place to fix it.
+#
+# CALLABLE FROM ANYWHERE. This repo is public, so any repository inside or
+# outside this organization can call this. The job runs against the CALLER's
+# `github.repository` on the CALLER's `GITHUB_TOKEN` — no owner input, no repo
+# input, no credential of its own. Reading a PR and an issue is
+# `pull-requests: read` + `issues: read` and nothing more.
+#
+# TWO ACCEPTED LINKAGE FORMS
+# --------------------------
+#   1. `closingIssuesReferences` — GitHub's own linkage, from a `Closes #N`
+#      keyword or the Development sidebar. The strong form and the default.
+#   2. `Claim-issue: owner/repo#N` (or `Claim-issue: #N`) on its own line in
+#      the PR body — for work that runs UNDER a claim without closing it:
+#      recurring machine lanes, and issues that legitimately take several PRs.
+#
+# Form 2 is a NEW key on purpose. PRs in this org already write
+# `Claim: claude/some-session-slug` — a claimant STRING, naming no issue and
+# checkable against nothing. Reusing that key would have made a check read a
+# line whose existing meaning is different, which is worse than having no check.
+#
+# THREE DOORS, TWO MARKERS, AND WHY THE LABEL IS PRIMARY
+# ------------------------------------------------------
+# #529 names three claim doors, and they do not record claims identically:
+#
+#   door 1  claim-ticket.yml  → comment marked `<!-- claim-ticket -->`
+#   door 2  _claim.yml        → comment marked `<!-- front-desk-claim -->`
+#   door 3  hand-claim        → assign + comment, no marker at all
+#
+# #226 unified the two mechanized doors' BEHAVIOUR and left their MARKERS
+# different, so no downstream reader can ask "is this claimed" in one way. This
+# check therefore reads the LABEL (and assignees) as the door-agnostic signal —
+# which is exactly what the convention itself tells a session to read: "an issue
+# with any assignee or the `claimed` label is someone else's". Markers are used
+# only to attribute the claim and to spot a release.
+#
+# WHAT THIS DOES NOT ESTABLISH
+# ----------------------------
+# It does NOT prove this PR is the work of that claim. An author can name any
+# open, claimed issue, including one held by someone else. Closing that needs the
+# claimant bound to an authenticated identity — .github-private#530, and the
+# `human_authorization` ladder in `claim-authorization.mjs` — not more workflow
+# plumbing. A green `pr-claim` means "an open, claimed issue was named", and no
+# more. Do not cite it as authorization.
+#
+# CROSS-REPO REFERENCES ARE BOUNDED BY THE CALLER'S TOKEN. A `Claim-issue:`
+# naming another repository is only checkable if the caller's `GITHUB_TOKEN` can
+# read that repository's issues, and a workflow token is scoped to its own repo.
+# In practice that means a PR in a PUBLIC repo cannot verify a claim held on a
+# PRIVATE repo's issue — the read 404s and this reports `unreadable`, which
+# counts as NOT claimed. That is fail-closed and correct, but it has a design
+# consequence worth stating plainly: **claim the issue in the repository you are
+# changing.** Door 1 takes a `repo` input precisely so that is always possible.
+# This PR is its own first example — the policy issue lives in `.github-private`
+# and could not be the one this repo's own PR names.
+#
+# It also does not re-check the AUTHORIZATION RUNG the claim was recorded at. A
+# hand-claim (door 3) buys no exclusion at all (keycard#7, `signerSelfAsserted`)
+# and still passes here by default, because refusing it would leave a session
+# unable to open any PR while the keeper is down — the outage the hand-claim
+# exists for. `require_mechanized_door` tightens that when the org is ready; the
+# summary always says which door recorded the claim, so a hand-claim is visible
+# rather than silently equivalent.
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: "PR number in the calling repository. Defaults to the PR that triggered the caller."
+        required: false
+        type: string
+        default: ""
+      label:
+        description: "Label that marks a claim. Override only if `claimed` collides in the caller."
+        type: string
+        default: claimed
+      max_claim_age_days:
+        description: >-
+          Additionally require the claim record to be newer than this many days.
+          0 (the default) disables the check. Leave it off until an expiry sweep
+          exists (.github-private#717): a PR stranded behind a stale claim that
+          nothing can refresh is worse than a stale claim.
+        type: number
+        default: 0
+      require_mechanized_door:
+        description: >-
+          Reject hand-claims (door 3), which record no marker and buy no
+          exclusion. Off by default so a keeper outage does not also block PRs.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  pr-claim:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Assert this PR names an issue with a live claim
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Every input arrives through the environment, never interpolated into
+          # the script body: a PR title or branch name is attacker-controlled on
+          # a fork PR, and `${{ }}` splicing is how that becomes shell.
+          PR_INPUT: ${{ inputs.pr }}
+          PR_EVENT: ${{ github.event.pull_request.number }}
+          LABEL: ${{ inputs.label }}
+          MAX_AGE: ${{ inputs.max_claim_age_days }}
+          NEED_DOOR: ${{ inputs.require_mechanized_door }}
+        run: |
+          set -euo pipefail
+
+          PR="${PR_INPUT:-}"
+          [ -n "$PR" ] || PR="${PR_EVENT:-}"
+
+          # VALIDATE BEFORE READING ANYTHING. A malformed value should fail here
+          # naming itself, not produce a confusing 404 three API calls later.
+          case "$PR" in
+            '' | *[!0-9]*)
+              echo "::error title=pr-claim: no PR to check::pass the \`pr\` input, or call this from a pull_request-triggered workflow (got '${PR}')"
+              exit 1
+              ;;
+          esac
+          case "$LABEL" in
+            '' | *[!A-Za-z0-9._-]*)
+              echo "::error title=pr-claim: bad input::label must match [A-Za-z0-9._-]+, got '${LABEL}'"
+              exit 1
+              ;;
+          esac
+          case "$MAX_AGE" in
+            '' | *[!0-9]*)
+              echo "::error title=pr-claim: bad input::max_claim_age_days must be a non-negative integer, got '${MAX_AGE}'"
+              exit 1
+              ;;
+          esac
+
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+
+          # ── 1. Read the PR ────────────────────────────────────────────────
+          # `closingIssuesReferences` is GraphQL-only: REST exposes the reverse
+          # edge (issue → closing PRs) but not this one. It is GitHub's own
+          # resolution of the `Closes #N` keywords, so a keyword this check
+          # accepts is exactly a keyword that will close the issue on merge —
+          # the two can never disagree, which a regex over the body could.
+          pr_json="$(mktemp)"
+          pr_err="$(mktemp)"
+          # `$o`, `$r`, `$n` below — and `$l` further down — are jq/GraphQL
+          # variables, not shell ones. Single quotes are what keeps the shell out
+          # of them, so SC2016 here is exactly backwards.
+          # shellcheck disable=SC2016
+          if ! gh api graphql \
+                 -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){body closingIssuesReferences(first:50){nodes{number repository{nameWithOwner}}}}}}' \
+                 -f o="$owner" -f r="$repo" -F n="$PR" > "$pr_json" 2>"$pr_err"; then
+            echo "::error title=pr-claim: could not read PR #${PR}::the check did not run. This is NOT a pass."
+            cat "$pr_err"
+            exit 1
+          fi
+          # A GraphQL error arrives as HTTP 200 with an `errors` key. Treating
+          # that as a readable-but-empty PR would silently produce "no issue
+          # named" for a permission problem — a wrong reason is worse than a
+          # failure, because it sends the author to fix the wrong thing.
+          if [ "$(jq -r 'has("errors")' "$pr_json")" = "true" ] \
+             || [ "$(jq -r '.data.repository.pullRequest == null' "$pr_json")" = "true" ]; then
+            echo "::error title=pr-claim: could not read PR #${PR}::the API returned errors or no pull request. This is NOT a pass."
+            jq -r '.errors // .' "$pr_json"
+            exit 1
+          fi
+
+          # ── 2. Collect candidate issues ───────────────────────────────────
+          cands="$(mktemp)"
+          jq -r '.data.repository.pullRequest.closingIssuesReferences.nodes[]?
+                 | "closes\t\(.repository.nameWithOwner)\t\(.number)"' "$pr_json" > "$cands"
+
+          body="$(jq -r '.data.repository.pullRequest.body // ""' "$pr_json")"
+          while IFS= read -r line; do
+            ref="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*[Cc][Ll][Aa][Ii][Mm]-[Ii][Ss][Ss][Uu][Ee]:[[:space:]]*//; s/[[:space:]].*$//; s/[.,;)]*$//')"
+            case "$ref" in
+              '#'[0-9]*)
+                printf 'trailer\t%s\t%s\n' "$GITHUB_REPOSITORY" "${ref#\#}" >> "$cands" ;;
+              */*'#'[0-9]*)
+                printf 'trailer\t%s\t%s\n' "${ref%%#*}" "${ref##*#}" >> "$cands" ;;
+              *)
+                echo "::warning title=pr-claim: unparseable Claim-issue::'${ref}' — expected 'Claim-issue: owner/repo#123' or 'Claim-issue: #123'" ;;
+            esac
+          done < <(printf '%s\n' "$body" | grep -iE '^[[:space:]]*claim-issue:[[:space:]]*[^[:space:]]' || true)
+
+          sort -u "$cands" -o "$cands"
+
+          {
+            echo "## PR gate — claim"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s "$cands" ]; then
+            {
+              echo "**❌ This PR names no issue.**"
+              echo
+              echo "Every PR must be claimed work. Either:"
+              echo
+              echo "- add \`Closes #123\` to the PR body (the issue is closed on merge), or"
+              echo "- add \`Claim-issue: owner/repo#123\` on its own line, for work that runs under a"
+              echo "  claim without closing it."
+              echo
+              echo "No issue yet? Open one and claim it — that is the convention, not a formality."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=pr-claim: no issue named::this PR references no issue. Add 'Closes #N', or 'Claim-issue: owner/repo#N' for work that does not close its issue."
+            exit 1
+          fi
+
+          # ── 3. Is any named issue actually claimed, right now? ────────────
+          {
+            echo "| issue | via | state | claim | door | claimant |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          live=0
+          now="$(date -u +%s)"
+
+          while IFS=$'\t' read -r via nwo num; do
+            [ -n "${num:-}" ] || continue
+
+            issue="$(mktemp)"
+            if ! gh api "repos/${nwo}/issues/${num}" > "$issue" 2>/dev/null </dev/null; then
+              echo "| \`${nwo}#${num}\` | ${via} | ❓ unreadable | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning title=pr-claim: could not read ${nwo}#${num}::this token may not reach that repository. Counted as NOT claimed."
+              continue
+            fi
+
+            # The issues API serves pull requests too. A PR that says
+            # `Closes #<another PR>` must not satisfy a rule about issues.
+            if [ "$(jq -r 'has("pull_request")' "$issue")" = "true" ]; then
+              echo "| \`${nwo}#${num}\` | ${via} | ⚠️ is a PR | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+
+            state="$(jq -r '.state' "$issue")"
+            # `any(. == $l)`, NOT `index($l)`. index returns the ARRAY POSITION —
+            # 0 for a label in first place — which compares false against "true"
+            # and reads a claimed issue as unclaimed. `_claim.yml` carries the
+            # same note because it is the same fail-OPEN trap in the same shape.
+            labelled="$(jq -r --arg l "$LABEL" '[.labels[]?.name] | any(. == $l)' "$issue")"
+            assignees="$(jq -r '[.assignees[]?.login] | join(", ")' "$issue")"
+
+            # Latest recognised claim marker, from EITHER mechanized door.
+            comments="$(mktemp)"
+            gh api --paginate "repos/${nwo}/issues/${num}/comments" > "$comments" 2>/dev/null </dev/null || echo '[]' > "$comments"
+            marker="$(jq -s -r '
+              [ .[] | .[]?
+                | select((.body // "") | test("<!-- (claim-ticket|front-desk-claim) -->"))
+              ] | last // {}' "$comments")"
+
+            mbody="$(jq -r '.body // ""' <<<"$marker")"
+            mdate="$(jq -r '.created_at // ""' <<<"$marker")"
+            released=false
+            if printf '%s' "$mbody" | grep -q '\*\*Released\*\*'; then released=true; fi
+
+            if [ -n "$mbody" ]; then
+              door="mechanized"
+              claimant="$(printf '%s' "$mbody" | sed -nE 's/^.*\*\*(Claimed|Released)\*\* by ([^ ]+).*$/\2/p' | head -1)"
+            else
+              door="hand"
+              claimant="${assignees:-—}"
+            fi
+            [ -n "${claimant:-}" ] || claimant="—"
+
+            verdict="not claimed"
+            ok=false
+            if [ "$state" != "open" ]; then
+              verdict="issue ${state}"
+            elif [ "$released" = true ]; then
+              verdict="released"
+            elif [ "$labelled" != "true" ] && [ -z "$assignees" ]; then
+              verdict="no \`${LABEL}\` label, no assignee"
+            elif [ "$NEED_DOOR" = "true" ] && [ "$door" = "hand" ]; then
+              verdict="hand-claim, and a mechanized door is required"
+            elif [ "$MAX_AGE" -gt 0 ]; then
+              if [ -z "$mdate" ]; then
+                verdict="cannot date a hand-claim, and an age limit is set"
+              else
+                age=$(( ( now - $(date -u -d "$mdate" +%s) ) / 86400 ))
+                if [ "$age" -gt "$MAX_AGE" ]; then
+                  verdict="claim is ${age}d old (limit ${MAX_AGE}d)"
+                else
+                  verdict="live (${age}d)"; ok=true
+                fi
+              fi
+            else
+              verdict="live"; ok=true
+            fi
+
+            if [ "$ok" = true ]; then live=1; icon="✅"; else icon="❌"; fi
+            echo "| [\`${nwo}#${num}\`](${GITHUB_SERVER_URL}/${nwo}/issues/${num}) | ${via} | ${state} | ${icon} ${verdict} | ${door} | \`${claimant}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done < "$cands"
+
+          if [ "$live" -ne 1 ]; then
+            {
+              echo
+              echo "**❌ No named issue carries a live claim.**"
+              echo
+              echo "Claim it before working — best reachable door first (#529):"
+              echo
+              echo "1. \`claim-ticket.yml\` in \`bounded-systems/.github\` (\`repo\`, \`issue\`, \`claimant\`)"
+              echo "2. \`claim.yml\` in \`.github-private\` (\`issue\`, \`claimant\`)"
+              echo "3. assign + comment by hand, and say plainly that the window was down"
+              echo
+              echo "Then confirm on the **issue** that the claim comment names your claimant."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=pr-claim: no live claim::this PR names an issue, but no named issue is open and claimed. See the job summary."
+            exit 1
+          fi
+
+          {
+            echo
+            echo "A green \`pr-claim\` means an open, claimed issue was named. It does **not**"
+            echo "establish that this PR is the work of that claim, or that the claimant is who"
+            echo "they say — see \`.github-private\`#530."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "pr-claim: PR #${PR} names a live claim."
