@@ -20,8 +20,21 @@ name: front-desk-add
 on:
   issues:
     types: [opened]
+  # `synchronize`/`reopened` are REQUIRED FOR MERGEABILITY, not for the board
+  # (#267). Branch protection evaluates required checks against the CURRENT HEAD.
+  # With `opened` alone this check reports once, on the opening commit, and any
+  # PR that takes a second commit has a head with no `add` check at all — not
+  # failing, ABSENT — so protection waits forever and no event can ever produce
+  # it. #265 hit exactly that: three commits, eight green checks, permanently
+  # blocked. Every previously merged PR here happened to be single-commit, which
+  # is the only reason this never surfaced.
+  #
+  # Re-running is safe and close to free: `actions/add-to-project` is idempotent
+  # (an item already on the board is a no-op, not a duplicate row), and both
+  # credentialed steps are `continue-on-error`, so this job passes whatever
+  # happens — which is the posture the header below already commits to.
   pull_request:
-    types: [opened]
+    types: [opened, synchronize, reopened]
 
 permissions:
   id-token: write # OIDC → cf-token-broker (the only capability the job needs)
