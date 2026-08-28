@@ -28,7 +28,7 @@ _(Org posture: outward-only, composably-published.)_
   required, and is not the gate** — one maintainer, so the enforceable predicate is
   a *check*, not an approval (`docs/merge-gate.md`).
 - **Claim before working.** Doors, best reachable first (#529):
-  Both mechanized doors REQUIRE a passkey approval since #264: run
+  Both mechanized doors REQUIRE a passkey approval since `.github`#264: run
   `node claim-ceremony.mjs`, approve on your device, pass the token. No token is
   a red run, and there is no break-glass. Releasing a claim needs no token.
   1. `claim-ticket.yml` (`bounded-systems/.github`, workflow_dispatch: repo,
