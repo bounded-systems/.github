@@ -64,6 +64,17 @@ name: _pr-claim
 # plumbing. A green `pr-claim` means "an open, claimed issue was named", and no
 # more. Do not cite it as authorization.
 #
+# CROSS-REPO REFERENCES ARE BOUNDED BY THE CALLER'S TOKEN. A `Claim-issue:`
+# naming another repository is only checkable if the caller's `GITHUB_TOKEN` can
+# read that repository's issues, and a workflow token is scoped to its own repo.
+# In practice that means a PR in a PUBLIC repo cannot verify a claim held on a
+# PRIVATE repo's issue — the read 404s and this reports `unreadable`, which
+# counts as NOT claimed. That is fail-closed and correct, but it has a design
+# consequence worth stating plainly: **claim the issue in the repository you are
+# changing.** Door 1 takes a `repo` input precisely so that is always possible.
+# This PR is its own first example — the policy issue lives in `.github-private`
+# and could not be the one this repo's own PR names.
+#
 # It also does not re-check the AUTHORIZATION RUNG the claim was recorded at. A
 # hand-claim (door 3) buys no exclusion at all (keycard#7, `signerSelfAsserted`)
 # and still passes here by default, because refusing it would leave a session
