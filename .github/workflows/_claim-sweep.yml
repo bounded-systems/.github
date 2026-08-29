@@ -156,13 +156,42 @@ jobs:
 
           # ── The staleness rule is gated on the exemption being EXPRESSIBLE ──
           # A standing claim is open, unrefreshed and PR-less, so rule 3 is the
-          # one that would delete it. If the exempt label does not exist here,
+          # one that would delete it. If the exempt label cannot be applied here,
           # no standing claim CAN be marked and rule 3 is not safe to run.
+          #
+          # SO MAKE IT EXPRESSIBLE RATHER THAN STANDING DOWN (#300). This used to
+          # skip rule 3 whenever the label was absent, and MEASURED 2026-08-29 the
+          # label existed in 2 of 91 repositories -- so the org-wide rollout left
+          # the staleness rule inert in 89 of them, and only rule 2 (release on a
+          # CLOSED issue) was live. That is the condition #295 was filed to fix,
+          # surviving the fix, behind a second gate on the same rule.
+          #
+          # Creating it is not a new policy: the warning this replaces already
+          # told the operator to "create the label and tag the machine-lane
+          # claims". That instruction was correct and was never going to be
+          # carried out by hand in 89 repositories.
+          #
+          # FAIL-SAFE IS PRESERVED. If creation fails, rule 3 still stands down.
+          # The fallback moves from "always skip when absent" to "skip only when
+          # the exemption genuinely cannot be established" -- narrower, and never
+          # in the direction of releasing a standing claim.
+          #
+          # INTERIM BY CONSTRUCTION. `.github-private`#771 replaces the
+          # string-matched exemption with a real type, and this whole gate is
+          # DELETED then rather than migrated. Do not build on it.
           stale_ok=true
           if [ "$STALE_DAYS" -gt 0 ]; then
             if ! gh api "repos/$R/labels/$EXEMPT_LABEL" >/dev/null 2>&1; then
-              stale_ok=false
-              echo "::warning title=claim-sweep: staleness rule skipped::no '$EXEMPT_LABEL' label exists in $R, so a standing claim could not be marked exempt. Closed-issue releases still run. Create the label and tag the machine-lane claims to enable the staleness rule."
+              if gh api -X POST "repos/$R/labels" \
+                   -f name="$EXEMPT_LABEL" \
+                   -f color="5319e7" \
+                   -f description="Held by a machine lane, not a session. claim-sweep never releases this." \
+                   >/dev/null 2>&1; then
+                echo "::notice title=claim-sweep: exempt label created::'$EXEMPT_LABEL' did not exist in $R and was created, so the staleness rule can run. Tag any machine-lane claims with it."
+              else
+                stale_ok=false
+                echo "::warning title=claim-sweep: staleness rule skipped::'$EXEMPT_LABEL' does not exist in $R and could not be created, so a standing claim could not be marked exempt. Closed-issue releases still run."
+              fi
             fi
           fi
 
@@ -318,7 +347,23 @@ jobs:
 
           rv="would release"
           [ "$DRY_RUN" = "true" ] || rv="released"
+
+          # NAME THE RULES THAT RAN, not just the tally. #789 is the whole reason:
+          # rule 3 was skipped in 89 of 91 repositories and every one of those runs
+          # printed a clean-looking summary and exited green. The skip was announced
+          # as a ::warning on a SUCCESSFUL run, and nobody reads a warning on a green
+          # lane -- so the sweep reported "drained" while the rule that drains
+          # abandoned claims had not run at all.
+          rules="closed-issue releases"
+          if [ "$STALE_DAYS" -gt 0 ] && [ "$stale_ok" = "true" ]; then
+            rules="$rules + staleness (>${STALE_DAYS}d)"
+          elif [ "$STALE_DAYS" -gt 0 ]; then
+            rules="$rules ONLY -- staleness SKIPPED"
+          else
+            rules="$rules only (staleness off: stale_days=0)"
+          fi
           echo "claim-sweep: $rv $released, kept $kept, exempted $exempt claim(s) in $R."
+          echo "claim-sweep: rules run -- $rules"
           echo "released=$released" >> "$GITHUB_OUTPUT"
 
       # ── THE SENDER HALF, and why it lives here ─────────────────────────────
