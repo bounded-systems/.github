@@ -96,27 +96,19 @@ on:
         default: cloudflare-workers-deploy-broker
       keeper_url:
         description: >-
-          Base URL of the org's WebAuthn keeper (e.g. https://keeper.bounded.tools). Set it
-          and the promote job requires a Face ID ceremony bound to this run and commit
-          BEFORE any promote credential is minted (infra#480 — retires the comment/click
-          approval for callers that adopt it; the caller must then also grant
-          `issues: write` for the notification issue). Leave empty to keep the caller's
-          `site-promote` required-reviewer gate as the only human gate.
+          Base URL of the org's WebAuthn keeper. The promote job requires a Face ID
+          ceremony bound to this run and commit BEFORE any promote credential is minted
+          (infra#480); the caller must also grant `issues: write` for the notification
+          issue. DEFAULTS ON as of #277 — it used to default to empty, which skipped the
+          ceremony entirely and left the run relying on the caller's `site-promote`
+          environment. That is not a gate: no environment in this org was able to hold
+          required reviewers, so an empty value meant a promote could mint a credential
+          and ship to a live domain with no human in the loop. Passing "" still disables
+          the ceremony, and is now the explicit, loud way to do that rather than the
+          default nobody noticed.
         required: false
         type: string
-        default: ""
-      keeper_break_glass:
-        description: >-
-          Fall back to the retired comment-approval gate because the keeper itself cannot
-          serve a ceremony. Loud by design; only honored when keeper_url is set.
-        required: false
-        type: boolean
-        default: false
-      break_glass_approvers:
-        description: "Comma-separated GitHub logins allowed to approve a break-glass promote by comment."
-        required: false
-        type: string
-        default: bdelanghe
+        default: "https://keeper.bounded.tools"
     secrets:
       CLOUDFLARE_API_TOKEN:
         description: >-
@@ -342,7 +334,7 @@ jobs:
       # actually holds the gate.
       - name: Open the Face ID ceremony
         id: ceremony
-        if: ${{ inputs.keeper_url != '' && !inputs.keeper_break_glass }}
+        if: ${{ inputs.keeper_url != '' }}
         env:
           KEEPER_URL: ${{ inputs.keeper_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -356,7 +348,7 @@ jobs:
           start="$(curl -sfS --max-time 20 -X POST -H 'content-type: application/json' \
             -d "{\"requestType\":\"bounded.deploy-request.v1\",\"request\":$req}" \
             "${KEEPER_URL%/}/authorize/start")" || {
-            echo "::error::the keeper refused to open a ceremony. If the keeper itself is down or broken, re-dispatch with keeper_break_glass: true — and say so in the run."
+            echo "::error::the keeper refused to open a ceremony. There is no break-glass (#277, following .github-private#741): the promote does not run until the keeper is back."
             exit 1
           }
           ceremony="$(jq -r '.ceremonyId // empty' <<<"$start")"
@@ -374,7 +366,7 @@ jobs:
 
       - name: Wait for the Face ID, then redeem — fail closed
         id: redeem
-        if: ${{ inputs.keeper_url != '' && !inputs.keeper_break_glass }}
+        if: ${{ inputs.keeper_url != '' }}
         env:
           KEEPER_URL: ${{ inputs.keeper_url }}
           CEREMONY: ${{ steps.ceremony.outputs.ceremony }}
@@ -433,27 +425,6 @@ jobs:
           ISSUE_URL: ${{ steps.ceremony.outputs.issue_url }}
         run: gh issue close "$ISSUE_URL" --comment "Authorized by Face ID; ceremony complete." || true
 
-      # BREAK GLASS — the retired comment gate, kept solely for a keeper that
-      # cannot serve a ceremony. Loud in the summary. Only honored when the
-      # caller opted into the ceremony in the first place.
-      - name: Await approval (BREAK GLASS — comment gate, retired for routine use)
-        if: ${{ inputs.keeper_url != '' && inputs.keeper_break_glass }}
-        uses: bounded-systems/await-approval@3eda4124e16463741037ebe8e546419eaaa4824b # main
-        with:
-          approvers: ${{ inputs.break_glass_approvers }}
-          issue-title: "BREAK GLASS: approve site promote by comment (keeper cannot serve a ceremony)"
-          issue-body: >
-            A site promote was dispatched with keeper_break_glass: true — the Face ID gate
-            was BYPASSED on the stated grounds that the keeper itself cannot serve a
-            ceremony. If the keeper is actually healthy, deny this and ask why.
-
-      - name: Record the break-glass in the summary
-        if: ${{ inputs.keeper_url != '' && inputs.keeper_break_glass }}
-        run: |
-          {
-            echo "## ⚠ BREAK GLASS promote"
-            echo "The Face ID gate was bypassed via keeper_break_glass — authorized by COMMENT, the retired mechanism. Grounds must be that the keeper itself could not serve a ceremony."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       # SIGN AFTER APPROVAL (site#243): in deferred_sign mode this mints the artifact's first
       # and only signature, after whichever human gate above passed — so a signature can only
