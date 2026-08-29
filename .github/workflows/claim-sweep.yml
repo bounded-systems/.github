@@ -257,9 +257,15 @@ jobs:
               # Built with jq rather than an inline heredoc: prose at column 0
               # inside a `run:` block is a leaked block scalar, which this
               # repo's workflow ratchet refuses outright.
-              gh api "repos/$R/issues/$n/comments" \
-                -d "$(jq -nc --arg u "$RUN_URL" --arg r "$reason" --arg e "$EXEMPT_LABEL" \
-                  '{body: ("🔓 **Released** by [claim-sweep](\($u)) — \($r).\n\nRe-claim through the same door if this work is live; releasing and re-claiming are both cheap, and a fresh claim spares it from the next sweep. A standing claim held by a machine lane should carry the `\($e)` label, which this sweep never releases.\n\n<!-- front-desk-claim -->\nRecorded by the sweep, not by a guest. This does not assert who held the claim.")}')" >/dev/null
+              #
+              # THE BODY GOES THROUGH `--input -`, NOT `-d`. `gh api` has no
+              # `-d` flag at all — that is curl's, and `_claim.yml` uses it
+              # correctly because `_claim.yml` calls curl. Porting the idiom
+              # across the two tools is what broke run 2 of this workflow:
+              # `unknown shorthand flag: 'd' in -d`, on the first release.
+              jq -nc --arg u "$RUN_URL" --arg r "$reason" --arg e "$EXEMPT_LABEL" \
+                '{body: ("🔓 **Released** by [claim-sweep](\($u)) — \($r).\n\nRe-claim through the same door if this work is live; releasing and re-claiming are both cheap, and a fresh claim spares it from the next sweep. A standing claim held by a machine lane should carry the `\($e)` label, which this sweep never releases.\n\n<!-- front-desk-claim -->\nRecorded by the sweep, not by a guest. This does not assert who held the claim.")}' \
+                | gh api "repos/$R/issues/$n/comments" --input - >/dev/null
 
               # Label first: it is the half `pr-claim` reads, so removing it is
               # what actually ends the claim. Unassigning is the human-facing
@@ -267,10 +273,19 @@ jobs:
               # reported, not fatal.
               gh api -X DELETE "repos/$R/issues/$n/labels/$LABEL" >/dev/null
 
-              for a in $(jq -r '.assignees[].login' <<<"$issue"); do
-                gh api -X DELETE "repos/$R/issues/$n/assignees" -f "assignees[]=$a" >/dev/null \
-                  || echo "::warning title=claim-sweep: unassign failed::$R#$n still shows $a; the label is removed, so the claim is released"
-              done
+              # Same `--input -` form, and all assignees in one request. The
+              # `|| warning` is deliberate and must stay: under `set -e` a
+              # non-assignable login would otherwise abort the sweep after the
+              # label came off, which is the `.github-private`#652 shape — a
+              # half-applied record. The label is the half `pr-claim` reads, so
+              # once it is gone the claim IS released; the assignee is only a
+              # human-facing projection.
+              assignees="$(jq -c '{assignees: [.assignees[].login]}' <<<"$issue")"
+              if [ "$assignees" != '{"assignees":[]}' ]; then
+                printf '%s' "$assignees" \
+                  | gh api -X DELETE "repos/$R/issues/$n/assignees" --input - >/dev/null \
+                  || echo "::warning title=claim-sweep: unassign failed::$R#$n still shows an assignee; the label is removed, so the claim is released"
+              fi
 
               echo "released     $R#$n ($reason)  $title"
               released=$((released+1))
