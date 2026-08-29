@@ -1,84 +1,36 @@
-# Release the claims that are over and the ones that are abandoned, because
-# nothing else does (.github-private#717; #435 is the standing record).
-#
-# WHY THIS EXISTS. `claim-ticket.yml`'s own header names this file as the fix:
-# "Nothing expires stale claims yet; if that starts to hurt, it is a scheduled
-# sweep in the board-parity family, not more logic here." It hurt: on
-# 2026-08-29 the board carried 114 claims on work already finished — 92 of them
-# in `.github` and `.github-private` alone — because the claim doors WRITE the
-# `claimed` label and nothing removes it. The count only grows. This is the
-# pr-sweep sibling that owns it.
-#
-# WHAT A RELEASE IS. Exactly what every claim record already tells its reader:
-# "Release by removing the `claimed` label (and unassigning)." This makes that
-# documented convention a mechanism. One comment names the sweep and the reason,
-# so a release is attributable and re-claiming is one dispatch away.
-#
-# WHAT HAPPENS TO EACH CLAIMED ISSUE, in order:
-#   1. EXEMPT — a standing claim (see below) is never touched, at any age.
-#   2. RELEASE iff the issue is CLOSED, whatever closed it: a merged PR, a
-#      completed ticket, "not planned". A claim on a closed issue guards
-#      nothing — there is no work left to exclude anyone from.
-#   3. RELEASE iff the issue is open, has no linked OPEN PR, and nothing has
-#      touched it in `stale_days` (default 14). Claims are leases on attention
-#      and expire faster than the 30-day PR window, because an unheld claim
-#      makes the board lie about exclusion — it reads as taken to every session
-#      that looks, and none of them start.
-#   4. KEEP everything else, with the reason printed.
-# Recency spares, and re-claiming is cheap through the same door — the release
-# comment says so. That is branch-sweep's re-open doctrine, applied to claims.
-#
-# ── THE STANDING-CLAIM EXEMPTION, and why it is load-bearing ────────────────
-# A machine lane's claim is held by the LANE, not a session: `.github`#273,
-# #274, #278, #279, #280 and `.github-private`#731 exist so `pr-claim` has an
-# open, claimed issue to resolve when a recurring lane opens its PR. They are
-# permanent by construction, and each one carries the warning in its body:
-# closing it or removing its label makes the lane's next PR fail `pr-claim`
-# with nothing in the failure pointing back at the issue — and for the three
-# fan-out lanes, in ~86 repos at once.
-#
-# A standing claim is ALSO the exact shape rule 3 above would delete: it is
-# open, it has no linked open PR, and it never refreshes, so it is permanently
-# past any wall-clock window. #731 says so in as many words — "a standing claim
-# never refreshes, so any wall-clock expiry (#717) would expire it first". This
-# sweep IS #717. So the exemption is not a nicety bolted on afterwards; without
-# it, the first scheduled run breaks every machine lane in the org.
-#
-# It is keyed on a LABEL rather than on parsing the claimant out of a comment,
-# because the label is a fact the sweep can read directly and a human can see
-# on the issue. `machine/*` claimant strings live in hand-written comment prose
-# and are not a checkable interface.
-#
-# FAIL-CLOSED ON THE EXEMPTION. If the label read fails for any reason, the
-# issue is KEPT, never released. The cost of wrongly keeping a claim is that a
-# human releases it by hand; the cost of wrongly releasing one is a silent
-# org-wide lane outage.
-#
-# PORTABLE BY CONSTRUCTION. The owner is github.repository_owner and the target
-# token arrives through one env var, so copying this file into any account's
-# repo retargets the sweep — the #713 doctrine pr-sweep already follows.
-#
-# THE IDENTITY. Cross-repo sweeps (any target that is not this repo, `*`
-# included) mint via the OIDC broker under `claim-sweep` — its own registry
-# entry, same reasoning as pr-sweep's: the fan-in `front-desk` app must not grow
-# `issues: write` because one window needs it. Until the broker registry (infra)
-# carries the entry pinned to this workflow at refs/heads/main, cross-repo runs
-# fail at mint naming the gap — the intended arrival state, not a bug here.
-# Same-repo sweeps run on the workflow's own token.
 name: claim-sweep
+
+# Release this repository's finished and abandoned claims.
+#
+# THIS IS A CALLER, NOT AN IMPLEMENTATION. The door lives once, in
+# `_claim-sweep.yml`, and every consumer calls it — the shape `claim.yml` in
+# `.github-private` already has for `_claim.yml`, and for the reason that file
+# gives at length: the convention was once "copy this file", and the copies
+# drifted in ways that mattered (#226).
+#
+# WHY THE CROSS-REPO FAN-OUT IS GONE. The first cut of this lane took a `repo`
+# input (or `*`) and swept other repositories with a token minted through the
+# OIDC broker under a `claim-sweep` entry. That entry does not exist, so every
+# cross-repo run would fail at mint, and `.github-private`'s 70 claims sat
+# unreachable behind an infra change in a third repository. A reusable needs no
+# credential at all: each repository sweeps itself with its own `GITHUB_TOKEN`,
+# and adopting the lane is a short caller rather than a broker grant. Org-wide
+# coverage is the harness-adoption lane's job, the way every other per-repo
+# workflow arrives.
+#
+# The cron stays weekly and stays a REAL run, per the #713 standing decision
+# that the backlog drain must never need a session. Only a dispatch carries the
+# dry-run default.
 
 on:
   schedule:
-    # Weekly backstop, Monday morning UTC. Offset from pr-sweep's :13 so the
-    # two board drains do not contend for the same minute — the org's
-    # schedule-spreading habit.
+    # Weekly backstop, Monday morning UTC. Offset from pr-sweep's :13 so the two
+    # board drains do not contend for the same minute — the org's
+    # schedule-spreading habit. A dropped slot costs a week of drift, not
+    # correctness: every release this makes is one a later run would also make.
     - cron: "37 9 * * 1"
   workflow_dispatch:
     inputs:
-      repo:
-        description: 'Repository name (owner fixed to this org), or "*" for every non-archived repo'
-        type: string
-        required: true
       dry_run:
         description: "Preview only (print the release/keep table, touch nothing)"
         type: boolean
@@ -91,207 +43,30 @@ on:
         description: "Release claims on open issues untouched for this many days; 0 releases none"
         type: string
         default: "14"
-      label:
-        description: "Label that marks a claim"
-        type: string
-        default: claimed
-      exempt_label:
-        description: "Label marking a standing claim, never released at any age"
-        type: string
-        default: standing-claim
 
 permissions:
   contents: read
 
-# One sweep per target at a time: two racing real runs would double-comment and
+# One sweep at a time: two racing real runs would double-comment and
 # double-release. Never cancel a started run — a half-acted sweep with its
 # report killed is worse than a queued duplicate.
 concurrency:
-  group: claim-sweep-${{ inputs.repo || '*' }}
+  group: claim-sweep
   cancel-in-progress: false
 
 jobs:
   sweep:
-    runs-on: ubuntu-latest
+    # Same-repo, so the reusable is referenced by path at the current ref rather
+    # than SHA-pinned: a caller and its callee in one repository move together,
+    # and a pin would freeze this lane to whatever the door looked like when the
+    # pin was written.
+    uses: ./.github/workflows/_claim-sweep.yml
     permissions:
       contents: read
-      issues: write # same-repo label removal, unassign and comment
-      id-token: write # OIDC → cf-token-broker for everything else
-    steps:
-      - name: Preflight — inputs are well-formed
-        env:
-          # Scheduled runs carry no inputs: they sweep everything, for real.
-          REPO: ${{ inputs.repo || '*' }}
-          STALE_DAYS: ${{ inputs.stale_days || '14' }}
-          LABEL: ${{ inputs.label || 'claimed' }}
-          EXEMPT_LABEL: ${{ inputs.exempt_label || 'standing-claim' }}
-        run: |
-          set -euo pipefail
-          case "$REPO" in
-            ("*") ;;
-            (*[!A-Za-z0-9._-]*|"") echo "::error::repo '$REPO' is not a plain repository name or '*'"; exit 1 ;;
-          esac
-          case "$STALE_DAYS" in
-            (*[!0-9]*|"") echo "::error::stale_days '$STALE_DAYS' is not a number"; exit 1 ;;
-          esac
-          # An empty exempt label would make every standing claim sweepable, so
-          # it is a hard error rather than a defaulted-away mistake.
-          [ -n "$LABEL" ] || { echo "::error::label must not be empty"; exit 1; }
-          [ -n "$EXEMPT_LABEL" ] || { echo "::error::exempt_label must not be empty — it is what protects the machine-lane standing claims"; exit 1; }
-
-      - name: Checkout (for the broker action)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Mint cross-repo token via the OIDC broker
-        id: app-token
-        if: ${{ inputs.repo != github.event.repository.name }}
-        uses: ./.github/actions/broker-gh-token
-        with:
-          app: claim-sweep
-          broker-url: ${{ vars.CF_BROKER_URL }}
-          require: issues
-
-      - name: Sweep
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
-          OWNER: ${{ github.repository_owner }}
-          TARGET: ${{ inputs.repo || '*' }}
-          # Cron is a real run by the #713 standing decision, exactly as
-          # pr-sweep does it; only a dispatch carries the dry-run default.
-          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
-          RELEASE_CLOSED: ${{ github.event_name == 'schedule' && 'true' || inputs.release_closed }}
-          STALE_DAYS: ${{ inputs.stale_days || '14' }}
-          LABEL: ${{ inputs.label || 'claimed' }}
-          EXEMPT_LABEL: ${{ inputs.exempt_label || 'standing-claim' }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          set -euo pipefail
-
-          cutoff="$(date -u -d "$STALE_DAYS days ago" +%s)"
-
-          if [ "$TARGET" = "*" ]; then
-            # Archived and disabled repos refuse writes; skipping them here is
-            # reporting hygiene, not a safety mechanism.
-            repos="$(gh api --paginate "orgs/$OWNER/repos?per_page=100" \
-              --jq '.[] | select((.archived or .disabled) | not) | .name' | sort)"
-          else
-            repos="$TARGET"
-          fi
-
-          released=0 kept=0 exempt=0
-
-          for name in $repos; do
-            R="$OWNER/$name"
-
-            # ── The staleness rule is gated on the exemption being EXPRESSIBLE ──
-            # A standing claim is open, unrefreshed and PR-less, so rule 3 is
-            # the one that would delete it. If the exempt label does not exist
-            # in this repo, no standing claim here CAN be marked, and rule 3
-            # cannot be run safely — so it is switched off for this repo and
-            # said out loud. Rule 2 (closed issues) is unaffected: a standing
-            # claim is open by construction, so releasing claims on CLOSED
-            # issues can never touch one, whether or not the label exists.
-            stale_ok=true
-            if [ "$STALE_DAYS" -gt 0 ]; then
-              if ! gh api "repos/$R/labels/$EXEMPT_LABEL" >/dev/null 2>&1; then
-                stale_ok=false
-                echo "::warning title=claim-sweep: staleness rule skipped in $R::no '$EXEMPT_LABEL' label exists there, so a standing claim could not be marked exempt. Closed-issue releases still run. Create the label and tag the machine-lane claims to enable the staleness rule."
-              fi
-            fi
-
-            # Every issue carrying the claim label, open or closed. `issues`
-            # also returns PRs; a PR is not claimable work, so drop them.
-            issues="$(gh api --paginate \
-              "repos/$R/issues?state=all&labels=$LABEL&per_page=100" \
-              --jq '.[] | select(has("pull_request") | not) | .number' | sort -n || true)"
-
-            for n in $issues; do
-              issue="$(gh api "repos/$R/issues/$n")"
-              state="$(jq -r .state <<<"$issue")"
-              updated="$(jq -r .updated_at <<<"$issue")"
-              title="$(jq -r '.title | gsub("[\\r\\n\\t]"; " ")' <<<"$issue")"
-              updated_epoch="$(date -u -d "$updated" +%s)"
-
-              # FAIL-CLOSED: if the label list is unreadable, keep. Wrongly
-              # keeping costs a manual release; wrongly releasing costs an
-              # org-wide lane outage.
-              if ! labels="$(jq -er '[.labels[].name] | join(",")' <<<"$issue")"; then
-                echo "keep         $R#$n (labels unreadable — keeping, fail-closed)  $title"
-                kept=$((kept+1)); continue
-              fi
-              case ",$labels," in
-                (*",$EXEMPT_LABEL,"*)
-                  echo "exempt       $R#$n (standing claim)  $title"
-                  exempt=$((exempt+1)); continue ;;
-              esac
-
-              reason=""
-              if [ "$state" = "closed" ] && [ "$RELEASE_CLOSED" = "true" ]; then
-                reason="the issue is closed, so the claim guards no remaining work"
-              elif [ "$state" = "open" ] && [ "$stale_ok" = "true" ] && [ "$STALE_DAYS" -gt 0 ] && [ "$updated_epoch" -lt "$cutoff" ]; then
-                # A linked OPEN PR is live work regardless of the issue's own
-                # quiet spell — the claim is doing its job. Search is the only
-                # cross-repo-safe way to ask; an error counts as "has a PR" so
-                # the failure keeps rather than releases.
-                if ! linked="$(gh api "search/issues?q=repo:$R+is:pr+is:open+$n&per_page=1" --jq '.total_count')"; then
-                  echo "keep         $R#$n (PR link unreadable — keeping, fail-closed)  $title"
-                  kept=$((kept+1)); continue
-                fi
-                if [ "$linked" -gt 0 ]; then
-                  echo "keep         $R#$n (linked open PR)  $title"
-                  kept=$((kept+1)); continue
-                fi
-                reason="open but untouched since ${updated%T*}, past the ${STALE_DAYS}-day window, with no linked open PR"
-              fi
-
-              if [ -z "$reason" ]; then
-                echo "keep         $R#$n ($state, updated ${updated%T*})  $title"
-                kept=$((kept+1)); continue
-              fi
-
-              if [ "$DRY_RUN" = "true" ]; then
-                echo "WOULD RELEASE $R#$n ($reason)  $title"
-                released=$((released+1)); continue
-              fi
-
-              # Built with jq rather than an inline heredoc: prose at column 0
-              # inside a `run:` block is a leaked block scalar, which this
-              # repo's workflow ratchet refuses outright.
-              #
-              # THE BODY GOES THROUGH `--input -`, NOT `-d`. `gh api` has no
-              # `-d` flag at all — that is curl's, and `_claim.yml` uses it
-              # correctly because `_claim.yml` calls curl. Porting the idiom
-              # across the two tools is what broke run 2 of this workflow:
-              # `unknown shorthand flag: 'd' in -d`, on the first release.
-              jq -nc --arg u "$RUN_URL" --arg r "$reason" --arg e "$EXEMPT_LABEL" \
-                '{body: ("🔓 **Released** by [claim-sweep](\($u)) — \($r).\n\nRe-claim through the same door if this work is live; releasing and re-claiming are both cheap, and a fresh claim spares it from the next sweep. A standing claim held by a machine lane should carry the `\($e)` label, which this sweep never releases.\n\n<!-- front-desk-claim -->\nRecorded by the sweep, not by a guest. This does not assert who held the claim.")}' \
-                | gh api "repos/$R/issues/$n/comments" --input - >/dev/null
-
-              # Label first: it is the half `pr-claim` reads, so removing it is
-              # what actually ends the claim. Unassigning is the human-facing
-              # projection and must never be load-bearing — a failure there is
-              # reported, not fatal.
-              gh api -X DELETE "repos/$R/issues/$n/labels/$LABEL" >/dev/null
-
-              # Same `--input -` form, and all assignees in one request. The
-              # `|| warning` is deliberate and must stay: under `set -e` a
-              # non-assignable login would otherwise abort the sweep after the
-              # label came off, which is the `.github-private`#652 shape — a
-              # half-applied record. The label is the half `pr-claim` reads, so
-              # once it is gone the claim IS released; the assignee is only a
-              # human-facing projection.
-              assignees="$(jq -c '{assignees: [.assignees[].login]}' <<<"$issue")"
-              if [ "$assignees" != '{"assignees":[]}' ]; then
-                printf '%s' "$assignees" \
-                  | gh api -X DELETE "repos/$R/issues/$n/assignees" --input - >/dev/null \
-                  || echo "::warning title=claim-sweep: unassign failed::$R#$n still shows an assignee; the label is removed, so the claim is released"
-              fi
-
-              echo "released     $R#$n ($reason)  $title"
-              released=$((released+1))
-            done
-          done
-
-          rv="would release"
-          [ "$DRY_RUN" = "true" ] || rv="released"
-          echo "claim-sweep: $rv $released, kept $kept, exempted $exempt claim(s) across ${TARGET/#\*/all repos}."
+      issues: write
+    with:
+      # Cron is a real run by the #713 standing decision; a dispatch defaults to
+      # dry.
+      dry_run: ${{ github.event_name == 'schedule' && false || inputs.dry_run }}
+      release_closed: ${{ github.event_name == 'schedule' && true || inputs.release_closed }}
+      stale_days: ${{ inputs.stale_days || '14' }}

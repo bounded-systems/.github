@@ -1,0 +1,326 @@
+name: _claim-sweep
+
+# THE portable claim-release door. One implementation; every consumer is a
+# caller — the same shape `_claim.yml` and `_pr-claim.yml` already have, and for
+# the reason `_claim.yml`'s header gives: the convention was once delivered as
+# "copy this file", and copies always drift (.github#226).
+#
+# WHY THIS EXISTS AT ALL. `claim-ticket.yml`'s header named the fix: "Nothing
+# expires stale claims yet; if that starts to hurt, it is a scheduled sweep in
+# the board-parity family." It hurt — on 2026-08-29 the board carried 114 claims
+# on finished work, because the claim doors WRITE the `claimed` label and
+# nothing removes it. `.github-private`#717, #435.
+#
+# WHY A REUSABLE RATHER THAN THE CROSS-REPO FAN-OUT IT REPLACES. The first cut
+# of this lane swept other repositories with a token minted through the OIDC
+# broker under a `claim-sweep` entry. That entry does not exist, so every
+# cross-repo run failed at mint — which left `.github-private`'s 70 claims
+# unreachable behind an infra change in a third repository.
+#
+# A reusable needs none of it. The job runs against the CALLER's
+# `github.repository` with the CALLER's `GITHUB_TOKEN`, and `issues: write` is
+# exactly what releasing a claim uses — the same argument `_claim.yml` makes for
+# why that door, alone of the three, travels. No broker entry, no fan-in App
+# growing `issues: write` because one window needs it, and no credential that
+# reaches a repository the caller does not already own.
+#
+# WHAT A RELEASE IS. What every claim record already tells its reader: "Release
+# by removing the `claimed` label (and unassigning)." This makes that documented
+# convention a mechanism. One comment names the sweep and the reason, so a
+# release is attributable and re-claiming is one dispatch away.
+#
+# WHAT HAPPENS TO EACH CLAIMED ISSUE, in order:
+#   1. EXEMPT — a standing claim (see below) is never touched, at any age.
+#   2. RELEASE iff the issue is CLOSED, whatever closed it: a merged PR, a
+#      completed ticket, "not planned". A claim on a closed issue guards
+#      nothing — there is no work left to exclude anyone from.
+#   3. RELEASE iff the issue is open, has no linked OPEN PR, and nothing has
+#      touched it in `stale_days` (default 14). Claims are leases on attention
+#      and expire faster than the 30-day PR window, because an unheld claim
+#      makes the board lie about exclusion — it reads as taken to every session
+#      that looks, and none of them start.
+#   4. KEEP everything else, with the reason printed.
+#
+# ── THE STANDING-CLAIM EXEMPTION, and why it is load-bearing ────────────────
+# A machine lane's claim is held by the LANE, not a session: `.github`#273,
+# #274, #278, #279, #280 and `.github-private`#731 exist so `pr-claim` has an
+# open, claimed issue to resolve when a recurring lane opens its PR. Each one
+# carries the warning in its body: closing it or removing its label makes the
+# lane's next PR fail `pr-claim` with nothing in the failure pointing back — and
+# for the three fan-out lanes, in ~86 repos at once.
+#
+# A standing claim is ALSO the exact shape rule 3 would delete: open, no linked
+# open PR, and it never refreshes, so it is permanently past any wall-clock
+# window. `.github-private`#731 says so in as many words — "a standing claim
+# never refreshes, so any wall-clock expiry (#717) would expire it first". This
+# sweep IS #717. Without the exemption, the first scheduled run breaks every
+# machine lane in the org.
+#
+# Keyed on a LABEL rather than on parsing the claimant out of a comment, because
+# the label is a fact the sweep reads directly and a human sees on the issue.
+# `machine/*` claimant strings live in hand-written comment prose and are not a
+# checkable interface.
+#
+# FAIL-CLOSED, TWICE. If the label read fails, the issue is KEPT. And the
+# staleness rule refuses to run at all in a repository where the exempt label
+# does not exist — if no standing claim there CAN be marked, rule 3 is not safe
+# to apply. Rule 2 is unaffected either way: a standing claim is open by
+# construction, so releasing claims on closed issues can never touch one. The
+# cost of wrongly keeping a claim is that a human releases it by hand; the cost
+# of wrongly releasing one is a silent org-wide lane outage.
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: "Preview only (print the release/keep table, touch nothing)"
+        type: boolean
+        default: true
+      release_closed:
+        description: "Release claims on closed issues"
+        type: boolean
+        default: true
+      stale_days:
+        description: "Release claims on open issues untouched for this many days; 0 releases none"
+        type: string
+        default: "14"
+      label:
+        description: "Label that marks a claim. Override only if `claimed` collides in the caller."
+        type: string
+        default: claimed
+      exempt_label:
+        description: "Label marking a standing claim, never released at any age"
+        type: string
+        default: standing-claim
+      feed_repo:
+        description: >-
+          owner/repo to notify with a `claim-activity` repository_dispatch after a
+          real run that released something. Inert unless `feed_dispatch_token` is
+          also supplied — see the note on the notify step.
+        type: string
+        default: bounded-systems/front-desk-feed
+    secrets:
+      feed_dispatch_token:
+        description: >-
+          A token carrying `contents: write` on `feed_repo` — the permission
+          `repository_dispatch` requires. Optional: absent means the notify step
+          is skipped and the feed waits for its own cron, which is exactly the
+          behaviour before this input existed.
+        required: false
+    outputs:
+      released:
+        description: "How many claims this run released (or would release, on a dry run)"
+        value: ${{ jobs.sweep.outputs.released }}
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # the whole capability: label removal, unassign, one comment
+    outputs:
+      released: ${{ steps.sweep.outputs.released }}
+    steps:
+      - name: Preflight — inputs are well-formed
+        env:
+          STALE_DAYS: ${{ inputs.stale_days }}
+          LABEL: ${{ inputs.label }}
+          EXEMPT_LABEL: ${{ inputs.exempt_label }}
+        run: |
+          set -euo pipefail
+          case "$STALE_DAYS" in
+            (*[!0-9]*|"") echo "::error::stale_days '$STALE_DAYS' is not a number"; exit 1 ;;
+          esac
+          # An empty exempt label would make every standing claim sweepable, so
+          # it is a hard error rather than a defaulted-away mistake.
+          [ -n "$LABEL" ] || { echo "::error::label must not be empty"; exit 1; }
+          [ -n "$EXEMPT_LABEL" ] || { echo "::error::exempt_label must not be empty — it is what protects the machine-lane standing claims"; exit 1; }
+
+      - name: Sweep
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_CLOSED: ${{ inputs.release_closed }}
+          STALE_DAYS: ${{ inputs.stale_days }}
+          LABEL: ${{ inputs.label }}
+          EXEMPT_LABEL: ${{ inputs.exempt_label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          cutoff="$(date -u -d "$STALE_DAYS days ago" +%s)"
+
+          # ── The staleness rule is gated on the exemption being EXPRESSIBLE ──
+          # A standing claim is open, unrefreshed and PR-less, so rule 3 is the
+          # one that would delete it. If the exempt label does not exist here,
+          # no standing claim CAN be marked and rule 3 is not safe to run.
+          stale_ok=true
+          if [ "$STALE_DAYS" -gt 0 ]; then
+            if ! gh api "repos/$R/labels/$EXEMPT_LABEL" >/dev/null 2>&1; then
+              stale_ok=false
+              echo "::warning title=claim-sweep: staleness rule skipped::no '$EXEMPT_LABEL' label exists in $R, so a standing claim could not be marked exempt. Closed-issue releases still run. Create the label and tag the machine-lane claims to enable the staleness rule."
+            fi
+          fi
+
+          released=0 kept=0 exempt=0
+
+          # Every issue carrying the claim label, open or closed. `issues` also
+          # returns PRs; a PR is not claimable work, so drop them.
+          issues="$(gh api --paginate \
+            "repos/$R/issues?state=all&labels=$LABEL&per_page=100" \
+            --jq '.[] | select(has("pull_request") | not) | .number' | sort -n || true)"
+
+          for n in $issues; do
+            issue="$(gh api "repos/$R/issues/$n")"
+            state="$(jq -r .state <<<"$issue")"
+            updated="$(jq -r .updated_at <<<"$issue")"
+            title="$(jq -r '.title | gsub("[\\r\\n\\t]"; " ")' <<<"$issue")"
+            updated_epoch="$(date -u -d "$updated" +%s)"
+
+            # FAIL-CLOSED: an unreadable label list keeps the claim.
+            if ! labels="$(jq -er '[.labels[].name] | join(",")' <<<"$issue")"; then
+              echo "keep         $R#$n (labels unreadable — keeping, fail-closed)  $title"
+              kept=$((kept+1)); continue
+            fi
+            case ",$labels," in
+              (*",$EXEMPT_LABEL,"*)
+                echo "exempt       $R#$n (standing claim)  $title"
+                exempt=$((exempt+1)); continue ;;
+            esac
+
+            reason=""
+            if [ "$state" = "closed" ] && [ "$RELEASE_CLOSED" = "true" ]; then
+              reason="the issue is closed, so the claim guards no remaining work"
+            elif [ "$state" = "open" ] && [ "$stale_ok" = "true" ] && [ "$STALE_DAYS" -gt 0 ] && [ "$updated_epoch" -lt "$cutoff" ]; then
+              # A linked OPEN PR is live work regardless of the issue's own quiet
+              # spell — the claim is doing its job. An unreadable answer counts
+              # as "has a PR", so the failure keeps rather than releases.
+              if ! linked="$(gh api "search/issues?q=repo:$R+is:pr+is:open+$n&per_page=1" --jq '.total_count')"; then
+                echo "keep         $R#$n (PR link unreadable — keeping, fail-closed)  $title"
+                kept=$((kept+1)); continue
+              fi
+              if [ "$linked" -gt 0 ]; then
+                echo "keep         $R#$n (linked open PR)  $title"
+                kept=$((kept+1)); continue
+              fi
+              reason="open but untouched since ${updated%T*}, past the ${STALE_DAYS}-day window, with no linked open PR"
+            fi
+
+            if [ -z "$reason" ]; then
+              echo "keep         $R#$n ($state, updated ${updated%T*})  $title"
+              kept=$((kept+1)); continue
+            fi
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "WOULD RELEASE $R#$n ($reason)  $title"
+              released=$((released+1)); continue
+            fi
+
+            # THE BODY GOES THROUGH `--input -`, NOT `-d`. `gh api` has no `-d`
+            # flag at all — that is curl's, which is why `_claim.yml` uses it
+            # correctly while this file must not. Porting the idiom across the
+            # two tools is what broke this lane's first real run
+            # (`unknown shorthand flag: 'd' in -d`), and a dry run cannot catch
+            # it because the release branch is the one path a dry run never
+            # enters (.github#289).
+            jq -nc --arg u "$RUN_URL" --arg r "$reason" --arg e "$EXEMPT_LABEL" \
+              '{body: ("🔓 **Released** by [claim-sweep](\($u)) — \($r).\n\nRe-claim through the same door if this work is live; releasing and re-claiming are both cheap, and a fresh claim spares it from the next sweep. A standing claim held by a machine lane should carry the `\($e)` label, which this sweep never releases.\n\n<!-- front-desk-claim -->\nRecorded by the sweep, not by a guest. This does not assert who held the claim.")}' \
+              | gh api "repos/$R/issues/$n/comments" --input - >/dev/null
+
+            # Comment BEFORE label, deliberately. `.github-private`#652 is the
+            # shape where a label comes off with no record of why, leaving an
+            # issue nobody holds and nobody can take. This ordering is also what
+            # turned the `-d` defect into a clean no-op rather than a partial
+            # sweep: the run died before any label moved.
+            gh api -X DELETE "repos/$R/issues/$n/labels/$LABEL" >/dev/null
+
+            # One request for all assignees, and the `|| warning` must stay:
+            # under `set -e` a non-assignable login AFTER the label came off
+            # would abort mid-release, the same #652 half-applied shape. The
+            # label is the half `pr-claim` reads, so once it is gone the claim
+            # IS released; the assignee is a human-facing projection only.
+            assignees="$(jq -c '{assignees: [.assignees[].login]}' <<<"$issue")"
+            if [ "$assignees" != '{"assignees":[]}' ]; then
+              printf '%s' "$assignees" \
+                | gh api -X DELETE "repos/$R/issues/$n/assignees" --input - >/dev/null \
+                || echo "::warning title=claim-sweep: unassign failed::$R#$n still shows an assignee; the label is removed, so the claim is released"
+            fi
+
+            echo "released     $R#$n ($reason)  $title"
+            released=$((released+1))
+          done
+
+          rv="would release"
+          [ "$DRY_RUN" = "true" ] || rv="released"
+          echo "claim-sweep: $rv $released, kept $kept, exempted $exempt claim(s) in $R."
+          echo "released=$released" >> "$GITHUB_OUTPUT"
+
+      # ── THE SENDER HALF, and why it lives here ─────────────────────────────
+      # `front-desk-feed`'s publish lane already ACCEPTS
+      # `repository_dispatch: types: [pr-activity, claim-activity]`. The
+      # `claim-activity` type was added in front-desk-feed#6 for exactly this,
+      # and that file's header names what is missing: "No sender emits
+      # `claim-activity` yet; the claim doors are the natural one, since they
+      # are the only things that know a claim changed."
+      #
+      # This is a claim door. It is the only thing in the org that knows a batch
+      # of claims just stopped being claims, so it is where the notification
+      # belongs.
+      #
+      # WHY IT MATTERS. The feed's `35 * * * *` cron is best-effort and GitHub
+      # drops slots under load — a denser cron is skipped MORE often, not less.
+      # Measured on 2026-08-28: seven stale claims were released between ~21:20Z
+      # and ~21:35Z and claims.bounded.tools went on listing all seven as live
+      # work, one already closed and merged, from an 18:55:58Z snapshot until a
+      # hand dispatch at 22:38Z. Nearly four hours, at least three slots taken
+      # and none producing anything. The page reported its age honestly
+      # throughout; it simply had nothing newer.
+      #
+      # ONLY WHEN SOMETHING CHANGED. A dry run notifies nothing (it changed
+      # nothing), and a real run that released nothing notifies nothing (the
+      # board still says what it said). Otherwise every weekly no-op cron would
+      # spend a publish run to republish an identical feed.
+      #
+      # INERT UNTIL PROVISIONED, and honestly so — the same posture the
+      # receiving half shipped with. `repository_dispatch` needs
+      # `contents: write` on the target, which a caller's own GITHUB_TOKEN does
+      # not carry for another repository, so this needs a broker binding-plane
+      # entry bounded by an installation on that repo alone. Until a caller
+      # passes `feed_dispatch_token`, this step is skipped and the feed waits on
+      # its cron exactly as before. Nothing here fails when the secret is
+      # absent: a sweep's job is to release claims, and a stale page is not a
+      # reason to call that failed.
+      #
+      # NEVER FATAL. `continue-on-error` because the release already happened
+      # and is already correct; a failed notification costs freshness, not
+      # truth, and the cron backstop still recovers it.
+      - name: Notify the feed that claims changed
+        # The token is checked IN THE SHELL, not in this `if`. The `secrets`
+        # context's availability in a step conditional is exactly the kind of
+        # thing that evaluates to something surprising rather than erroring, and
+        # #289 is the standing record of shipping a branch no dry run reaches.
+        # An empty env var is unambiguous in every shell, on every runner.
+        if: ${{ inputs.dry_run == false && steps.sweep.outputs.released != '0' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.feed_dispatch_token }}
+          FEED_REPO: ${{ inputs.feed_repo }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=claim-sweep: feed not notified::no feed_dispatch_token was supplied, so ${FEED_REPO} keeps waiting on its own cron. The claims were released regardless; this only affects how soon the page reflects them."
+            exit 0
+          fi
+          # The payload is deliberately empty of anything derived from an issue.
+          # Every event produces the same whole-board reprojection, so there is
+          # nothing for the receiver to branch on — and this repo's caller may be
+          # PRIVATE, so a repo name in the payload would cross into a
+          # world-readable log on the other side. front-desk-feed's header makes
+          # the same point about its own payload and refuses to print it.
+          jq -nc '{event_type: "claim-activity"}' \
+            | gh api -X POST "repos/$FEED_REPO/dispatches" --input - >/dev/null
+          echo "notified $FEED_REPO: claim-activity"
