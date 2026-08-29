@@ -221,7 +221,40 @@ jobs:
               # A linked OPEN PR is live work regardless of the issue's own quiet
               # spell — the claim is doing its job. An unreadable answer counts
               # as "has a PR", so the failure keeps rather than releases.
-              if ! linked="$(gh api "search/issues?q=repo:$R+is:pr+is:open+$n&per_page=1" --jq '.total_count')"; then
+              #
+              # THIS ASKS FOR REFERENCES, NOT FOR DIGITS (#295). It used to be
+              #   search/issues?q=repo:$R+is:pr+is:open+$n
+              # where `$n` is a BARE FREE-TEXT TERM, so it matched any open PR
+              # whose indexed text merely contained those digits — a body reading
+              # "373 of 400 cases", a version string, a changed line. It never
+              # tested linkage. Both of its failure modes point the same way (a
+              # spurious match keeps, an unreadable answer keeps), so rule 3 could
+              # only ever over-retain, and measurably did: run 33272158443 kept
+              # five issues as "(linked open PR)" while the repository had ZERO
+              # open pull requests, one of them 21 days stale.
+              #
+              # The timeline reports actual cross-references and the state of each
+              # source, so this is the question the rule meant to ask. A
+              # cross-reference is a mention rather than a closing link, which is
+              # the same breadth the old intent had — "is there live work pointing
+              # at this issue" — narrowed from ANY open PR containing the digits
+              # to an open PR that actually references it.
+              #
+              # It is also REPOSITORY-SCOPED where search/issues is org-scoped.
+              # This reusable runs against the caller's repo with the caller's
+              # GITHUB_TOKEN, and a token restricted to one repository cannot call
+              # search/issues at all — it fails, and failure keeps. The old
+              # predicate was therefore inert by construction under exactly the
+              # credential this file is built around.
+              #
+              # Deliberately NOT the closing-reference GraphQL connection: an
+              # unavailable field errors, and an error keeps, which would reinstate
+              # this bug wearing a new costume.
+              if ! linked="$(gh api "repos/$R/issues/$n/timeline?per_page=100" \
+                  --jq '[ .[]
+                          | select(.event == "cross-referenced")
+                          | .source.issue
+                          | select(has("pull_request") and .state == "open") ] | length')"; then
                 echo "keep         $R#$n (PR link unreadable — keeping, fail-closed)  $title"
                 kept=$((kept+1)); continue
               fi
