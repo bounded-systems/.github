@@ -41,9 +41,12 @@ _(Org posture: outward-only, composably-published.)_
      run-backed. It now attests that a KEYHOLDER approved this exact
      (repo, issue, claimant) — but still not that the session IS the claimant
      (#530; the remaining gap is the #113 family).
-  3. Hand-claim (assign + comment) — last resort only, when no door is
-     reachable. It provides **no exclusion** (keycard#7, `signerSelfAsserted`);
-     say plainly the window was down.
+  3. Hand-claim — last resort only, when no door is reachable. It provides
+     **no exclusion** (keycard#7, `signerSelfAsserted`); say plainly the window
+     was down. **Assign (or label `claimed`) AND comment — not two courtesies:**
+     `pr-claim` reads the LABEL or the ASSIGNEE, and parses the comment only
+     afterwards to attribute the door. A comment alone reads as unclaimed
+     (`.github`#282).
   Whichever door: confirm the claim comment on the issue names your claimant.
   An issue with any assignee or the `claimed` label is someone else's — do not
   start. Work with no issue yet → open one and claim it; the direction
