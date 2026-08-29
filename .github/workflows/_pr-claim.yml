@@ -241,6 +241,11 @@ jobs:
 
           live=0
           now="$(date -u +%s)"
+          # Why each candidate failed, one per line. The summary table has always
+          # carried this; the error line did not, so a PR that named an UNLABELLED
+          # issue and one that named a CLOSED issue produced the same sentence and
+          # sent the author to fix different things (#282).
+          fails="$(mktemp)"
 
           while IFS=$'\t' read -r via nwo num; do
             [ -n "${num:-}" ] || continue
@@ -249,6 +254,7 @@ jobs:
             if ! gh api "repos/${nwo}/issues/${num}" > "$issue" 2>/dev/null </dev/null; then
               echo "| \`${nwo}#${num}\` | ${via} | ❓ unreadable | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
               echo "::warning title=pr-claim: could not read ${nwo}#${num}::this token may not reach that repository. Counted as NOT claimed."
+              printf '%s#%s: unreadable from this repo\n' "$nwo" "$num" >> "$fails"
               continue
             fi
 
@@ -256,6 +262,7 @@ jobs:
             # `Closes #<another PR>` must not satisfy a rule about issues.
             if [ "$(jq -r 'has("pull_request")' "$issue")" = "true" ]; then
               echo "| \`${nwo}#${num}\` | ${via} | ⚠️ is a PR | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
+              printf '%s#%s: is a pull request, not an issue\n' "$nwo" "$num" >> "$fails"
               continue
             fi
 
@@ -314,7 +321,10 @@ jobs:
               verdict="live"; ok=true
             fi
 
-            if [ "$ok" = true ]; then live=1; icon="✅"; else icon="❌"; fi
+            if [ "$ok" = true ]; then live=1; icon="✅"; else
+              icon="❌"
+              printf '%s#%s: %s\n' "$nwo" "$num" "$verdict" >> "$fails"
+            fi
             echo "| [\`${nwo}#${num}\`](${GITHUB_SERVER_URL}/${nwo}/issues/${num}) | ${via} | ${state} | ${icon} ${verdict} | ${door} | \`${claimant}\` |" >> "$GITHUB_STEP_SUMMARY"
           done < "$cands"
 
@@ -323,6 +333,14 @@ jobs:
               echo
               echo "**❌ No named issue carries a live claim.**"
               echo
+              if grep -q "no \`${LABEL}\` label, no assignee" "$fails"; then
+                echo "> **A claim _comment_ alone does not register.** This check reads the"
+                echo "> \`${LABEL}\` **label** or an **assignee**; the claim comment is parsed"
+                echo "> afterwards only to attribute the door. Door 3 is \"assign **and**"
+                echo "> comment\" — one machine predicate and one human record, not two"
+                echo "> courtesies. Add the label or an assignee and re-run (#282)."
+                echo
+              fi
               echo "Claim it before working — best reachable door first (#529):"
               echo
               echo "1. \`claim-ticket.yml\` in \`bounded-systems/.github\` (\`repo\`, \`issue\`, \`claimant\`)"
@@ -331,7 +349,8 @@ jobs:
               echo
               echo "Then confirm on the **issue** that the claim comment names your claimant."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error title=pr-claim: no live claim::this PR names an issue, but no named issue is open and claimed. See the job summary."
+            why="$(paste -sd'; ' "$fails" 2>/dev/null || true)"
+            echo "::error title=pr-claim: no live claim::${why:-no named issue is open and claimed}. See the job summary."
             exit 1
           fi
 

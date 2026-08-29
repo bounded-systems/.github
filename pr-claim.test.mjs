@@ -426,3 +426,76 @@ test("the explicit `pr` input wins over the triggering event", () => {
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /PR #77 names a live claim/);
 });
+
+// ── The error LINE, not just the summary table (#282) ───────────────────────
+// A PR naming an unlabelled issue and one naming a closed issue used to produce
+// the same sentence — "names an issue, but no named issue is open and claimed" —
+// while the verdict that discriminates lived in the summary table. Four states,
+// one message, four different fixes.
+//
+// This was not hypothetical: it cost two failed PRs in one session, one of them
+// the PR that fixed the issue it could not name. So the error line is pinned
+// here, per candidate, and the assertions are on `output` (where `::error::`
+// goes) rather than on the summary that already carried it.
+
+test("#282: the error line names the label/assignee state, not a generic sentence", () => {
+  const r = run({
+    pr: prPayload("Closes #264.", [["bounded-systems/.github", 264]]),
+    issues: { 264: issue({ labels: [], assignees: [] }) },
+    comments: { 264: [] },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.output, /::error title=pr-claim: no live claim::/);
+  assert.match(r.output, /bounded-systems\/\.github#264: no .claimed. label, no assignee/);
+});
+
+test("#282: a CLOSED issue produces a different error line than an unlabelled one", () => {
+  const closed = run({
+    pr: prPayload("Closes #722.", [["bounded-systems/.github-private", 722]]),
+    issues: { 722: issue({ state: "closed", labels: ["claimed"] }) },
+    comments: { 722: [] },
+  });
+  const unlabelled = run({
+    pr: prPayload("Closes #264.", [["bounded-systems/.github", 264]]),
+    issues: { 264: issue({ labels: [], assignees: [] }) },
+    comments: { 264: [] },
+  });
+  assert.equal(closed.status, 1);
+  assert.equal(unlabelled.status, 1);
+  const line = (o) => o.split("\n").find((l) => l.includes("no live claim::")) ?? "";
+  assert.match(line(closed.output), /issue closed/);
+  // The discriminating assertion: the two failures must not read alike.
+  assert.notEqual(line(closed.output), line(unlabelled.output));
+});
+
+test("#282: an unreadable cross-repo issue is named in the error line", () => {
+  const r = run({
+    pr: prPayload("Claim-issue: other/private#7", [], "bounded-systems/desk"),
+    issues: {},
+    comments: {},
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.output, /other\/private#7: unreadable from this repo/);
+});
+
+test("#282: the summary explains that a claim COMMENT alone does not register", () => {
+  const r = run({
+    pr: prPayload("Closes #264.", [["bounded-systems/.github", 264]]),
+    issues: { 264: issue({ labels: [], assignees: [] }) },
+    comments: { 264: [] },
+  });
+  assert.match(r.summary, /claim _comment_ alone does not register/);
+  // The phrase wraps a line in the emitted summary, so match the distinctive half.
+  assert.match(r.summary, /assign \*\*and\*\*/);
+});
+
+test("#282: that explanation is absent when the failure is NOT the label case", () => {
+  // Otherwise the hint becomes noise on every red run and stops being read.
+  const r = run({
+    pr: prPayload("Closes #722.", [["bounded-systems/.github-private", 722]]),
+    issues: { 722: issue({ state: "closed", labels: ["claimed"] }) },
+    comments: { 722: [] },
+  });
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.summary, /claim _comment_ alone does not register/);
+});
