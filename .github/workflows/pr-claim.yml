@@ -1,22 +1,42 @@
 name: pr-claim
 
-# This repo DEFINES the "every PR is claimed work" check (`_pr-claim.yml`), so
-# this repo is subject to it. A rule whose author is exempt is a rule that gets
-# written and never felt.
+# THE CANONICAL pr-claim CALLER, rolled to every non-archived org repo by
+# docs/handoffs/scripts/reroll-pr-claim.sh. Identical bytes in every repo —
+# nothing per-repo to substitute, which is what makes the roll safe to re-run.
 #
-# STABLE CHECK NAME, ON PURPOSE. The job is `pr-claim`, with no `paths:` filter:
-# the predicate is about the PULL REQUEST, not about the diff, so there is no
-# such thing as a change this does not apply to. That also makes it the name a
-# ruleset can require.
+# WHAT IT CHECKS. That this PR names an issue which is OPEN and still carries a
+# claim — via `Closes #N`, or `Claim-issue: owner/repo#N` on its own line for
+# work that runs under a claim without closing it. `.github-private`#723.
 #
-# IT DOES NOT BLOCK YET, AND THAT IS STATED RATHER THAN ASSUMED. `.github` is
-# absent from `org/rulesets/ci-green.json` (which names `front-desk-scheduler`
-# only), and this repo's default branch carries `pull_request`,
-# `required_signatures`, `required_linear_history` and `non_fast_forward` — none
-# of which look at CI. So a red `pr-claim` here REPORTS; it does not refuse.
-# Closing that is a change to `ci-green.json` in `.github-private`, not to this
-# file, and `workflows.test.mjs` already carries the same measurement about the
-# `schema` job for the same reason.
+# WHY EVERY REPO NEEDS THIS FILE BEFORE THE RULESET REQUIRES THE CHECK.
+# A required status check with no workflow producing it never reports. It sits
+# pending forever and every PR in that repo becomes unmergeable. So the order is
+# not a preference:
+#
+#   1. roll this caller to every repo   (this lane)
+#   2. THEN add `pr-claim / pr-claim` to the org ruleset
+#
+# Reversing it bricks the org. Measured on 2026-08-29: `site`#260 opened and
+# merged at 03:09→03:17 with 19 checks and no `pr-claim` among them, and `site`
+# carries no caller — so the check cannot currently be required there.
+#
+# THE PERMISSIONS ARE GRANTED HERE, NOT IN THE REUSABLE. A `workflow_call`
+# callee can only ever NARROW what the caller hands it. A caller that omits
+# `issues: read` leaves the check unable to read a private issue — which it
+# reports as `unreadable` and counts as NOT claimed, the fail-closed direction,
+# but a false red rather than a true one.
+#
+# WHY THE PIN IS 8a56f22. That is `.github`#283, the newest commit to touch
+# `_pr-claim.yml`: it names which state each candidate issue is in rather than
+# collapsing four outcomes into one sentence. Pinning an older commit rolls a
+# check whose failure message cannot tell an unreadable issue from an unclaimed
+# one. The roll script refuses any template not pinned here.
+#
+# IT DOES NOT AUTHENTICATE THE CLAIMANT. A green `pr-claim` means "an open,
+# claimed issue was named", and no more — an author can name any claimed issue,
+# including someone else's. Closing that needs an authenticated guest identity
+# (`.github-private`#530), not more workflow plumbing. Do not cite this check as
+# authorization.
 
 on:
   pull_request:
@@ -26,12 +46,11 @@ permissions:
 
 jobs:
   pr-claim:
-    # Reading a PR and an issue. The reusable can only ever narrow what it is
-    # handed, so the grant has to be made HERE — a caller that forgets these
-    # leaves the check unable to read a private issue, which it reports as
-    # unreadable rather than passing.
+    # Reading a PR and an issue. The reusable can only narrow what it is handed,
+    # so the grant is made here — see the note above on what omitting it costs.
     permissions:
       contents: read
       issues: read
       pull-requests: read
-    uses: ./.github/workflows/_pr-claim.yml
+    # SHA-pinned, per org policy — never a branch.
+    uses: bounded-systems/.github/.github/workflows/_pr-claim.yml@8a56f22f32bd007affbef503a4f1ac736c9aa52d
