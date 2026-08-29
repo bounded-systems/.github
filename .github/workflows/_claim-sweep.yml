@@ -168,11 +168,33 @@ jobs:
 
           released=0 kept=0 exempt=0
 
-          # Every issue carrying the claim label, open or closed. `issues` also
-          # returns PRs; a PR is not claimable work, so drop them.
-          issues="$(gh api --paginate \
-            "repos/$R/issues?state=all&labels=$LABEL&per_page=100" \
-            --jq '.[] | select(has("pull_request") | not) | .number' | sort -n || true)"
+          # A CLAIM IS THE LABEL **OR** AN ASSIGNEE, so the sweep must enumerate
+          # both. `_claim.yml` states the definition ("The `claimed` label plus a
+          # comment... The assignee is a best-effort human-facing projection"),
+          # `_pr-claim.yml` reads either, and the board projection computes
+          # `claimed` as exactly that disjunction:
+          #
+          #     claimed: (([.content.labels.nodes[]?.name] | index("claimed")) != null
+          #               or ([.content.assignees.nodes[]?.login] | length) > 0)
+          #
+          # Enumerating by label alone silently under-collects. Measured
+          # 2026-08-29, after this lane had already run against `.github`: six
+          # rows there still read `claimed` on the board — #103, #119, #226,
+          # #230, #232, #259 — every one of them closed, carrying NO labels, and
+          # assigned. The sweep had never visited them, because the query that
+          # finds work to do disagreed with the definition of the thing it is
+          # sweeping. The label rule and the enumeration must come from one
+          # definition or the lane reports a clean repo that is not clean.
+          #
+          # Two queries, unioned and de-duplicated. `assignee=*` is GitHub's
+          # "has any assignee" filter. `issues` also returns PRs; a PR is not
+          # claimable work, so drop them from both.
+          jqf='.[] | select(has("pull_request") | not) | .number'
+          labelled="$(gh api --paginate \
+            "repos/$R/issues?state=all&labels=$LABEL&per_page=100" --jq "$jqf" || true)"
+          assigned="$(gh api --paginate \
+            "repos/$R/issues?state=all&assignee=*&per_page=100" --jq "$jqf" || true)"
+          issues="$(printf '%s\n%s\n' "$labelled" "$assigned" | sed '/^$/d' | sort -n -u)"
 
           for n in $issues; do
             issue="$(gh api "repos/$R/issues/$n")"
@@ -236,7 +258,14 @@ jobs:
             # issue nobody holds and nobody can take. This ordering is also what
             # turned the `-d` defect into a clean no-op rather than a partial
             # sweep: the run died before any label moved.
-            gh api -X DELETE "repos/$R/issues/$n/labels/$LABEL" >/dev/null
+            # Only when the label is actually present. Since the enumeration
+            # now also finds ASSIGNEE-ONLY claims, this DELETE would 404 on
+            # them, and under `set -e` that aborts the run *after* the release
+            # comment posted and *before* the unassign — the exact #652
+            # half-applied shape this ordering exists to prevent.
+            case ",$labels," in
+              (*",$LABEL,"*) gh api -X DELETE "repos/$R/issues/$n/labels/$LABEL" >/dev/null ;;
+            esac
 
             # One request for all assignees, and the `|| warning` must stay:
             # under `set -e` a non-assignable login AFTER the label came off
