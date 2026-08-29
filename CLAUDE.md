@@ -70,8 +70,12 @@ claim needs no token.
    `human_authorization`) — for `.github-private` issues when door 1 is
    unreachable. Attests that a KEYHOLDER approved this exact
    (repo, issue, claimant); still not that the session IS the claimant (#530).
-3. Hand-claim (assign + comment) — last resort, and it provides **no exclusion**
-   (keycard#7, `signerSelfAsserted`). Say plainly the window was down.
+3. Hand-claim — last resort, and it provides **no exclusion** (keycard#7,
+   `signerSelfAsserted`). Say plainly the window was down.
+   **Assign (or label `claimed`) AND comment — these are not two courtesies.**
+   `pr-claim` reads the LABEL or the ASSIGNEE; the claim comment is parsed only
+   afterwards, to attribute the door. A comment alone leaves the issue unclaimed
+   as far as every check is concerned (#282).
 
 Whichever door: confirm on the **issue** that the claim comment names your
 claimant — a dispatch does not return its run id, so the issue is the record,
