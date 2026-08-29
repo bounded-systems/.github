@@ -92,6 +92,21 @@ on:
         description: "Label marking a standing claim, never released at any age"
         type: string
         default: standing-claim
+      feed_repo:
+        description: >-
+          owner/repo to notify with a `claim-activity` repository_dispatch after a
+          real run that released something. Inert unless `feed_dispatch_token` is
+          also supplied — see the note on the notify step.
+        type: string
+        default: bounded-systems/front-desk-feed
+    secrets:
+      feed_dispatch_token:
+        description: >-
+          A token carrying `contents: write` on `feed_repo` — the permission
+          `repository_dispatch` requires. Optional: absent means the notify step
+          is skipped and the feed waits for its own cron, which is exactly the
+          behaviour before this input existed.
+        required: false
     outputs:
       released:
         description: "How many claims this run released (or would release, on a dry run)"
@@ -243,3 +258,69 @@ jobs:
           [ "$DRY_RUN" = "true" ] || rv="released"
           echo "claim-sweep: $rv $released, kept $kept, exempted $exempt claim(s) in $R."
           echo "released=$released" >> "$GITHUB_OUTPUT"
+
+      # ── THE SENDER HALF, and why it lives here ─────────────────────────────
+      # `front-desk-feed`'s publish lane already ACCEPTS
+      # `repository_dispatch: types: [pr-activity, claim-activity]`. The
+      # `claim-activity` type was added in front-desk-feed#6 for exactly this,
+      # and that file's header names what is missing: "No sender emits
+      # `claim-activity` yet; the claim doors are the natural one, since they
+      # are the only things that know a claim changed."
+      #
+      # This is a claim door. It is the only thing in the org that knows a batch
+      # of claims just stopped being claims, so it is where the notification
+      # belongs.
+      #
+      # WHY IT MATTERS. The feed's `35 * * * *` cron is best-effort and GitHub
+      # drops slots under load — a denser cron is skipped MORE often, not less.
+      # Measured on 2026-08-28: seven stale claims were released between ~21:20Z
+      # and ~21:35Z and claims.bounded.tools went on listing all seven as live
+      # work, one already closed and merged, from an 18:55:58Z snapshot until a
+      # hand dispatch at 22:38Z. Nearly four hours, at least three slots taken
+      # and none producing anything. The page reported its age honestly
+      # throughout; it simply had nothing newer.
+      #
+      # ONLY WHEN SOMETHING CHANGED. A dry run notifies nothing (it changed
+      # nothing), and a real run that released nothing notifies nothing (the
+      # board still says what it said). Otherwise every weekly no-op cron would
+      # spend a publish run to republish an identical feed.
+      #
+      # INERT UNTIL PROVISIONED, and honestly so — the same posture the
+      # receiving half shipped with. `repository_dispatch` needs
+      # `contents: write` on the target, which a caller's own GITHUB_TOKEN does
+      # not carry for another repository, so this needs a broker binding-plane
+      # entry bounded by an installation on that repo alone. Until a caller
+      # passes `feed_dispatch_token`, this step is skipped and the feed waits on
+      # its cron exactly as before. Nothing here fails when the secret is
+      # absent: a sweep's job is to release claims, and a stale page is not a
+      # reason to call that failed.
+      #
+      # NEVER FATAL. `continue-on-error` because the release already happened
+      # and is already correct; a failed notification costs freshness, not
+      # truth, and the cron backstop still recovers it.
+      - name: Notify the feed that claims changed
+        # The token is checked IN THE SHELL, not in this `if`. The `secrets`
+        # context's availability in a step conditional is exactly the kind of
+        # thing that evaluates to something surprising rather than erroring, and
+        # #289 is the standing record of shipping a branch no dry run reaches.
+        # An empty env var is unambiguous in every shell, on every runner.
+        if: ${{ inputs.dry_run == false && steps.sweep.outputs.released != '0' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.feed_dispatch_token }}
+          FEED_REPO: ${{ inputs.feed_repo }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=claim-sweep: feed not notified::no feed_dispatch_token was supplied, so ${FEED_REPO} keeps waiting on its own cron. The claims were released regardless; this only affects how soon the page reflects them."
+            exit 0
+          fi
+          # The payload is deliberately empty of anything derived from an issue.
+          # Every event produces the same whole-board reprojection, so there is
+          # nothing for the receiver to branch on — and this repo's caller may be
+          # PRIVATE, so a repo name in the payload would cross into a
+          # world-readable log on the other side. front-desk-feed's header makes
+          # the same point about its own payload and refuses to print it.
+          jq -nc '{event_type: "claim-activity"}' \
+            | gh api -X POST "repos/$FEED_REPO/dispatches" --input - >/dev/null
+          echo "notified $FEED_REPO: claim-activity"
