@@ -22,6 +22,8 @@ import { parseAuthorizationToken, claimRequestFrom, CLAIM_POLICY_V1 } from "./cl
 import {
   ANNOUNCE_REPO,
   ANNOUNCE_WORKFLOW,
+  announceInputs,
+  handoffNotice,
   CEREMONY_WINDOW_MS,
   EXPIRY_GRACE_MS,
   announceCeremony,
@@ -283,4 +285,53 @@ test("an API refusal and a transport error are both survived, and distinguishabl
   );
   assert.equal(threw.announced, false);
   assert.match(threw.reason, /ECONNRESET/);
+});
+
+// ── The hand-off, when the dispatch cannot happen (#305) ─────────────────────
+//
+// MEASURED 2026-08-31: this process's env token carries `actions: read` and
+// GitHub itself refuses the dispatch POST with `Resource not accessible by
+// integration`. It is not a transient. So the failure branch is the branch that
+// runs in a session, every time, and what it prints is the whole of its value.
+//
+// The property under test is ANTI-DRIFT, not wording. A hand-off is only worth
+// printing if following it produces the notice this file would have sent; a
+// second copy of the text that quietly diverges is a message that can only see
+// its own scaffolding.
+
+test("the hand-off names exactly the inputs the dispatch would have sent", async () => {
+  const args = {
+    repo: "bounded-systems/.github",
+    issue: "305",
+    claimant: "claude/x",
+    approveUrl: "https://keeper.bounded.tools/a/abc",
+  };
+  let seen;
+  await announceCeremony(args, {
+    env: { GH_TOKEN: "t" },
+    fetchImpl: async (_u, init) => { seen = JSON.parse(init.body); return { status: 204 }; },
+  });
+
+  const text = handoffNotice(args);
+  // Bound to the ACTUAL request body, not to a literal repeated here. A second
+  // rendering of the title or body in either path breaks this.
+  for (const [k, v] of Object.entries(seen.inputs)) {
+    assert.ok(text.includes(v), `the hand-off omits the ${k} the dispatch sends: ${v}`);
+  }
+  assert.deepEqual(seen.inputs, announceInputs(args));
+  // The REF is the fourth thing a session has to type, and desk pins the ref as
+  // tightly as it pins the file. Bound to the dispatch's own ref for the same
+  // reason as the inputs: moving one and not the other is silent here otherwise.
+  assert.ok(text.includes(`ref ${seen.ref}`), `the hand-off names a ref the dispatch does not use: ${seen.ref}`);
+});
+
+test("the hand-off names the lane desk allowlists, at the ref it allowlists", async () => {
+  // desk pins ONE workflow at ONE ref. A hand-off pointing at anything else
+  // sends a session to dispatch something that cannot notify.
+  const text = handoffNotice({
+    repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x",
+  });
+  assert.ok(text.includes(ANNOUNCE_WORKFLOW), "names no workflow");
+  assert.ok(text.includes(ANNOUNCE_REPO), "names no repo");
+  assert.match(text, /\bmain\b/);
 });
