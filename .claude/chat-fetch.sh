@@ -34,20 +34,26 @@ MODE="render"
 PROJECT=""
 case "${1:-}" in
   "") ;;
-  --json) MODE="json" ;;
+  --json) MODE="json"; shift ;;
   --incept)
     MODE="incept"
-    PROJECT="${2:-}"
+    shift
+    if [ $# -ge 1 ]; then PROJECT="$1"; shift; fi
     ;;
   *) usage ;;
 esac
+# Surplus arguments refuse like a bad flag does (#318): silently ignoring
+# them made `--json extra` and `--frobnicate` behave differently for the
+# same class of caller error.
+[ $# -eq 0 ] || usage
 
-# The relay validates for real; this check only keeps an obviously wrong
-# argument (a pathbase URL, a bare word) from spending a network round-trip.
-case "$SHARE_URL" in
-  https://claude.ai/share/*) ;;
-  *) echo "chat-fetch: not a claude.ai share URL: $SHARE_URL" >&2; exit 2 ;;
-esac
+# The relay validates for real, but this check is also what makes the JSON
+# body construction below injection-proof (#318): the FULL match — scheme,
+# host, /share/, a bare UUID, optional trailing slash — admits no quote,
+# backslash, or brace, so interpolating the URL into the body cannot alter
+# its structure. Loosen this only together with how the body is built.
+printf '%s' "$SHARE_URL" | grep -Eq '^https://claude\.ai/share/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$' || {
+  echo "chat-fetch: not a claude.ai share URL: $SHARE_URL" >&2; exit 2; }
 
 BEARER="${CLAUDE_RELAY_BEARER:-}"
 if [ -z "$BEARER" ] && [ -r "$HOME/.relay-lease-bearer" ]; then
@@ -72,10 +78,17 @@ fi
 # reaches the user verbatim instead of a bare exit code.
 GRAPH="$(mktemp)"
 trap 'rm -f "$GRAPH"' EXIT
+# The bearer rides a header FILE via -H @-, never argv (#318): a -H
+# "authorization: Bearer ..." argument is visible to every same-user process
+# for the duration of the request. stdin is already spoken for by nothing
+# here, so the heredoc-fed @- form costs nothing.
 HTTP_CODE="$(curl -sS --max-time 60 -o "$GRAPH" -w '%{http_code}' -X POST "$RELAY_URL" \
-  -H "authorization: Bearer $BEARER" \
+  -H @- \
   -H 'content-type: application/json' \
-  -d "{\"share_url\":\"$SHARE_URL\"}")"
+  -d "{\"share_url\":\"$SHARE_URL\"}" <<EOF
+authorization: Bearer $BEARER
+EOF
+)"
 if [ "$HTTP_CODE" != "200" ]; then
   echo "chat-fetch: relay answered HTTP $HTTP_CODE:" >&2
   cat "$GRAPH" >&2
