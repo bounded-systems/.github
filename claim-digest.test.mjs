@@ -257,3 +257,58 @@ test("an absent backup flag is unknown, not assumed", () => {
   assert.equal(assuranceLevel(null), "unknown");
   assert.equal(assuranceLevel({ backupEligible: "false" }), "unknown");
 });
+
+// ── the ladder, against the committed fixture ────────────────────────────────
+//
+// The cases above are hand-written and stay that way — they read well and they
+// are proven. What they are NOT is portable: they exercise this repo's
+// implementation only. #310 measured the cost of that. The encoding vectors
+// could not see the ladder, so when #706 landed here the vendored copy in
+// bounded-systems/infra kept the pre-#706 classification and nothing went red
+// for five days. It was dead code there, so nothing was mis-graded — but the
+// keeper is one import away from grading with it.
+//
+// So the cases also live in claim-digest.vectors.json, and every implementation
+// runs them from there. A case added to the fixture is a case infra's suite
+// runs too, without anyone remembering to copy a test across.
+
+/** A case's record: `record` replaces outright (including null); else patch/unset over the base. */
+function ladderRecord(vector, base) {
+  if ("record" in vector) return vector.record;
+  const record = { ...base, ...(vector.patch ?? {}) };
+  for (const key of vector.unset ?? []) delete record[key];
+  return record;
+}
+
+test("the ladder fixture exists and every case asserts something", () => {
+  assert.ok(vectors.ladder, "claim-digest.vectors.json carries no `ladder` section");
+  assert.ok(vectors.ladder.cases.length >= 20, `expected ladder cases, got ${vectors.ladder.cases.length}`);
+  for (const v of vectors.ladder.cases) {
+    assert.ok(
+      "rung" in v || "notRung" in v || "aal" in v,
+      `ladder case asserts nothing, so it can never fail: ${v.name}`,
+    );
+  }
+  // The fixture must cover #706 by name, because that is the drift it exists to catch.
+  assert.ok(
+    vectors.ladder.cases.some((v) => v.name.includes("#706")),
+    "the fixture no longer names #706 — the case this section was written for",
+  );
+});
+
+test("every ladder vector classifies exactly as the fixture says", () => {
+  const { baseRecord, baseExpected, cases } = vectors.ladder;
+  for (const v of cases) {
+    const got = authorizationRung(ladderRecord(v, baseRecord), v.expected ?? baseExpected);
+    if ("rung" in v) assert.equal(got.rung, v.rung, v.name);
+    if ("notRung" in v) assert.notEqual(got.rung, v.notRung, v.name);
+    if ("reasons" in v) assert.deepEqual(got.reasons, v.reasons, v.name);
+    if ("reasonsMatch" in v) {
+      assert.ok(
+        got.reasons.join(" ").includes(v.reasonsMatch),
+        `${v.name}: reasons ${JSON.stringify(got.reasons)} do not mention ${JSON.stringify(v.reasonsMatch)}`,
+      );
+    }
+    if ("aal" in v) assert.equal(got.aal, v.aal, v.name);
+  }
+});
