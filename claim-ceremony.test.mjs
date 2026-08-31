@@ -20,8 +20,11 @@ import { fileURLToPath } from "node:url";
 import { validateClaimRequest, claimDigest } from "./claim-digest.mjs";
 import { parseAuthorizationToken, claimRequestFrom, CLAIM_POLICY_V1 } from "./claim-authorization.mjs";
 import {
+  ANNOUNCE_REPO,
+  ANNOUNCE_WORKFLOW,
   CEREMONY_WINDOW_MS,
   EXPIRY_GRACE_MS,
+  announceCeremony,
   approvalPrompt,
   buildRequest,
   ceremonyWindowMs,
@@ -223,4 +226,61 @@ test("org-defaults.yml actually runs this suite", () => {
   const root = dirname(fileURLToPath(import.meta.url));
   const wf = readFileSync(join(root, ".github/workflows/org-defaults.yml"), "utf8");
   assert.match(wf, /node --test claim-ceremony\.test\.mjs/);
+});
+
+// ── The announce lane (#305) ─────────────────────────────────────────────────
+//
+// The property under test is that this is a CONVENIENCE and cannot become a
+// gate. Every failure below must be reported and survived, because the ceremony
+// is what authorizes and a notification that did not send changes nothing about
+// whether a human can approve.
+
+test("with no GitHub token it skips cleanly, and says so", async () => {
+  // The session case this exists for: `claim-ceremony.mjs` run where no token
+  // is exported. Throwing here would take out the ceremony over a notification.
+  let called = false;
+  const r = await announceCeremony(
+    { repo: "desk", issue: "61", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    { env: {}, fetchImpl: async () => { called = true; } },
+  );
+  assert.equal(r.announced, false);
+  assert.match(r.reason, /no GitHub token/);
+  assert.equal(called, false, "it must not reach the network without a token");
+});
+
+test("a 204 is the only success, and it dispatches the pinned lane", async () => {
+  let seen;
+  const r = await announceCeremony(
+    { repo: "desk", issue: "61", claimant: "claude/x", approveUrl: "https://keeper.bounded.tools/a/x" },
+    {
+      env: { GH_TOKEN: "t" },
+      fetchImpl: async (url, init) => { seen = { url, init }; return { status: 204 }; },
+    },
+  );
+  assert.equal(r.announced, true);
+  assert.equal(seen.url,
+    `https://api.github.com/repos/${ANNOUNCE_REPO}/actions/workflows/${ANNOUNCE_WORKFLOW}/dispatches`);
+  const body = JSON.parse(seen.init.body);
+  assert.equal(body.ref, "main");
+  // The notice must name what is being approved: "an approval is waiting" is
+  // unactionable on a phone.
+  assert.match(body.inputs.title, /desk#61/);
+  assert.match(body.inputs.body, /desk#61/);
+  assert.equal(body.inputs.url, "https://keeper.bounded.tools/a/x");
+});
+
+test("an API refusal and a transport error are both survived, and distinguishable", async () => {
+  const refused = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    { env: { GH_TOKEN: "t" }, fetchImpl: async () => ({ status: 403 }) },
+  );
+  assert.equal(refused.announced, false);
+  assert.match(refused.reason, /HTTP 403/);
+
+  const threw = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    { env: { GH_TOKEN: "t" }, fetchImpl: async () => { throw new Error("ECONNRESET"); } },
+  );
+  assert.equal(threw.announced, false);
+  assert.match(threw.reason, /ECONNRESET/);
 });
