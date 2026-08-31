@@ -171,6 +171,35 @@ test("the fetch cache is staging, not installing", () => {
   // write and the node/cp lines that follow — which ARE steps and are covered.
   // Counting them would demand a fallback for the dispatcher fetching itself.
   assert.ok(!steps.some((s) => s.artifact.endsWith(".unverified")), "the .unverified staging path parsed as a step");
+
+  // Same rule, second writer (#325). boot.sh writes the `.mcp.json` that
+  // DECLARES the fetched verb server into the cache, beside the fetched files —
+  // content, not an install. What makes it live is `node $BOOT/register-mcp.mjs`
+  // further down, which is a step and is covered. The rule was written once per
+  // verb (cp/mv had it, cat did not), so this pins the shared one.
+  assert.ok(!steps.some((s) => s.artifact === ".mcp.json"), "a heredoc into the fetch cache parsed as an install step");
+});
+
+test("the cache exemption is scoped to the cache, not to the verb", () => {
+  // The thing that must NOT have happened when `cat` gained the exemption above:
+  // a blanket "heredocs are content" rule would have silently un-covered the
+  // settings.json write — the single step that makes every SessionStart hook run
+  // — and this suite would have gone green with the field's most load-bearing
+  // line no longer enumerated at all.
+  assert.ok(
+    steps.some((s) => s.artifact === "settings.json"),
+    "the settings.json heredoc stopped counting as a step — the cache exemption leaked past $BOOT",
+  );
+
+  const outsideCache = BOOT_SH.replace(
+    'echo "bootstrap: ready — dispatcher at $BOOT"',
+    'cat > "$CFG/some-new-thing.json" <<EOF\n{}\nEOF\necho "bootstrap: ready — dispatcher at $BOOT"',
+  );
+  assert.notEqual(outsideCache, BOOT_SH, "the anchor line moved — this test is no longer exercising anything");
+  assert.ok(
+    parseSteps(outsideCache).some((s) => s.artifact === "some-new-thing.json"),
+    "a heredoc landing OUTSIDE the fetch cache stopped being a step",
+  );
 });
 
 test("a heredoc BODY is content, not a command", () => {

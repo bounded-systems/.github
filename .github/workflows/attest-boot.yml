@@ -5,8 +5,8 @@ name: attest-boot
 #
 # WHAT THIS ADDS AND WHAT IT DOES NOT. The digest chain already decides what
 # EXECUTES: the field text refuses boot.sh unless it hashes to the dialog's
-# ORG_BOOT_SHA256, and fetch_verified refuses the three artifacts unless they
-# hash to boot.sh's pinned SUM_*. What no digest can say is WHO PRODUCED the
+# ORG_BOOT_SHA256, and fetch_verified refuses each fetched artifact unless it
+# hashes to boot.sh's pinned SUM_*. What no digest can say is WHO PRODUCED the
 # bytes — "matches the number in the dialog" is not "came from this repo's
 # main". This lane signs that second claim: keyless Sigstore provenance off
 # the workflow's own Actions OIDC identity, binding each artifact's sha256 to
@@ -30,7 +30,7 @@ name: attest-boot
 # payload store carries main's boot.sh. Attesting branch bytes would sign
 # things that may never ship.
 #
-# Subjects are exactly boot.sh + its fetch set (the four files fetch_verified
+# Subjects are exactly boot.sh + its fetch set (the six files fetch_verified
 # installs). The path filter and the subject list are deliberately the same
 # list, and `bootstrap-pin.test.mjs` now asserts both against boot.sh's actual
 # `fetch_verified` calls — because "if the fetch set grows, add the path here"
@@ -47,6 +47,8 @@ on:
       - .claude/register-mcp.mjs
       - .claude/stop-hook-git-check.sh
       - .claude/setup-toolpath.sh
+      - .claude/chat-fetch.sh
+      - .claude/verb-server.mjs
       - .github/workflows/attest-boot.yml
   workflow_dispatch: {}
 
@@ -77,12 +79,14 @@ jobs:
             .claude/register-mcp.mjs
             .claude/stop-hook-git-check.sh
             .claude/setup-toolpath.sh
+            .claude/chat-fetch.sh
+            .claude/verb-server.mjs
       - name: Name the attested digests in the run summary
         run: |
           {
             echo "### Attested subjects"
             echo
-            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh .claude/setup-toolpath.sh; do
+            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh .claude/setup-toolpath.sh .claude/chat-fetch.sh .claude/verb-server.mjs; do
               echo "- \`$f\` — \`$(sha256sum "$f" | cut -d' ' -f1)\`"
             done
             echo

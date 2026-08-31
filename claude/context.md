@@ -57,12 +57,12 @@ _(Org posture: outward-only, composably-published.)_
   environment should start with every declared repo already checked out. A
   scope warning at start means the selector and the declaration have drifted —
   repair with `add_repo` for this session, and fix the selector for the next.
-- **A claude.ai share link is readable**: `bash .github/.claude/chat-fetch.sh
-  <url>` — transcript by default, `--json` for the toolpath Graph, `--incept`
-  to land it in `~/.claude/projects` as a real session. Do NOT fetch the share
-  page or guess at vendor APIs (SPA shell; proxy-blocked — measured). No
-  bearer ⇒ the refusal names the grant path. Full story:
-  `docs/handoffs/chat-relay.md`.
+- **A shared Claude chat is read with the `read_chat` MCP tool** (`bounded-verbs`,
+  registered by the bootstrap even with no checkout): pass the `claude.ai/share/<uuid>`
+  link. `read_session` reads your OWN session transcript from local disk, no bearer.
+  Do NOT fetch the share page or the vendor snapshot API — client-rendered SPA shell,
+  Cloudflare bot-gated, proxy-blocked (all three measured, #325). With a checkout,
+  `.claude/chat-fetch.sh <url>` is the same capability as a fallback.
 - **Every quality property is a forcing function** — machine-checked, ratcheted,
   self-documenting; trust is mechanical, not reviewer vigilance
   (`docs/agentic-code-hygiene.md`). Org-wide; `prx` is the reference instantiation.
