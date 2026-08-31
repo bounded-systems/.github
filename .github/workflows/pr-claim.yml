@@ -39,7 +39,23 @@ name: pr-claim
 # authorization.
 
 on:
+  # `edited` is load-bearing, not tidiness (.github#319). The default type set
+  # for `pull_request` is opened/synchronize/reopened, so editing a PR BODY does
+  # not re-trigger this check — and the dependency-intake shape
+  # (bounded-systems/infra#560) works by writing a `Claim-issue:` trailer into
+  # the body of a PR that named no issue. Without this, that trailer lands and
+  # nothing re-evaluates it: 43 injected trailers meant 43 checks re-run by hand
+  # (.github#317), through a credential a workflow does not have — `rerun-failed-jobs`
+  # answers 403 on GITHUB_TOKEN (#309). So this cannot be scripted around; the
+  # trigger is the fix.
+  #
+  # Still `pull_request`, never `pull_request_target`, and still no checkout: the
+  # PR's code is never fetched or executed, and a fork PR still gets a read-only
+  # token. `edited` also fires on title and base-branch edits; the check is
+  # fail-closed on all of them, so more triggers can only mean more refusals,
+  # never fewer.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
