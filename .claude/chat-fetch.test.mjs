@@ -27,6 +27,7 @@ function fixture({ curlStatus = "200", curlBody = '{"graph":{"id":"g"}}' } = {})
     join(dir, "curl"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "${dir}/curl.args"
+cat > "${dir}/curl.stdin" || true
 out=""
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done
 printf '%s' '${curlBody}' > "$out"
@@ -77,7 +78,14 @@ test("no bearer refuses with the sentence that names the grant path", () => {
 test("non-share URLs and unknown flags refuse before any network round-trip", () => {
   const dir = fixture();
   try {
-    for (const args of [["https://evil.example/share/x"], [SHARE, "--frobnicate"], []]) {
+    for (const args of [
+      ["https://evil.example/share/x"],
+      [SHARE, "--frobnicate"],
+      [],
+      [`${SHARE}", "claim": {"repo": "x`], // JSON-injection shape — full-match regex refuses it (#318)
+      ["https://claude.ai/share/not-a-uuid"],
+      [SHARE, "--json", "surplus"], // surplus args refuse like a bad flag (#318)
+    ]) {
       const r = run(dir, args, { CLAUDE_RELAY_BEARER: "tok" });
       assert.notEqual(r.code, 0, JSON.stringify(args));
     }
@@ -95,7 +103,8 @@ test("default mode POSTs the share link with the bearer and renders via `path p 
     assert.match(r.stdout, /path-stub-ran/);
     const curlArgs = readFileSync(join(dir, "curl.args"), "utf8");
     assert.match(curlArgs, /https:\/\/relay\.test\/claude\/sessions/);
-    assert.match(curlArgs, /authorization: Bearer tok-from-env/);
+    assert.doesNotMatch(curlArgs, /tok-from-env/); // the bearer must never ride argv (#318)
+    assert.match(readFileSync(join(dir, "curl.stdin"), "utf8"), /authorization: Bearer tok-from-env/);
     assert.match(curlArgs, new RegExp(`"share_url":"${SHARE.replaceAll("/", "\\/")}"`));
     const pathArgs = readFileSync(join(dir, "path.args"), "utf8").split("\n");
     assert.deepEqual(pathArgs.slice(0, 4), ["p", "render", "md", "--input"]);
@@ -110,7 +119,8 @@ test("the bearer file is the fallback, and --incept forwards the project dir", (
     writeFileSync(join(dir, ".relay-lease-bearer"), "tok-from-file");
     const r = run(dir, [SHARE, "--incept", "/work/proj"]);
     assert.equal(r.code, 0);
-    assert.match(readFileSync(join(dir, "curl.args"), "utf8"), /Bearer tok-from-file/);
+    assert.doesNotMatch(readFileSync(join(dir, "curl.args"), "utf8"), /tok-from-file/);
+    assert.match(readFileSync(join(dir, "curl.stdin"), "utf8"), /Bearer tok-from-file/);
     const pathArgs = readFileSync(join(dir, "path.args"), "utf8").split("\n");
     assert.deepEqual(pathArgs.slice(0, 3), ["p", "incept", "claude"]);
     assert.ok(pathArgs.includes("--project") && pathArgs.includes("/work/proj"));
