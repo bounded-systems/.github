@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "bounded-verbs": {
+      "type": "stdio",
+      "command": "node",
+      "args": [".claude/verb-server.mjs"]
+    }
+  }
+}
