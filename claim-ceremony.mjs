@@ -164,6 +164,66 @@ export async function runCeremony(
   }
 }
 
+/**
+ * The lane that turns an open ceremony into a notification on a phone (#305).
+ *
+ * A session cannot POST desk's `/approval` itself: that endpoint is authorized
+ * by an Actions OIDC token pinned to NOTIFY_WORKFLOW_REFS, and a session is not
+ * a workflow. So it asks a workflow to do it. The workflow is pinned there; this
+ * process is not, and never becomes so.
+ *
+ * The notice is not the decision and cannot become one — desk refuses any URL
+ * whose host is not the keeper, so the only thing a caller can do is point a
+ * human at the page where the Face ID happens.
+ */
+export const ANNOUNCE_REPO = "bounded-systems/.github";
+export const ANNOUNCE_WORKFLOW = "announce-ceremony.yml";
+
+/**
+ * BEST EFFORT, ALWAYS. It returns a reason and never throws, because the
+ * ceremony is the gate and this is a convenience: a session with no GitHub
+ * token, or an API that refuses, must still print the URL exactly as before.
+ * Reporting "not announced" is the honest outcome; failing the claim over an
+ * undelivered notification would make the convenience load-bearing.
+ */
+export async function announceCeremony(
+  { repo, issue, claimant, approveUrl },
+  { fetchImpl = fetch, env = process.env } = {},
+) {
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN || "";
+  if (!token) return { announced: false, reason: "no GitHub token in this session" };
+  try {
+    const res = await fetchImpl(
+      `https://api.github.com/repos/${ANNOUNCE_REPO}/actions/workflows/${ANNOUNCE_WORKFLOW}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "user-agent": "claim-ceremony",
+        },
+        // The text names the repo and issue. "An approval is waiting" is
+        // unactionable on a phone — the reader cannot tell a claim from a
+        // deploy, and the only way to find out is to open the thing the notice
+        // exists to save them opening.
+        body: JSON.stringify({
+          ref: "main",
+          inputs: {
+            title: `Approve a claim on ${repo}#${issue}`,
+            body: `${claimant} wants to claim ${repo}#${issue}. Approving opens the claim window; the Face ID at the keeper is the approval.`,
+            url: approveUrl,
+          },
+        }),
+      },
+    );
+    if (res.status === 204) return { announced: true };
+    return { announced: false, reason: `dispatch answered HTTP ${res.status}` };
+  } catch (e) {
+    return { announced: false, reason: e.message };
+  }
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -178,6 +238,13 @@ async function main() {
       onOpen: (url, display, windowMs) => {
         console.error(`${approvalPrompt(windowMs)} ${url}`);
         console.error(`The keeper will show you: ${JSON.stringify(display)}`);
+        // Fire and forget, and say which happened. The URL above is printed
+        // FIRST and unconditionally: it is the interface that has always
+        // worked, and it stays the one that does not depend on a runner.
+        announceCeremony({ repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, approveUrl: url })
+          .then((r) => console.error(r.announced
+            ? "Announced to subscribed devices."
+            : `Not announced (${r.reason}) — approve at the URL above.`));
       },
     },
   );
