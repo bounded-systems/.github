@@ -10,18 +10,24 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  BOOT_DIR,
   absolutize,
   collectServers,
   findMcpRepos,
+  mcpSources,
   mergeConfig,
   register,
   registrationStatus,
   sessionRootFrom,
   unregistered,
 } from "./register-mcp.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const BOOT_SH = readFileSync(join(HERE, "boot.sh"), "utf8");
 
 const dirent = (name) => ({ name, isDirectory: () => true });
 
@@ -126,6 +132,193 @@ test("the session root's own .claude is not a repo", () => {
 
 test("the session root is this repo's parent, not the process home", () => {
   assert.equal(sessionRootFrom("file:///home/user/.github/.claude/register-mcp.mjs"), "/home/user");
+});
+
+// ── The boot cache as a second source (#325) ─────────────────────────────────
+//
+// The gap this closes: a session created WITHOUT `.github` attached has no repo
+// to read, so every test above it is about a session shape that one does not
+// have. boot.sh fetches the pinned files into /opt/bounded-boot for that case —
+// and fetching them was never enough, because this file registers what a
+// `.mcp.json` DECLARES and such a session had none. The fetched MCP server was
+// on disk with nothing pointing at it, which is indistinguishable, from the
+// model's side, from a server that was never shipped.
+
+const bootFixture = (bootDir, { repos = [], bootDeclares = true } = {}) => ({
+  readdir: () => repos.map(dirent),
+  exists: (p) => (p === join(bootDir, ".mcp.json") ? bootDeclares : p.endsWith("/.mcp.json")),
+});
+
+test("the boot cache is a source when it declares something", () => {
+  // The no-checkout session: no repos at all, and the verbs still register.
+  const bootDir = "/opt/bounded-boot";
+  assert.deepEqual(
+    mcpSources({ root: "/home/user", bootDir }, bootFixture(bootDir)),
+    [bootDir],
+  );
+});
+
+test("a boot cache that declares nothing is not a source", () => {
+  // The fetch may have failed the digest check, or this may be an attached
+  // session that never populated a cache. Either way there is nothing to read,
+  // and inventing a source would point the session at a server that is not there.
+  const bootDir = "/opt/bounded-boot";
+  assert.deepEqual(
+    mcpSources({ root: "/home/user", bootDir }, bootFixture(bootDir, { bootDeclares: false })),
+    [],
+  );
+});
+
+test("attached repos come FIRST and the boot cache last", () => {
+  // Precedence is stated as an order, so it cannot depend on readdir order.
+  const bootDir = "/opt/bounded-boot";
+  assert.deepEqual(
+    mcpSources({ root: "/home/user", bootDir }, bootFixture(bootDir, { repos: [".github", "infra"] })),
+    ["/home/user/.github", "/home/user/infra", bootDir],
+  );
+});
+
+test("a repo's server WINS over the boot cache's copy of the same name", () => {
+  // The cache holds a copy of a PINNED commit; main has moved past that commit
+  // by construction, and an attached checkout is the same file at least as new.
+  // Losing this contest would mean an attached session silently running the
+  // older server — the failure the pin gate exists to keep out of the FETCH
+  // path, arriving through the other door.
+  const bootDir = "/opt/bounded-boot";
+  const read = (p) =>
+    JSON.stringify({
+      mcpServers: {
+        "bounded-verbs": { command: "node", args: [p.startsWith(bootDir) ? "verb-server.mjs" : ".claude/verb-server.mjs"] },
+      },
+    });
+  const got = collectServers(["/home/user/.github", bootDir], { read, exists: () => false, bootDir });
+  assert.deepEqual(Object.keys(got), ["bounded-verbs"]);
+  assert.equal(got["bounded-verbs"].cwd, "/home/user/.github", "the boot cache outranked the checkout");
+  assert.deepEqual(got["bounded-verbs"].args, [".claude/verb-server.mjs"]);
+});
+
+test("the boot cache's relative arg is absolutized against the cache, not a repo", () => {
+  // boot.sh writes `args: ["verb-server.mjs"]` deliberately — the declaration is
+  // written before anything knows where it will be read from, and this is what
+  // resolves it. A cached server registered with a relative arg starts only when
+  // cwd happens to be right, which at user scope it never is.
+  const bootDir = "/opt/bounded-boot";
+  const out = absolutize({ command: "node", args: ["verb-server.mjs"] }, bootDir, {
+    exists: (p) => p === join(bootDir, "verb-server.mjs"),
+  });
+  assert.deepEqual(out.args, [join(bootDir, "verb-server.mjs")]);
+  assert.equal(out.cwd, bootDir);
+});
+
+test("the no-checkout session registers the cached verbs, end to end", () => {
+  // Real fs, and the shape #325 is about: no repos under the session root, a
+  // populated fetch cache, and a config that must come out naming an absolute
+  // server that exists.
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-boot-"));
+  const root = join(dir, "root");
+  const bootDir = join(dir, "bounded-boot");
+  mkdirSync(root, { recursive: true });
+  mkdirSync(bootDir, { recursive: true });
+  writeFileSync(join(bootDir, "verb-server.mjs"), "");
+  writeFileSync(
+    join(bootDir, ".mcp.json"),
+    JSON.stringify({ mcpServers: { "bounded-verbs": { type: "stdio", command: "node", args: ["verb-server.mjs"] } } }),
+  );
+  const configPath = join(dir, "claude.json");
+
+  const res = register({ root, bootDir, configPath });
+  assert.equal(res.outcome, "wrote");
+  assert.deepEqual(res.wrote, ["bounded-verbs"]);
+
+  const written = JSON.parse(readFileSync(configPath, "utf8")).mcpServers["bounded-verbs"];
+  assert.deepEqual(written.args, [join(bootDir, "verb-server.mjs")]);
+  assert.equal(written.cwd, bootDir);
+  assert.deepEqual(registrationStatus({ root, bootDir, configPath }).missing, []);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("an attached repo's server is what lands in the config, not the cached one", () => {
+  // Same two declarations, against real fs and through the writer rather than
+  // through collectServers alone — the precedence has to survive the whole path.
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-boot-"));
+  const root = join(dir, "root");
+  const repoDir = join(root, ".github");
+  const bootDir = join(dir, "bounded-boot");
+  mkdirSync(join(repoDir, ".claude"), { recursive: true });
+  mkdirSync(bootDir, { recursive: true });
+  writeFileSync(join(repoDir, ".claude", "verb-server.mjs"), "");
+  writeFileSync(join(bootDir, "verb-server.mjs"), "");
+  writeFileSync(
+    join(repoDir, ".mcp.json"),
+    JSON.stringify({ mcpServers: { "bounded-verbs": { command: "node", args: [".claude/verb-server.mjs"] } } }),
+  );
+  writeFileSync(
+    join(bootDir, ".mcp.json"),
+    JSON.stringify({ mcpServers: { "bounded-verbs": { command: "node", args: ["verb-server.mjs"] } } }),
+  );
+  const configPath = join(dir, "claude.json");
+
+  assert.equal(register({ root, bootDir, configPath }).outcome, "wrote");
+  const written = JSON.parse(readFileSync(configPath, "utf8")).mcpServers["bounded-verbs"];
+  assert.deepEqual(written.args, [join(repoDir, ".claude", "verb-server.mjs")]);
+  assert.equal(written.cwd, repoDir);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a session with no repos and no cache is still not a fault", () => {
+  const dir = mkdtempSync(join(tmpdir(), "register-mcp-boot-"));
+  const root = join(dir, "root");
+  mkdirSync(root, { recursive: true });
+  const res = register({ root, bootDir: join(dir, "nothing-here"), configPath: join(dir, "claude.json") });
+  assert.equal(res.outcome, "none");
+  assert.equal(existsSync(join(dir, "claude.json")), false);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// ── The cache path, and the declaration in it, are boot.sh's ─────────────────
+
+test("the default boot dir is the directory boot.sh actually populates", () => {
+  // Two files naming one path in two languages: boot.sh writes it, this reads
+  // it, and nothing else connects them. A drift here registers nothing and says
+  // nothing, which is the shape of every failure in this file's header.
+  assert.match(
+    BOOT_SH,
+    /^\s*BOOT=\/opt\/bounded-boot$/m,
+    "boot.sh no longer fetches into /opt/bounded-boot — BOOT_DIR points at a directory nothing populates",
+  );
+  if (!process.env.BOUNDED_BOOT_DIR) {
+    // The env override exists for tests; the shipped default is the contract.
+    assert.equal(BOOT_DIR, "/opt/bounded-boot");
+  }
+});
+
+test("boot.sh writes its declaration INTO the cache, and only when the server landed", () => {
+  // Writing it unconditionally would declare a server that is not there — a tool
+  // whose every call fails, which is worse than an absent tool. And writing it
+  // outside the fetch branch would drop an untracked file into an attached
+  // checkout, in the worktree the Stop hook reports on.
+  const write = BOOT_SH.match(/if \[ -f "\$BOOT\/verb-server\.mjs" \]; then\n\s*cat > "\$BOOT\/\.mcp\.json"/);
+  assert.ok(write, "boot.sh no longer guards the cached declaration on the fetched server existing");
+});
+
+test("the cached declaration names only files boot.sh fetches", () => {
+  // The "no named mechanism that does not resolve" rule, machine-checked: the
+  // declaration is written by one part of boot.sh and satisfied by another, and
+  // a rename on either side would otherwise register a server that cannot start.
+  const body = BOOT_SH.match(/cat > "\$BOOT\/\.mcp\.json" <<'JSON'\n([\s\S]*?)\nJSON\n/)?.[1];
+  assert.ok(body, "boot.sh's cached .mcp.json heredoc is no longer in a parseable form");
+  const declared = JSON.parse(body).mcpServers;
+  assert.ok(Object.keys(declared).length > 0, "the cached declaration declares no servers");
+  for (const [name, server] of Object.entries(declared)) {
+    for (const arg of server.args ?? []) {
+      if (arg.startsWith("-")) continue;
+      assert.match(
+        BOOT_SH,
+        new RegExp(`fetch_verified\\s+${arg.replace(/\./g, "\\.")}\\s`),
+        `the cached declaration points '${name}' at ${arg}, which boot.sh never fetches`,
+      );
+    }
+  }
 });
 
 // ── Collection ───────────────────────────────────────────────────────────────
@@ -236,7 +429,15 @@ test("no repo declaring .mcp.json is not a fault", () => {
 // branches on, not just a log line. These run against real fs because the
 // property that matters is what ends up in the file.
 
-/** A session root with one repo declaring `front-desk`, plus a config path. */
+/**
+ * A session root with one repo declaring `front-desk`, plus a config path.
+ *
+ * `bootDir` is explicit and points nowhere on purpose. These run against real
+ * fs, and the default boot cache is a real directory on a real machine — a
+ * no-checkout session (the one #325 is about) has a POPULATED /opt/bounded-boot
+ * and would register its servers here, so leaving the default in place would
+ * make these tests pass or fail depending on which kind of session ran them.
+ */
 function realFixture(configText) {
   const dir = mkdtempSync(join(tmpdir(), "register-mcp-"));
   const root = join(dir, "root");
@@ -249,12 +450,12 @@ function realFixture(configText) {
   );
   const configPath = join(dir, "claude.json");
   if (configText !== undefined) writeFileSync(configPath, configText);
-  return { dir, root, repoDir, configPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, root, repoDir, configPath, bootDir: null, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 test("the observed failure self-heals: mcpServers absent, and one call fixes it", () => {
   const fx = realFixture(JSON.stringify({ userID: "u1", projects: { "/a": { trust: true } } }));
-  const res = register({ root: fx.root, configPath: fx.configPath });
+  const res = register({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath });
   assert.equal(res.outcome, "wrote");
   assert.deepEqual(res.wrote, ["front-desk"]);
 
@@ -266,15 +467,15 @@ test("the observed failure self-heals: mcpServers absent, and one call fixes it"
   assert.equal(written.mcpServers["front-desk"].cwd, fx.repoDir);
 
   // And the report now agrees with the write — the two must not drift apart.
-  assert.deepEqual(registrationStatus({ root: fx.root, configPath: fx.configPath }).missing, []);
+  assert.deepEqual(registrationStatus({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath }).missing, []);
   fx.cleanup();
 });
 
 test("a second call is a no-op that reports 'already'", () => {
   const fx = realFixture("{}");
-  register({ root: fx.root, configPath: fx.configPath });
+  register({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath });
   const before = readFileSync(fx.configPath, "utf8");
-  const res = register({ root: fx.root, configPath: fx.configPath });
+  const res = register({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath });
   assert.equal(res.outcome, "already");
   assert.deepEqual(res.wrote, []);
   assert.equal(readFileSync(fx.configPath, "utf8"), before);
@@ -285,7 +486,7 @@ test("an unreadable config is refused, not overwritten", () => {
   // It holds far more than MCP config; replacing it with a fresh object would
   // cost a user their session state to gain a tool.
   const fx = realFixture("{{{ not json");
-  const res = register({ root: fx.root, configPath: fx.configPath });
+  const res = register({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath });
   assert.equal(res.outcome, "refused");
   assert.deepEqual(res.wrote, []);
   assert.equal(readFileSync(fx.configPath, "utf8"), "{{{ not json");
@@ -294,7 +495,7 @@ test("an unreadable config is refused, not overwritten", () => {
 
 test("no config yet is not an error — it is created with only mcpServers", () => {
   const fx = realFixture(undefined);
-  assert.equal(register({ root: fx.root, configPath: fx.configPath }).outcome, "wrote");
+  assert.equal(register({ root: fx.root, bootDir: fx.bootDir, configPath: fx.configPath }).outcome, "wrote");
   assert.deepEqual(Object.keys(JSON.parse(readFileSync(fx.configPath, "utf8"))), ["mcpServers"]);
   fx.cleanup();
 });
@@ -304,7 +505,7 @@ test("nothing declared writes nothing at all", () => {
   const root = join(dir, "root");
   mkdirSync(join(root, "infra"), { recursive: true });
   const configPath = join(dir, "claude.json");
-  const res = register({ root, configPath });
+  const res = register({ root, bootDir: null, configPath });
   assert.equal(res.outcome, "none");
   assert.equal(existsSync(configPath), false, "a config is not conjured for a session with no servers");
   rmSync(dir, { recursive: true, force: true });
@@ -325,7 +526,7 @@ test("reporting leaves the config byte-identical", () => {
   const before = JSON.stringify({ userID: "u1", projects: { "/a": { trust: true } } });
   writeFileSync(configPath, before);
 
-  assert.deepEqual(registrationStatus({ root, configPath }).missing, ["front-desk"]);
+  assert.deepEqual(registrationStatus({ root, bootDir: null, configPath }).missing, ["front-desk"]);
   assert.equal(readFileSync(configPath, "utf8"), before);
   assert.deepEqual(readdirSync(dir).sort(), ["claude.json", "root"]);
   rmSync(dir, { recursive: true, force: true });

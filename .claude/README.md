@@ -348,7 +348,7 @@ To confirm a pin and its digests agree with the repo, from a clone:
 
 ```sh
 PIN=<the pin>
-for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh; do
+for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs; do
   a=$(git show "$PIN:.claude/$f" | sha256sum | cut -d' ' -f1)
   b=$(curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum | cut -d' ' -f1)
   [ "$a" = "$b" ] && echo "$f OK $a" || echo "$f MISMATCH — endpoint disagrees with the git object"

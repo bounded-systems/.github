@@ -28,10 +28,19 @@
  * `mcpServers: {}` and `projects: {}`: nothing had been registered or discovered.
  * The instruction was correct and the tool was not there.
  *
+ * ── The second source: the boot cache (#325) ─────────────────────────────────
+ * A session created WITHOUT `.github` attached has no checkout to read at all.
+ * boot.sh fetches the pinned files into /opt/bounded-boot for exactly that case,
+ * and fetching them is not enough: this script registers what a `.mcp.json`
+ * DECLARES, and such a session has none, so a fetched MCP server sat there with
+ * nothing pointing at it. boot.sh now writes a declaration into that directory
+ * and `mcpSources` reads it — after the attached repos, which win (see there).
+ *
  * ── What it does NOT do ──────────────────────────────────────────────────────
- * No per-repo knowledge. It reads whatever `.mcp.json` each repo declares and
+ * No per-repo knowledge. It reads whatever `.mcp.json` each source declares and
  * rewrites only what has to become absolute. A repo changes its own server by
- * editing its own `.mcp.json`.
+ * editing its own `.mcp.json`; the boot cache is just one more directory that
+ * carries one, not a special case in this file.
  *
  * ── Safety ───────────────────────────────────────────────────────────────────
  * `~/.claude.json` is Claude Code's own state file and holds far more than MCP
@@ -54,6 +63,15 @@ export function sessionRootFrom(fileUrl) {
 const SESSION_ROOT = process.env.CLAUDE_SESSION_ROOT || sessionRootFrom(import.meta.url);
 const CONFIG_PATH = process.env.CLAUDE_CONFIG_PATH || join(homedir(), ".claude.json");
 
+/**
+ * The bootstrap's fetch cache — boot.sh's $BOOT when `.github` is NOT attached.
+ *
+ * A second registration source, for the session that has no repos to read
+ * (#325). Overridable so a test can point it at a temp directory; the default is
+ * the one path boot.sh writes, and the two must not drift.
+ */
+export const BOOT_DIR = process.env.BOUNDED_BOOT_DIR || "/opt/bounded-boot";
+
 const log = (msg) => process.stderr.write(`register-mcp: ${msg}\n`);
 
 /** Immediate subdirectories of the session root that declare MCP servers. */
@@ -69,6 +87,38 @@ export function findMcpRepos(root, { readdir = readdirSync, exists = existsSync 
     .map((e) => join(root, e.name))
     .filter((dir) => exists(join(dir, ".mcp.json")))
     .sort();
+}
+
+/**
+ * Every place a server can be DECLARED, in PRECEDENCE ORDER — first wins.
+ *
+ * ── Why the boot cache is a source at all (#325) ─────────────────────────────
+ * A session created without `.github` attached has no checkout to read. boot.sh
+ * fetches the pinned files into /opt/bounded-boot for exactly that case — but
+ * fetching a file is not making a capability reachable: this script registers
+ * what a `.mcp.json` DECLARES, and that session has no `.mcp.json` at all, so
+ * the fetched verb server sat on disk with nothing pointing at it. boot.sh now
+ * writes a declaration beside it, and this is what finds it.
+ *
+ * ── Why the repos come first ─────────────────────────────────────────────────
+ * The cache is a copy of a PIN — a commit that main has, by construction, moved
+ * past (the pin is bumped after a merge, so it always trails). An attached
+ * checkout is that same file at least as new. So when both declare a name, the
+ * checkout is the one to run, and this order is what says so; `collectServers`
+ * keeps the first declaration of a name and this puts the newer one there.
+ * Stated as an ORDER rather than left to `readdirSync` — which is how the
+ * duplicate rule below already refuses to let directory order decide anything.
+ *
+ * The cache is skipped entirely unless it declares something, so on the normal
+ * attached path this adds one `existsSync` and nothing else.
+ */
+export function mcpSources(
+  { root = SESSION_ROOT, bootDir = BOOT_DIR } = {},
+  { readdir = readdirSync, exists = existsSync } = {},
+) {
+  const repos = findMcpRepos(root, { readdir, exists });
+  const boot = bootDir && !repos.includes(bootDir) && exists(join(bootDir, ".mcp.json")) ? [bootDir] : [];
+  return [...repos, ...boot];
 }
 
 /**
@@ -96,10 +146,19 @@ export function absolutize(server, repoDir, { exists = existsSync } = {}) {
   return out;
 }
 
-/** Collect every declared server, keyed by name, already absolutized. */
-export function collectServers(repoDirs, { read = (p) => readFileSync(p, "utf8"), exists = existsSync } = {}) {
+/**
+ * Collect every declared server, keyed by name, already absolutized.
+ *
+ * `sourceDirs` is in precedence order (see `mcpSources`) and the FIRST
+ * declaration of a name wins. `bootDir` names the one source that is expected to
+ * lose that contest, so the log can say which of the two things happened.
+ */
+export function collectServers(
+  sourceDirs,
+  { read = (p) => readFileSync(p, "utf8"), exists = existsSync, bootDir = null } = {},
+) {
   const servers = {};
-  for (const repoDir of repoDirs) {
+  for (const repoDir of sourceDirs) {
     let declared;
     try {
       declared = JSON.parse(read(join(repoDir, ".mcp.json")))?.mcpServers;
@@ -111,9 +170,18 @@ export function collectServers(repoDirs, { read = (p) => readFileSync(p, "utf8")
     for (const [name, server] of Object.entries(declared)) {
       if (!server || typeof server !== "object") continue;
       if (servers[name]) {
-        // Two repos claiming one name would make which-one-wins depend on
-        // directory order. Say so rather than silently picking.
-        log(`WARN duplicate MCP server name '${name}' — keeping the first, skipping ${repoDir}`);
+        if (repoDir === bootDir) {
+          // Not a conflict: the boot cache carries a copy of a PINNED commit and
+          // an attached checkout is that file at least as new, so a repo
+          // declaring the same name is SUPPOSED to win (#325). Reported anyway,
+          // because "the cache stood down" and "the cache was never read" look
+          // identical from the outside and only one of them is a bug.
+          log(`'${name}' is declared by an attached repo — the boot-cache copy stands down`);
+        } else {
+          // Two repos claiming one name would make which-one-wins depend on
+          // directory order. Say so rather than silently picking.
+          log(`WARN duplicate MCP server name '${name}' — keeping the first, skipping ${repoDir}`);
+        }
         continue;
       }
       servers[name] = absolutize(server, repoDir, { exists });
@@ -167,13 +235,14 @@ export function mergeConfig(existing, servers) {
  */
 export function registrationStatus({
   root = SESSION_ROOT,
+  bootDir = BOOT_DIR,
   configPath = CONFIG_PATH,
   read = (p) => readFileSync(p, "utf8"),
   exists = existsSync,
   readdir = readdirSync,
 } = {}) {
-  const repos = findMcpRepos(root, { readdir, exists });
-  const servers = collectServers(repos, { read, exists });
+  const repos = mcpSources({ root, bootDir }, { readdir, exists });
+  const servers = collectServers(repos, { read, exists, bootDir });
   const declared = Object.keys(servers);
 
   let existing = {};
@@ -209,9 +278,9 @@ export function registrationStatus({
  * (it is ordered before anything reads the tool list); this is the fallback for
  * when that call is not made, which is the failure that actually happened.
  */
-export function register({ root = SESSION_ROOT, configPath = CONFIG_PATH } = {}) {
-  const repos = findMcpRepos(root);
-  const servers = collectServers(repos);
+export function register({ root = SESSION_ROOT, bootDir = BOOT_DIR, configPath = CONFIG_PATH } = {}) {
+  const repos = mcpSources({ root, bootDir });
+  const servers = collectServers(repos, { bootDir });
   const declared = Object.keys(servers);
   if (declared.length === 0) return { declared, wrote: [], outcome: "none" };
 
@@ -240,7 +309,9 @@ export function register({ root = SESSION_ROOT, configPath = CONFIG_PATH } = {})
 
 function main() {
   const { declared, wrote, outcome } = register();
-  if (outcome === "none") log(`no attached repo under ${SESSION_ROOT} declares a usable MCP server — nothing to do.`);
+  if (outcome === "none") {
+    log(`neither ${SESSION_ROOT}'s repos nor ${BOOT_DIR} declares a usable MCP server — nothing to do.`);
+  }
   else if (outcome === "already") log(`already registered: ${declared.join(", ")}`);
   else if (outcome === "wrote") log(`registered at user scope: ${wrote.join(", ")}`);
 }

@@ -1,38 +1,74 @@
 #!/usr/bin/env node
 /**
- * bounded-verbs — the org's session-verb MCP server (.github#326).
+ * bounded-verbs — the org's session-verb MCP server (#326, #328, #330).
  *
- * WHY A TOOL, NOT A SCRIPT. Every other discoverability channel (the injected
+ * WHY TOOLS, NOT SCRIPTS. Every other discoverability channel (the injected
  * context bullet, the handoff doc, CLAUDE.md) still makes a session FIND the
  * capability — and a blind agent that cannot find it reaches for vendor-API
  * evasion instead (measured 2026-08-31: a blind agent invented a Cloudflare
  * bot-gate bypass rather than discover chat-fetch.sh). A registered MCP tool
- * needs no finding: it sits in the tool list with its own description, so the
- * model just calls it. register-mcp.mjs (installed by boot.sh) promotes this
- * repo's .mcp.json to user scope — absolute paths, no approval prompt, any cwd.
+ * needs no finding: it sits in the tool list, so the model just calls it.
+ * register-mcp.mjs (installed by boot.sh) promotes this repo's .mcp.json to
+ * user scope — absolute paths, no approval prompt, any cwd.
+ *
+ * THE TWO VERBS ARE ONE CAPABILITY, POINTED OUT AND IN:
+ *   read_chat    — someone's SHARED chat, via the bounded.tools relay.
+ *   read_session — YOUR OWN (or a named local) Claude Code session, via the
+ *                  `path` CLI reading ~/.claude/projects. No relay, no bearer:
+ *                  a local read. This is what makes a session self-aware — it
+ *                  can ask what it has already done rather than trusting a
+ *                  context window that may have been summarized away.
  *
  * WHAT IT IS. A thin JSON-RPC-2.0-over-stdio adapter (the MCP stdio transport:
- * one JSON object per line, no embedded newlines) over the ALREADY-AUDITED
- * `chat-fetch.sh --json`. Every security property of that script — bearer off
- * argv, full-match URL validation, the grant-path refusal sentence (#318) —
- * is inherited rather than re-implemented; this file adds protocol and a
- * dependency-free transcript renderer, never authority or a second transport.
- * No `path` binary and no node-fetch/proxy dance: curl inside chat-fetch is the
- * one proven egress path in these environments.
+ * one JSON object per line) over already-audited tools: `chat-fetch.sh --json`
+ * for read_chat — inheriting its bearer handling, URL validation and refusal
+ * sentences (#318) rather than re-implementing them — and `path p derive
+ * claude` for read_session. This file adds protocol, pagination and rendering;
+ * never authority, never a second transport.
  *
- * GROWTH. read_chat is verb one. archive_chat (claim-mode door upload) and
- * board reads join THIS server rather than spawning parallel rooms — one
- * org-verbs room, one registration path.
+ * PAGINATION IS NOT OPTIONAL (#330). Dogfooding found a 112-turn chat renders
+ * to 88KB and blows the tool-result ceiling; the session that built this had
+ * 1,354 messages. Every read is paginated by turns, and an omitted range says
+ * so in-band with the exact call to continue — a silent truncation would be
+ * worse than the overflow it replaces.
  */
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-// Overridable for tests; in production it is the audited script beside us.
+// Overridable for tests; in production these are the audited tools.
 const CHAT_FETCH = process.env.CHAT_FETCH_BIN || join(HERE, "chat-fetch.sh");
+const PATH_BIN = process.env.PATH_CLI_BIN || "path";
+
+/** Turns per call. Chosen to stay well inside the tool-result ceiling with
+ *  ordinary turn lengths; the per-turn cap below bounds the pathological case. */
+const DEFAULT_LIMIT = 40;
+const MAX_TURN_CHARS = 4000;
+
+const PAGE_PROPS = {
+  limit: {
+    type: "integer",
+    minimum: 1,
+    maximum: 200,
+    default: DEFAULT_LIMIT,
+    description: `Turns to return (default ${DEFAULT_LIMIT}).`,
+  },
+  offset: {
+    type: "integer",
+    description:
+      "First turn to return, 0-based. NEGATIVE counts from the end (-40 = the last 40 turns). " +
+      "read_chat defaults to 0 (the beginning); read_session defaults to -40 (the most recent turns).",
+  },
+  mode: {
+    type: "string",
+    enum: ["transcript", "graph"],
+    default: "transcript",
+    description:
+      "transcript (default): readable, paginated role/text turns. graph: the raw toolpath Graph JSON (unpaginated — machine consumers want it intact; large sessions may be very big).",
+  },
+};
 
 const READ_CHAT_TOOL = {
   name: "read_chat",
@@ -41,76 +77,177 @@ const READ_CHAT_TOOL = {
     "Use this for ANY claude.ai share link — do NOT fetch the share page or the vendor " +
     "snapshot API (client-rendered SPA shell; Cloudflare bot-gated; proxy-blocked). This " +
     "routes through the org relay, which reads only PUBLIC shares and holds no vendor " +
-    "credential. If no relay bearer is configured the tool returns how to grant one.",
+    "credential. If no relay bearer is configured the tool returns how to grant one. " +
+    "Long chats are paginated — the result names the range and how to continue.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      share_url: {
-        type: "string",
-        description: "A https://claude.ai/share/<uuid> link.",
-      },
-      mode: {
-        type: "string",
-        enum: ["transcript", "graph"],
-        default: "transcript",
-        description:
-          "transcript (default): readable role/text turns. graph: the raw toolpath Graph JSON.",
-      },
+      share_url: { type: "string", description: "A https://claude.ai/share/<uuid> link." },
+      ...PAGE_PROPS,
     },
     required: ["share_url"],
   },
 };
 
-/** Render a toolpath Graph into a readable transcript — dependency-free, so the
- *  server never needs the `path` binary. Mirrors the converter's shape: one
- *  path, a leading metadata step (no role), then role/text turns. */
-function renderTranscript(graph) {
+const READ_SESSION_TOOL = {
+  name: "read_session",
+  description:
+    "Read a Claude Code session's own transcript from local disk (~/.claude/projects, via the " +
+    "`path` CLI) — no relay and no credential. With no arguments it reads THE CURRENT SESSION's " +
+    "most recent turns: use it to recall what this session has already done, decided, claimed or " +
+    "pushed when the context window may have been summarized. Pass session_id to read a different " +
+    "local session. Long sessions are paginated — the result names the range and how to continue.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      session_id: {
+        type: "string",
+        description: "Session UUID. Omit for the current session ($CLAUDE_CODE_SESSION_ID).",
+      },
+      project: {
+        type: "string",
+        description: "Project path the session belongs to. Omit to resolve it from the session list.",
+      },
+      ...PAGE_PROPS,
+    },
+    required: [],
+  },
+};
+
+// ── graph → turns → paginated transcript ─────────────────────────────────────
+
+/** Flatten a toolpath Graph into {role, text} turns, dropping non-turn steps
+ *  (the leading metadata step, tool events) and empty text. */
+export function turnsOf(graph) {
   const steps = graph?.paths?.[0]?.steps ?? [];
-  const lines = [`# Shared chat — ${Math.max(0, steps.length - 1)} turns\n`];
+  const turns = [];
   for (const s of steps) {
     const change = s?.change ?? {};
     const src = Object.keys(change)[0];
     const st = src ? change[src]?.structural : undefined;
-    if (!st || !st.role) continue; // skip the chat-meta step
+    if (!st || !st.role) continue;
     const text = typeof st.text === "string" ? st.text.trim() : "";
     if (!text) continue;
-    lines.push(`\n## ${st.role}\n\n${text}`);
+    turns.push({ role: st.role, text });
+  }
+  return turns;
+}
+
+/** Resolve a page window. Negative offset counts back from the end, so
+ *  "the last N turns" needs no separate flag. */
+export function page(total, { limit = DEFAULT_LIMIT, offset = 0 } = {}) {
+  const lim = Math.max(1, Math.min(200, Number.isInteger(limit) ? limit : DEFAULT_LIMIT));
+  const off = Number.isInteger(offset) ? offset : 0;
+  const start = off < 0 ? Math.max(0, total + off) : Math.min(Math.max(0, off), total);
+  const end = Math.min(start + lim, total);
+  return { start, end, next: end < total ? end : null };
+}
+
+/** Render a page of turns. The range and the continuation call are stated
+ *  IN-BAND: an omitted range that does not announce itself is a silent
+ *  truncation, which is worse than the overflow this replaces (#330). */
+export function renderTranscript(graph, opts = {}, label = "Shared chat") {
+  const turns = turnsOf(graph);
+  const { start, end, next } = page(turns.length, opts);
+  const lines = [`# ${label} — turns ${turns.length ? start + 1 : 0}–${end} of ${turns.length}\n`];
+  for (const t of turns.slice(start, end)) {
+    const text =
+      t.text.length > MAX_TURN_CHARS
+        ? `${t.text.slice(0, MAX_TURN_CHARS)}\n\n… [turn truncated — ${t.text.length} chars total]`
+        : t.text;
+    lines.push(`\n## ${t.role}\n\n${text}`);
+  }
+  if (next !== null) {
+    lines.push(`\n\n— ${turns.length - end} more turn(s). Continue with offset: ${next}.`);
   }
   return lines.join("\n");
 }
 
+// ── the verbs ────────────────────────────────────────────────────────────────
+
+const ok = (text) => ({ content: [{ type: "text", text }] });
+const err = (text) => ({ content: [{ type: "text", text }], isError: true });
+
 function readChat(args) {
   const shareUrl = args?.share_url;
   if (typeof shareUrl !== "string" || shareUrl.length === 0) {
-    return { content: [{ type: "text", text: "read_chat requires a share_url string" }], isError: true };
+    return err("read_chat requires a share_url string");
   }
-  const mode = args?.mode === "graph" ? "graph" : "transcript";
-
-  // The audited script does the fetch, the bearer handling, the URL validation
-  // and the refusal messaging. We only ever ask it for --json (the branch that
-  // needs no `path` binary) and render locally.
+  // The audited script does the fetch, bearer handling, URL validation and
+  // refusal messaging. We only ever ask for --json (the branch needing no
+  // `path` binary) and render locally.
   const res = spawnSync("bash", [CHAT_FETCH, shareUrl, "--json"], {
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: 128 * 1024 * 1024,
   });
   if (res.status !== 0) {
-    // chat-fetch already names the remedy (grant path, withdrawn share, etc.);
-    // surface it verbatim so the tool teaches exactly as the script does.
-    const msg = (res.stderr || res.stdout || "chat-fetch failed with no output").trim();
-    return { content: [{ type: "text", text: msg }], isError: true };
+    return err((res.stderr || res.stdout || "chat-fetch failed with no output").trim());
   }
-  if (mode === "graph") {
-    return { content: [{ type: "text", text: res.stdout.trim() }] };
+  return renderOrGraph(res.stdout, args, "Shared chat");
+}
+
+/** Resolve which local session to read: the argument, else this session. */
+export function resolveSession(args, env = process.env) {
+  const id = typeof args?.session_id === "string" && args.session_id ? args.session_id : env.CLAUDE_CODE_SESSION_ID;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function readSession(args) {
+  const sessionId = resolveSession(args);
+  if (!sessionId) {
+    return err(
+      "read_session: no session_id given and $CLAUDE_CODE_SESSION_ID is unset — pass session_id explicitly " +
+        `(list them with: ${PATH_BIN} p list claude --json).`,
+    );
   }
+  // Resolve the project path from the session list unless told, so the caller
+  // never has to know where the session lives.
+  let project = typeof args?.project === "string" && args.project ? args.project : null;
+  if (!project) {
+    const list = spawnSync(PATH_BIN, ["p", "list", "claude", "--json"], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+    if (list.status !== 0) {
+      return err(
+        `read_session: could not list local sessions (${(list.stderr || "").trim() || "is the `path` CLI installed? setup-toolpath.sh installs it in the background at session start"})`,
+      );
+    }
+    try {
+      const found = (JSON.parse(list.stdout).sessions ?? []).find((s) => s.session_id === sessionId);
+      project = found?.project_path ?? null;
+    } catch {
+      /* fall through to the error below */
+    }
+    if (!project) {
+      return err(`read_session: session ${sessionId} not found on this machine (${PATH_BIN} p list claude --json shows what is)`);
+    }
+  }
+  const res = spawnSync(PATH_BIN, ["p", "derive", "claude", "-p", project, "-s", sessionId], {
+    encoding: "utf8",
+    maxBuffer: 512 * 1024 * 1024,
+  });
+  if (res.status !== 0) {
+    return err(`read_session: ${PATH_BIN} p derive failed: ${(res.stderr || "").trim() || "no output"}`);
+  }
+  // Self-reads default to the MOST RECENT turns: "what have I just been doing"
+  // is the question this verb exists for.
+  const opts = { ...args };
+  if (!Number.isInteger(opts.offset)) opts.offset = -(Number.isInteger(opts.limit) ? opts.limit : DEFAULT_LIMIT);
+  return renderOrGraph(res.stdout, opts, `Session ${sessionId.slice(0, 8)}`);
+}
+
+function renderOrGraph(stdout, args, label) {
+  if (args?.mode === "graph") return ok(stdout.trim());
   let graph;
   try {
-    graph = JSON.parse(res.stdout);
+    graph = JSON.parse(stdout);
   } catch {
-    return { content: [{ type: "text", text: "relay returned non-JSON; try mode: \"graph\"" }], isError: true };
+    return err('returned non-JSON; try mode: "graph"');
   }
-  return { content: [{ type: "text", text: renderTranscript(graph) }] };
+  return ok(renderTranscript(graph, args ?? {}, label));
 }
+
+const TOOLS = { read_chat: readChat, read_session: readSession };
 
 // ── JSON-RPC 2.0 over stdio (the MCP stdio transport) ────────────────────────
 
@@ -127,11 +264,9 @@ function handle(req) {
         jsonrpc: "2.0",
         id,
         result: {
-          // Echo the client's version when it names one — forward-compatible
-          // without pinning us to a version the client may not speak.
           protocolVersion: params?.protocolVersion || "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "bounded-verbs", version: "0.1.0" },
+          serverInfo: { name: "bounded-verbs", version: "0.2.0" },
         },
       });
       return;
@@ -142,20 +277,20 @@ function handle(req) {
       if (isRequest) send({ jsonrpc: "2.0", id, result: {} });
       return;
     case "tools/list":
-      if (isRequest) send({ jsonrpc: "2.0", id, result: { tools: [READ_CHAT_TOOL] } });
+      if (isRequest) send({ jsonrpc: "2.0", id, result: { tools: [READ_CHAT_TOOL, READ_SESSION_TOOL] } });
       return;
     case "tools/call": {
       if (!isRequest) return;
       const { name, arguments: toolArgs } = params ?? {};
-      if (name !== "read_chat") {
+      const fn = Object.prototype.hasOwnProperty.call(TOOLS, name) ? TOOLS[name] : null;
+      if (!fn) {
         send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown tool: ${name}` } });
         return;
       }
-      send({ jsonrpc: "2.0", id, result: readChat(toolArgs ?? {}) });
+      send({ jsonrpc: "2.0", id, result: fn(toolArgs ?? {}) });
       return;
     }
     default:
-      // Unknown request → method-not-found; unknown notification → ignore.
       if (isRequest) send({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });
   }
 }
@@ -188,8 +323,8 @@ function serve() {
   process.stdin.on("end", () => process.exit(0));
 }
 
-// Wire stdin only when run as the entrypoint — so a unit test can import the
-// pure functions below without the read loop attaching and hanging its process.
+// Wire stdin only as the entrypoint, so a unit test can import the pure
+// functions without the read loop attaching and hanging its process.
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) serve();
 
-export { READ_CHAT_TOOL, renderTranscript, readChat, handle, serve };
+export { READ_CHAT_TOOL, READ_SESSION_TOOL, readChat, readSession, handle, serve, DEFAULT_LIMIT };

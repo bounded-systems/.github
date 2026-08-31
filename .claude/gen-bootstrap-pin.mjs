@@ -134,7 +134,7 @@ const FIELD_PLUMBING = new Set([
  * session-start-dispatch.mjs.
  *
  * A "step" is mechanical, not judged: a command that writes or invokes
- * something durable — `cat >`, `cp`/`mv` landing outside the fetch cache,
+ * something durable — `cat >`, `cp` or `mv` landing outside the fetch cache,
  * `node`, `chmod` — plus the `CLAUDE_SESSION_ROOT=` prefix, which is a step
  * without a file of its own. Guards (`[ … ]`) and FIELD_PLUMBING are ignored.
  * Anything else REFUSES to parse: a verb this function does not know is by
@@ -157,6 +157,9 @@ export function parseSteps(source) {
   };
   const unquote = (w = "") => w.replace(/^["']|["']$/g, "");
   const basename = (p) => unquote(p).split("/").pop();
+  // Landing INSIDE the fetch cache is staging, not installing — see the `cat`
+  // and `cp`/`mv` branches below, which share this test.
+  const inFetchCache = (path) => unquote(path).startsWith("$BOOT/");
 
   // The env prefix is a step without a file. Scanned on the RAW block because
   // one of its two spellings sits inside the heredoc body stripped below.
@@ -203,11 +206,21 @@ export function parseSteps(source) {
       if (verb === "cat") {
         const target = cmd.match(/>\s*"?([^"\s]+)/)?.[1];
         if (!target) throw new Error(`"cat" with no redirect target in the canonical setup script: "${frag}"`);
+        // Same exemption as `cp`/`mv`, and for the same reason — it just took a
+        // second writer into the cache to notice the rule was stated once per
+        // verb rather than once (#325). boot.sh writes the `.mcp.json` that
+        // DECLARES the fetched verb server into $BOOT, alongside the fetched
+        // files themselves: inert content, made live by the `node
+        // $BOOT/register-mcp.mjs` line further down, which IS a step and IS
+        // covered by the manifest. Counting it would demand a fallback for the
+        // cache populating itself — the same demand the `.unverified` staging
+        // path would make, and the reason that one is exempt too.
+        if (inFetchCache(target)) continue;
         claim(basename(target), raw.trim());
       } else if (verb === "cp" || verb === "mv") {
         const paths = words.slice(1).filter((w) => !w.startsWith("-"));
         const dest = unquote(paths[paths.length - 1]);
-        if (dest.startsWith("$BOOT/")) continue; // landing INSIDE the fetch cache is staging, not installing
+        if (inFetchCache(dest)) continue;
         claim(basename(dest), raw.trim());
       } else if (verb === "node" || verb === "bash") {
         // `bash` joins `node` rather than FIELD_PLUMBING because running a

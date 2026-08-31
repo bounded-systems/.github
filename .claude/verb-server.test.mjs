@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderTranscript, READ_CHAT_TOOL } from "./verb-server.mjs";
+import { renderTranscript, turnsOf, page, resolveSession, READ_CHAT_TOOL, READ_SESSION_TOOL, DEFAULT_LIMIT } from "./verb-server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, "verb-server.mjs");
@@ -49,10 +49,10 @@ function stubDir({ fail = false } = {}) {
 
 /** Drive the server over stdio: send each message as one line, collect the
  *  id-bearing responses, resolve once we've seen `expect` of them. */
-function rpc(messages, { expect, chatFetch }) {
+function rpc(messages, { expect, chatFetch, env = {} }) {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [SERVER], {
-      env: { ...process.env, CHAT_FETCH_BIN: chatFetch },
+      env: { ...process.env, CHAT_FETCH_BIN: chatFetch, ...env },
       stdio: ["pipe", "pipe", "inherit"],
     });
     const out = [];
@@ -110,9 +110,9 @@ test("tools/list advertises read_chat, and a notification draws no response", as
       { expect: 2, chatFetch: join(dir, "chat-fetch.sh") },
     );
     const list = res.find((m) => m.id === 2);
-    assert.equal(list.result.tools.length, 1);
-    assert.equal(list.result.tools[0].name, "read_chat");
-    assert.match(list.result.tools[0].description, /share/i);
+    assert.deepEqual(list.result.tools.map((x) => x.name).sort(), ["read_chat", "read_session"]);
+    assert.match(list.result.tools.find((x) => x.name === "read_chat").description, /share/i);
+    assert.match(list.result.tools.find((x) => x.name === "read_session").description, /own transcript|current session/i);
     // the notification produced nothing: exactly two id-bearing responses
     assert.equal(res.length, 2);
   } finally {
@@ -195,8 +195,8 @@ test("an unknown tool is a JSON-RPC error, not a crash", async () => {
 // ── pure unit: the renderer, imported directly ───────────────────────────────
 
 test("renderTranscript skips the meta step and empty turns", () => {
-  const text = renderTranscript(GRAPH);
-  assert.match(text, /2 turns/);
+  const text = renderTranscript(GRAPH, {});
+  assert.match(text, /turns 1–2 of 2/);
   assert.doesNotMatch(text, /conversation\.event/);
   assert.equal((text.match(/## /g) || []).length, 2); // two turns (header is a single #)
 });
@@ -204,4 +204,119 @@ test("renderTranscript skips the meta step and empty turns", () => {
 test("the tool schema requires share_url and bounds mode", () => {
   assert.deepEqual(READ_CHAT_TOOL.inputSchema.required, ["share_url"]);
   assert.deepEqual(READ_CHAT_TOOL.inputSchema.properties.mode.enum, ["transcript", "graph"]);
+});
+
+// ── pagination (#330) — the defect dogfooding found: a real chat overflowed ──
+
+const BIG = {
+  paths: [
+    {
+      steps: [
+        { step: { id: "chat-meta" }, change: { "s://x": { structural: { type: "conversation.event" } } } },
+        ...Array.from({ length: 100 }, (_, i) => ({
+          step: { id: String(i) },
+          change: { "s://x": { structural: { role: i % 2 ? "assistant" : "user", text: `turn ${i}` } } },
+        })),
+      ],
+    },
+  ],
+};
+
+test("turnsOf drops non-turn steps and empty text", () => {
+  assert.equal(turnsOf(BIG).length, 100);
+  assert.equal(turnsOf({ paths: [{ steps: [] }] }).length, 0);
+  assert.equal(turnsOf(undefined).length, 0);
+});
+
+test("page: positive offset walks forward, negative counts from the end", () => {
+  assert.deepEqual(page(100, { limit: 40, offset: 0 }), { start: 0, end: 40, next: 40 });
+  assert.deepEqual(page(100, { limit: 40, offset: 80 }), { start: 80, end: 100, next: null });
+  assert.deepEqual(page(100, { limit: 40, offset: -40 }), { start: 60, end: 100, next: null });
+  // out-of-range and non-integer inputs clamp rather than throw
+  assert.deepEqual(page(10, { limit: 40, offset: 999 }), { start: 10, end: 10, next: null });
+  assert.deepEqual(page(10, { limit: 999, offset: -999 }), { start: 0, end: 10, next: null });
+});
+
+test("a truncated page announces the omitted range and the exact continuation", () => {
+  const text = renderTranscript(BIG, { limit: 10, offset: 0 });
+  assert.match(text, /turns 1–10 of 100/);
+  assert.match(text, /90 more turn\(s\)\. Continue with offset: 10\./);
+  assert.match(text, /## user\n\nturn 0/);
+  assert.doesNotMatch(text, /turn 10\b/); // 11th turn is not in this page
+});
+
+test("the last page says nothing about continuing", () => {
+  const text = renderTranscript(BIG, { limit: 10, offset: -10 });
+  assert.match(text, /turns 91–100 of 100/);
+  assert.doesNotMatch(text, /Continue with offset/);
+});
+
+test("one enormous turn is capped so it cannot blow the budget alone", () => {
+  const huge = {
+    paths: [{ steps: [{ step: { id: "1" }, change: { "s://x": { structural: { role: "user", text: "z".repeat(20000) } } } }] }],
+  };
+  const text = renderTranscript(huge, {});
+  assert.ok(text.length < 8000);
+  assert.match(text, /turn truncated — 20000 chars total/);
+});
+
+// ── read_session (#328) — the same capability pointed inward ─────────────────
+
+test("resolveSession prefers the argument, falls back to the session env var", () => {
+  assert.equal(resolveSession({ session_id: "abc" }, {}), "abc");
+  assert.equal(resolveSession({}, { CLAUDE_CODE_SESSION_ID: "env-id" }), "env-id");
+  assert.equal(resolveSession({}, {}), null);
+});
+
+test("read_session tool: no required args, and it documents the self-read", () => {
+  assert.deepEqual(READ_SESSION_TOOL.inputSchema.required, []);
+  assert.equal(READ_SESSION_TOOL.inputSchema.properties.limit.default, DEFAULT_LIMIT);
+  assert.match(READ_SESSION_TOOL.description, /no relay and no credential/i);
+});
+
+test("read_session reads the current session via a stubbed path CLI, newest turns first", async () => {
+  const dir = stubDir();
+  try {
+    // A `path` stub: p list claude --json → one session; p derive → BIG graph.
+    writeFileSync(
+      join(dir, "path"),
+      `#!/usr/bin/env bash
+if [ "$2" = "list" ]; then printf '%s' '${JSON.stringify({ sessions: [{ session_id: "sess-1", project_path: "/home/user" }] })}'; exit 0; fi
+printf '%s' '${JSON.stringify(BIG)}'
+`,
+    );
+    chmodSync(join(dir, "path"), 0o755);
+    const res = await rpc(
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "read_session", arguments: { limit: 5 } } },
+      ],
+      { expect: 2, chatFetch: join(dir, "chat-fetch.sh"), env: { PATH_CLI_BIN: join(dir, "path"), CLAUDE_CODE_SESSION_ID: "sess-1" } },
+    );
+    const call = res.find((m) => m.id === 2);
+    assert.ok(!call.result.isError, JSON.stringify(call.result));
+    const text = call.result.content[0].text;
+    assert.match(text, /Session sess-1/);
+    assert.match(text, /turns 96–100 of 100/); // defaults to the most recent turns
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("read_session with no id and no env var names the remedy", async () => {
+  const dir = stubDir();
+  try {
+    const res = await rpc(
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "read_session", arguments: {} } },
+      ],
+      { expect: 2, chatFetch: join(dir, "chat-fetch.sh"), env: { CLAUDE_CODE_SESSION_ID: "" } },
+    );
+    const call = res.find((m) => m.id === 2);
+    assert.equal(call.result.isError, true);
+    assert.match(call.result.content[0].text, /p list claude --json/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

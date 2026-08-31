@@ -66,9 +66,9 @@ hold, or S is refused:
 | Source ref | `refs/heads/main` |
 | OIDC issuer | `https://token.actions.githubusercontent.com` |
 
-Subjects are exactly `boot.sh` plus the four files `fetch_verified` installs:
+Subjects are exactly `boot.sh` plus the six files `fetch_verified` installs:
 `session-start-dispatch.mjs`, `register-mcp.mjs`, `stop-hook-git-check.sh`,
-`setup-toolpath.sh`.
+`setup-toolpath.sh`, `chat-fetch.sh`, `verb-server.mjs`.
 
 This list, `attest-boot.yml`'s `subject-path`, its push path filter, and its
 run-summary loop are all the same list. That used to be stated as an instruction
