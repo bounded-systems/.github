@@ -248,5 +248,286 @@
         "policy: missing, or not a string"
       ]
     }
-  ]
+  ],
+  "ladder": {
+    "$comment": "COMMITTED FIXTURE for authorizationRung(), same discipline as the encoding vectors above and for the same reason. The ladder decides whether a claim reads `human-authorized`, and CLAUDE.md tells every session to confirm that rung on the issue — so it is security-relevant, and until now it was exercised ONLY in bounded-systems/.github, against that repo's own implementation. The vendored copy in bounded-systems/infra drifted from it at #706 and nothing went red, because the encoding vectors above cannot see the ladder. Every implementation of the claim ladder MUST reproduce every rung here, and there is no regeneration flag. `record`, when present, replaces the base record outright (including null); otherwise `patch` is merged over `baseRecord` and `unset` deletes keys — JSON has no `undefined`, and the absent-vs-false distinction is load-bearing on this ladder. `expected` replaces `baseExpected`. `rung` asserts the classification, `notRung` asserts one that must never be returned, `reasons` asserts the exact list, `reasonsMatch` asserts a substring, and `aal` asserts the assurance level.",
+    "baseExpected": {
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "relyingParty": "desk.bounded.tools"
+    },
+    "baseRecord": {
+      "assertionVerified": true,
+      "relyingParty": "desk.bounded.tools",
+      "challenge": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "userVerification": "required",
+      "uvPerformed": true,
+      "attentionCheckPassed": true,
+      "backupEligible": false,
+      "approvers": [
+        "person:alice"
+      ]
+    },
+    "cases": [
+      {
+        "name": "a complete record reaches human-authorized with nothing held back",
+        "rung": "human-authorized",
+        "reasons": []
+      },
+      {
+        "name": "BINDING OUTRANKS ATTENTION (#706) — a bound approval with no attention check is still human-authorized. This is the case the vendored copy in bounded-systems/infra got wrong, and the reason this section exists.",
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "rung": "human-authorized",
+        "reasons": []
+      },
+      {
+        "name": "a dispatcher and nothing else is association, not authorization",
+        "record": {
+          "dispatcher": "bdelanghe"
+        },
+        "rung": "human-associated",
+        "reasonsMatch": "association, not authorization"
+      },
+      {
+        "name": "no record at all is unauthenticated",
+        "record": null,
+        "rung": "unauthenticated"
+      },
+      {
+        "name": "a non-object record is unauthenticated",
+        "record": "yes",
+        "rung": "unauthenticated"
+      },
+      {
+        "name": "an UNBOUND assertion with an attention check rises only to human-attended",
+        "patch": {
+          "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "rung": "human-attended",
+        "reasonsMatch": "presence, not authorization of this claim"
+      },
+      {
+        "name": "an UNBOUND assertion with no attention check is presence only",
+        "patch": {
+          "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "rung": "human-authenticated",
+        "reasonsMatch": "control 6"
+      },
+      {
+        "name": "a verifier that forgot to recompute the digest cannot accidentally pass",
+        "expected": {
+          "relyingParty": "desk.bounded.tools"
+        },
+        "rung": "human-attended"
+      },
+      {
+        "name": "a malformed expected digest cannot be satisfied",
+        "expected": {
+          "digest": "short",
+          "relyingParty": "desk.bounded.tools"
+        },
+        "rung": "human-attended"
+      },
+      {
+        "name": "a stale ceremony is human-authenticated even when bound (uv not required)",
+        "patch": {
+          "userVerification": "preferred"
+        },
+        "rung": "human-authenticated",
+        "reasonsMatch": "cached or inherited login is not an approval"
+      },
+      {
+        "name": "a stale ceremony is human-authenticated even when bound (uv not performed)",
+        "patch": {
+          "uvPerformed": false
+        },
+        "rung": "human-authenticated",
+        "reasonsMatch": "cached or inherited login is not an approval"
+      },
+      {
+        "name": "an assertion verified by the requester is capped at human-reviewed",
+        "patch": {
+          "relyingParty": "the-session-itself"
+        },
+        "rung": "human-reviewed",
+        "reasonsMatch": "verified by the requester proves nothing"
+      },
+      {
+        "name": "an unverified assertion does not lift the record off the bottom",
+        "patch": {
+          "assertionVerified": false
+        },
+        "rung": "unauthenticated"
+      },
+      {
+        "name": "two distinct approvers reach dual-human-authorized",
+        "patch": {
+          "approvers": [
+            "person:alice",
+            "person:bob"
+          ]
+        },
+        "rung": "dual-human-authorized"
+      },
+      {
+        "name": "one approver repeated is not two",
+        "patch": {
+          "approvers": [
+            "person:alice",
+            "person:alice"
+          ]
+        },
+        "rung": "human-authorized"
+      },
+      {
+        "name": "a syncable passkey is aal2 and cannot be reported as aal3",
+        "patch": {
+          "backupEligible": true
+        },
+        "rung": "human-authorized",
+        "aal": "aal2"
+      },
+      {
+        "name": "a device-bound credential is aal3-ELIGIBLE, not aal3",
+        "aal": "aal3-eligible"
+      },
+      {
+        "name": "an absent backup flag is unknown, not assumed",
+        "unset": [
+          "backupEligible"
+        ],
+        "aal": "unknown"
+      },
+      {
+        "name": "a failed attention check (bound and fresh, false) must never be classified human-attended",
+        "patch": {
+          "attentionCheckPassed": false
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (bound and fresh, \"true\") must never be classified human-attended",
+        "patch": {
+          "attentionCheckPassed": "true"
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "an absent attention check (bound and fresh) must never be classified human-attended",
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (unbound, false) must never be classified human-attended",
+        "patch": {
+          "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attentionCheckPassed": false
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (unbound, \"true\") must never be classified human-attended",
+        "patch": {
+          "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attentionCheckPassed": "true"
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "an absent attention check (unbound) must never be classified human-attended",
+        "patch": {
+          "challenge": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (stale, false) must never be classified human-attended",
+        "patch": {
+          "uvPerformed": false,
+          "attentionCheckPassed": false
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (stale, \"true\") must never be classified human-attended",
+        "patch": {
+          "uvPerformed": false,
+          "attentionCheckPassed": "true"
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "an absent attention check (stale) must never be classified human-attended",
+        "patch": {
+          "uvPerformed": false
+        },
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (unverified, false) must never be classified human-attended",
+        "patch": {
+          "assertionVerified": false,
+          "attentionCheckPassed": false
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (unverified, \"true\") must never be classified human-attended",
+        "patch": {
+          "assertionVerified": false,
+          "attentionCheckPassed": "true"
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "an absent attention check (unverified) must never be classified human-attended",
+        "patch": {
+          "assertionVerified": false
+        },
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (self-attested, false) must never be classified human-attended",
+        "patch": {
+          "relyingParty": "the-session-itself",
+          "attentionCheckPassed": false
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "a failed attention check (self-attested, \"true\") must never be classified human-attended",
+        "patch": {
+          "relyingParty": "the-session-itself",
+          "attentionCheckPassed": "true"
+        },
+        "notRung": "human-attended"
+      },
+      {
+        "name": "an absent attention check (self-attested) must never be classified human-attended",
+        "patch": {
+          "relyingParty": "the-session-itself"
+        },
+        "unset": [
+          "attentionCheckPassed"
+        ],
+        "notRung": "human-attended"
+      }
+    ]
+  }
 }
