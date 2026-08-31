@@ -178,6 +178,79 @@ export async function runCeremony(
  */
 export const ANNOUNCE_REPO = "bounded-systems/.github";
 export const ANNOUNCE_WORKFLOW = "announce-ceremony.yml";
+/**
+ * The ref, in one place for the same reason the inputs are — and it is load-
+ * bearing, not cosmetic: desk pins `job_workflow_ref`, which names a FILE at a
+ * REF, so a dispatch on any other ref mints a token desk refuses. A hand-off
+ * naming a ref the dispatch would not use sends a session to run something that
+ * cannot notify.
+ */
+export const ANNOUNCE_REF = "main";
+
+/**
+ * The three inputs `announce-ceremony.yml` takes, in ONE place.
+ *
+ * The text names the repo and issue. "An approval is waiting" is unactionable
+ * on a phone — the reader cannot tell a claim from a deploy, and the only way
+ * to find out is to open the thing the notice exists to save them opening.
+ *
+ * Factored out because two callers now render it: the dispatch below, and the
+ * hand-off printed when that dispatch is refused. Two literals would drift, and
+ * a hand-off that names inputs the dispatch would not actually send is worse
+ * than no hand-off — it is the failure mode this org keeps hitting, a message
+ * that can only see its own copy of the truth.
+ */
+export function announceInputs({ repo, issue, claimant, approveUrl }) {
+  return {
+    title: `Approve a claim on ${repo}#${issue}`,
+    body: `${claimant} wants to claim ${repo}#${issue}. Approving opens the claim window; the Face ID at the keeper is the approval.`,
+    url: approveUrl,
+  };
+}
+
+/**
+ * What to print when the notice did not send (#305).
+ *
+ * MEASURED 2026-08-31, not inferred — and measured as a SHAPE, not as a kind of
+ * credential: `GITHUB_TOKEN` in this process holds a proxy placeholder, and what
+ * reaches GitHub is injected at the egress proxy, so this file cannot say what
+ * that credential is, only what it is refused. A workflow GET answers 200 with
+ * `X-Accepted-Github-Permissions: actions=read`; the dispatch POST answers 403
+ * `Resource not accessible by integration` with `actions=write` — GITHUB's
+ * voice, not the proxy's. The proxy is not what refuses it: it denies
+ * `/actions/secrets`, `/actions/variables` and `/actions/permissions`, and lets
+ * the dispatch path through. So this process will never dispatch, whatever it
+ * retries, and better tooling in it changes nothing.
+ *
+ * But the SESSION is not this process. A session driven through a GitHub tool
+ * holds a different credential — one this process cannot read, cannot borrow,
+ * and must not be given — and it dispatches workflows routinely, `claim-ticket`
+ * among them. Announcing is strictly less capability than claiming, so a session
+ * that can open the door can certainly ring the bell. It just has to be told.
+ *
+ * That half is a CITATION, not a re-derivation: `front-desk-scheduler` →
+ * `docs/claiming-from-a-session.md` measured both sides minutes apart in one
+ * session on 2026-08-06 — `curl …/claim-ticket.yml/dispatches` 403,
+ * `actions_run_trigger` on the same workflow 204. Run history cannot stand in
+ * for it: both credentials answer `/user` as the same login, so an actor name
+ * on a dispatched run attributes nothing. If that date has aged past what you
+ * are willing to lean on, `docs/api-reachability.md` says how to re-prove it.
+ *
+ * That is all this is: a HAND-OFF, not a mechanism. Nothing here sends anything,
+ * nothing here checks that anyone acted, and the ceremony neither waits for it
+ * nor cares. The mechanism is `infra`#551 — a ceremony recorded rather than
+ * opened session-side, so the recorder can notify without anyone being told.
+ */
+export function handoffNotice({ repo, issue, claimant, approveUrl }) {
+  const inputs = announceInputs({ repo, issue, claimant, approveUrl });
+  return [
+    `To ring a phone anyway, dispatch ${ANNOUNCE_WORKFLOW} in ${ANNOUNCE_REPO} (ref ${ANNOUNCE_REF}) with your own`,
+    "GitHub tool — this process cannot, and no credential it could be given should be:",
+    `  title: ${inputs.title}`,
+    `  body:  ${inputs.body}`,
+    `  url:   ${inputs.url}`,
+  ].join("\n");
+}
 
 /**
  * BEST EFFORT, ALWAYS. It returns a reason and never throws, because the
@@ -203,18 +276,7 @@ export async function announceCeremony(
           "content-type": "application/json",
           "user-agent": "claim-ceremony",
         },
-        // The text names the repo and issue. "An approval is waiting" is
-        // unactionable on a phone — the reader cannot tell a claim from a
-        // deploy, and the only way to find out is to open the thing the notice
-        // exists to save them opening.
-        body: JSON.stringify({
-          ref: "main",
-          inputs: {
-            title: `Approve a claim on ${repo}#${issue}`,
-            body: `${claimant} wants to claim ${repo}#${issue}. Approving opens the claim window; the Face ID at the keeper is the approval.`,
-            url: approveUrl,
-          },
-        }),
+        body: JSON.stringify({ ref: ANNOUNCE_REF, inputs: announceInputs({ repo, issue, claimant, approveUrl }) }),
       },
     );
     if (res.status === 204) return { announced: true };
@@ -244,7 +306,8 @@ async function main() {
         announceCeremony({ repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, approveUrl: url })
           .then((r) => console.error(r.announced
             ? "Announced to subscribed devices."
-            : `Not announced (${r.reason}) — approve at the URL above.`));
+            : `Not announced (${r.reason}) — approve at the URL above.\n${
+                handoffNotice({ repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, approveUrl: url })}`));
       },
     },
   );
