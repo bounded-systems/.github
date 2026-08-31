@@ -177,9 +177,22 @@ export function canonicalClaimRequest(req) {
   if (errs.length > 0) {
     throw new TypeError(`invalid claim request: ${errs.join("; ")}`);
   }
+  return encodeFields(req, CLAIM_REQUEST_FIELDS_V1);
+}
+
+/**
+ * The length-prefix loop itself, and the ONE implementation of it.
+ *
+ * Every canonical form in this file goes through here — v1, v2, and the nested
+ * patch set — because the encoding rule is the thing two implementations must
+ * agree on byte for byte, and a rule with two copies is a rule with two
+ * readings. (#310 is the standing example: the encoding had one implementation
+ * and stayed in sync; the ladder had two and did not.)
+ */
+function encodeFields(obj, fields) {
   let out = "";
-  for (const field of CLAIM_REQUEST_FIELDS_V1) {
-    const value = req[field];
+  for (const field of fields) {
+    const value = obj[field];
     out += `${enc.encode(value).length}:${value}\n`;
   }
   return out;
@@ -193,8 +206,183 @@ export function canonicalClaimRequest(req) {
  * believes an authorization. Recomputing rather than accepting a supplied digest
  * is the point: a digest the requester hands you is a name it chose.
  */
+// ── v2: the claim is bound to a patch set ────────────────────────────────────
+//
+// WHY. A v1 claim signs COORDINATES — repo, issue, claimant — and nothing about
+// what the work is. That is right for a lease: a session claims an issue and
+// goes and does open-ended work, and the human authorized WHO HOLDS IT.
+//
+// It is not enough for a claim whose whole point is that a human approved a
+// specific set of changes (the intake shape in bounded-systems/infra#560, where
+// an issue lists dependency bumps and a person approves that list). Under v1 the
+// claim would be equally valid if the issue's contents changed the instant after
+// approval, leaving #555 row 5 — display to intent — carrying the whole load.
+// v2 moves that weight onto row 4, where a digest can hold it.
+//
+// v1 IS NOT DEPRECATED. Both versions stay registered, and each request type
+// pins its own. A lease claim should keep using v1; reaching for v2 with a
+// pro-forma patch set would be worse than either.
+
+/** The v2 tag. `v` is the first field, so a v2 request cannot collide with a v1 one. */
+export const CLAIM_REQUEST_V2 = "bounded.claim-request.v2";
+
+/**
+ * v2's canonical field order. `subject` sits with what is being claimed, ahead
+ * of the ceremony bookkeeping. Order is part of the format: moving it is a v3.
+ */
+export const CLAIM_REQUEST_FIELDS_V2 = Object.freeze([
+  "v",
+  "repo",
+  "issue",
+  "claimant",
+  "subject",
+  "policy",
+  "nonce",
+  "issuedAt",
+]);
+
+/** Each patch, in this order. Same rule as the outer form, one level down. */
+export const PATCH_FIELDS_V1 = Object.freeze(["repo", "pr", "head_sha"]);
+
+/**
+ * A git object name: 40 lowercase hex. The COMMIT is what is bound, not the PR
+ * number — a force-push after approval must invalidate the claim rather than
+ * ride it. `deploy-request.v1` binds `head_sha` for the same reason.
+ *
+ * Deliberately not accepting 64-hex (sha-256 object format): nothing in this org
+ * produces it today, and accepting a second width now would mean two spellings
+ * of "the commit" before anything can be checked against them. Widening it later
+ * is a version bump, which is the correct cost.
+ */
+const RE_HEAD_SHA = /^[0-9a-f]{40}$/;
+
+/** A `subject` is the patch-set digest: 64 lowercase hex, like every digest here. */
+const RE_SUBJECT = /^[0-9a-f]{64}$/;
+
+/**
+ * Validate a patch set. Returns a list of problems; empty means valid.
+ *
+ * ORDER IS THE CALLER'S, AND IT IS PART OF THE REQUEST. This file already
+ * refuses sorted keys on the grounds that "sorting is a rule someone has to
+ * re-derive", and a list, unlike an object, is ordered to begin with — so there
+ * is nothing to sort and no rule to re-derive. Two orderings are two requests,
+ * digest differently, and display differently; the producer owns determinism,
+ * and there is exactly one producer.
+ *
+ * EMPTY IS REFUSED. An empty patch set would make a v2 request mean precisely
+ * what v1 means while wearing the newer tag — a downgrade dressed as an upgrade.
+ * If there is no patch set, the request is a v1 request.
+ *
+ * DUPLICATES ARE REFUSED. The same (repo, pr) twice is a producer bug every
+ * time, and it is cheaper to refuse it than to define what it means.
+ */
+export function validatePatchSet(patches) {
+  if (!Array.isArray(patches)) return ["patches: must be an array"];
+  if (patches.length === 0) {
+    return ["patches: must not be empty — a v2 request with no patch set is a v1 request"];
+  }
+  const errs = [];
+  const seen = new Set();
+  patches.forEach((patch, i) => {
+    if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+      errs.push(`patches[${i}]: must be an object`);
+      return;
+    }
+    for (const [field, [re, why]] of Object.entries(PATCH_CHECKS)) {
+      const val = patch[field];
+      if (typeof val !== "string") errs.push(`patches[${i}].${field}: missing, or not a string`);
+      else if (!re.test(val)) errs.push(`patches[${i}].${field}: ${why}`);
+    }
+    const unknown = Object.keys(patch).filter((k) => !PATCH_FIELDS_V1.includes(k));
+    if (unknown.length > 0) {
+      errs.push(`patches[${i}]: unknown field(s): ${unknown.sort().join(", ")} — a new field is a version bump`);
+    }
+    const key = `${patch.repo}#${patch.pr}`;
+    if (seen.has(key)) errs.push(`patches[${i}]: duplicate ${key}`);
+    seen.add(key);
+  });
+  return errs;
+}
+
+const PATCH_CHECKS = {
+  repo: [RE_REPO, `must be a plain repository name ([${REPO_CHARSET_V1}])`],
+  pr: [RE_ISSUE, "must be a decimal PR number with no leading zeros"],
+  head_sha: [RE_HEAD_SHA, "must be 40 lowercase hex (a git object name)"],
+};
+
+/**
+ * The canonical byte string for a patch set: every patch, in the caller's order,
+ * each field length-prefixed exactly as the outer form is.
+ *
+ * Because it reuses `encodeFields`, the nested encoding inherits the outer one's
+ * adjacency property rather than needing its own argument for it — no value can
+ * be slid into its neighbour, whatever it contains.
+ */
+export function canonicalPatchSet(patches) {
+  const errs = validatePatchSet(patches);
+  if (errs.length > 0) throw new TypeError(`invalid patch set: ${errs.join("; ")}`);
+  return patches.map((patch) => encodeFields(patch, PATCH_FIELDS_V1)).join("");
+}
+
+/** SHA-256 of the canonical patch set, lowercase hex. This is a request's `subject`. */
+export async function patchSetDigest(patches) {
+  return sha256Hex(enc.encode(canonicalPatchSet(patches)));
+}
+
+/**
+ * Validate a v2 claim request. Same shape and same refusals as v1, plus
+ * `subject`.
+ *
+ * `subject` is validated here only as a well-formed digest. That it is the
+ * digest OF A PARTICULAR PATCH SET is not checkable from the request alone —
+ * the request carries the digest, not the set. The verifier that shows a human
+ * the list is the one that must recompute `patchSetDigest(list)` and compare;
+ * `describe()` below is where that pairing lives, and #501's rule applies to it:
+ * a human must be able to get from the rendered list to this hex with nothing
+ * but sha256sum.
+ */
+export function validateClaimRequestV2(req) {
+  if (req === null || typeof req !== "object" || Array.isArray(req)) {
+    return ["claim request must be an object"];
+  }
+  const errs = [];
+  if (req.v !== CLAIM_REQUEST_V2) errs.push(`v: must be exactly "${CLAIM_REQUEST_V2}"`);
+  for (const [field, [re, why]] of Object.entries({ ...CHECKS, subject: [RE_SUBJECT, "must be 64 lowercase hex (a patch-set digest)"] })) {
+    const val = req[field];
+    if (typeof val !== "string") errs.push(`${field}: missing, or not a string`);
+    else if (!re.test(val)) errs.push(`${field}: ${why}`);
+  }
+  if (typeof req.issuedAt === "string" && RE_ISSUED_AT.test(req.issuedAt)) {
+    const t = new Date(req.issuedAt);
+    if (Number.isNaN(t.getTime()) || t.toISOString().replace(/\.\d{3}Z$/, "Z") !== req.issuedAt) {
+      errs.push("issuedAt: not a real UTC instant");
+    }
+  }
+  const unknown = Object.keys(req).filter((k) => !CLAIM_REQUEST_FIELDS_V2.includes(k));
+  if (unknown.length > 0) {
+    errs.push(`unknown field(s): ${unknown.sort().join(", ")} — a new field is a version bump`);
+  }
+  return errs;
+}
+
+/** The canonical byte string for a v2 claim request. Refuses to encode an invalid one. */
+export function canonicalClaimRequestV2(req) {
+  const errs = validateClaimRequestV2(req);
+  if (errs.length > 0) throw new TypeError(`invalid claim request: ${errs.join("; ")}`);
+  return encodeFields(req, CLAIM_REQUEST_FIELDS_V2);
+}
+
+/** SHA-256 of the v2 canonical form, lowercase hex. */
+export async function claimDigestV2(req) {
+  return sha256Hex(enc.encode(canonicalClaimRequestV2(req)));
+}
+
 export async function claimDigest(req) {
-  const bytes = enc.encode(canonicalClaimRequest(req));
+  return sha256Hex(enc.encode(canonicalClaimRequest(req)));
+}
+
+/** SHA-256 to lowercase hex. One implementation, for the same reason `encodeFields` is one. */
+async function sha256Hex(bytes) {
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

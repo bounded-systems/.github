@@ -28,14 +28,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CLAIM_REQUEST_FIELDS_V1,
+  CLAIM_REQUEST_FIELDS_V2,
   CLAIM_REQUEST_V1,
+  CLAIM_REQUEST_V2,
+  PATCH_FIELDS_V1,
   REPO_CHARSET_V1,
   RUNGS,
   assuranceLevel,
   authorizationRung,
   canonicalClaimRequest,
+  canonicalClaimRequestV2,
+  canonicalPatchSet,
   claimDigest,
+  claimDigestV2,
+  patchSetDigest,
   validateClaimRequest,
+  validateClaimRequestV2,
+  validatePatchSet,
 } from "./claim-digest.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -311,4 +320,109 @@ test("every ladder vector classifies exactly as the fixture says", () => {
     }
     if ("aal" in v) assert.equal(got.aal, v.aal, v.name);
   }
+});
+
+// ── v2: the claim bound to a patch set ───────────────────────────────────────
+//
+// Same discipline as the v1 block at the top of this file, against the `v2`
+// section of the same committed fixture. Those digests were computed by an
+// independent python/hashlib implementation of the format rule before they were
+// committed, so a green run here is two implementations agreeing — not this one
+// agreeing with itself.
+
+const v2 = vectors.v2;
+
+test("the v2 fixture is present and describes the format this file implements", () => {
+  assert.ok(v2, "claim-digest.vectors.json carries no `v2` section");
+  assert.equal(v2.format, CLAIM_REQUEST_V2);
+  assert.deepEqual(v2.fieldOrder, [...CLAIM_REQUEST_FIELDS_V2]);
+  assert.deepEqual(v2.patchFieldOrder, [...PATCH_FIELDS_V1]);
+  assert.ok(v2.valid.length >= 3, `expected v2 vectors, got ${v2.valid.length}`);
+  assert.ok(v2.invalid.length >= 8, `expected v2 refusals, got ${v2.invalid.length}`);
+  assert.ok(v2.invalidPatchSets.length >= 8, `expected patch-set refusals, got ${v2.invalidPatchSets.length}`);
+});
+
+test("every patch-set vector reproduces its canonical form and digest", async () => {
+  for (const p of v2.patchSets) {
+    assert.equal(canonicalPatchSet(p.patches), p.canonical, p.name);
+    assert.equal(await patchSetDigest(p.patches), p.digest, p.name);
+  }
+});
+
+test("list ORDER is part of the request — the same bumps reversed are a different claim", async () => {
+  // Not a sort. This file refuses sorted keys because "sorting is a rule someone
+  // has to re-derive", and a list is already ordered, so there is nothing to
+  // sort. Two orderings are two requests, and the fixture pins that they differ.
+  const forward = v2.patchSets.find((p) => p.name.includes("in the producer's order"));
+  const reversed = v2.patchSets.find((p) => p.name.includes("reversed"));
+  assert.ok(forward && reversed, "the ordered pair is missing from the fixture");
+  assert.deepEqual(
+    [...forward.patches].reverse().map((p) => p.pr),
+    reversed.patches.map((p) => p.pr),
+    "the pair must be the same patches in the other order, or it proves nothing",
+  );
+  assert.notEqual(await patchSetDigest(forward.patches), await patchSetDigest(reversed.patches));
+});
+
+test("a patch cannot be slid into its neighbour", async () => {
+  // The nested encoding inherits the outer form's adjacency property because it
+  // reuses the same length-prefix loop; this pins that it actually holds.
+  const a = v2.patchSets.find((p) => p.name.startsWith("adjacency:"));
+  const b = v2.patchSets.find((p) => p.name.startsWith("...its near-collision"));
+  assert.ok(a && b, "the adjacency pair is missing from the fixture");
+  assert.notEqual(await patchSetDigest(a.patches), await patchSetDigest(b.patches));
+});
+
+test("every valid v2 vector reproduces its canonical form and digest", async () => {
+  for (const c of v2.valid) {
+    assert.equal(canonicalClaimRequestV2(c.request), c.canonical, c.name);
+    assert.equal(await claimDigestV2(c.request), c.digest, c.name);
+  }
+});
+
+test("a v2 request's subject IS the digest of its patch set", async () => {
+  // The binding this version exists for. Without it `subject` is 64 hex
+  // characters that happen to validate.
+  for (const c of v2.valid) {
+    assert.equal(await patchSetDigest(c.patches), c.request.subject, c.name);
+  }
+});
+
+test("every invalid v2 vector is refused, and refused for a stated reason", () => {
+  for (const c of v2.invalid) {
+    const errs = validateClaimRequestV2(c.request);
+    assert.ok(errs.length > 0, `not refused: ${c.name}`);
+    assert.ok(
+      errs.some((e) => e.includes(c.reason)),
+      `${c.name}: refused as ${JSON.stringify(errs)}, expected to mention ${JSON.stringify(c.reason)}`,
+    );
+  }
+});
+
+test("every invalid patch set is refused, and refused for a stated reason", () => {
+  for (const c of v2.invalidPatchSets) {
+    const errs = validatePatchSet(c.patches);
+    assert.ok(errs.length > 0, `not refused: ${c.name}`);
+    assert.ok(
+      errs.some((e) => e.includes(c.reason)),
+      `${c.name}: refused as ${JSON.stringify(errs)}, expected to mention ${JSON.stringify(c.reason)}`,
+    );
+  }
+});
+
+test("v1 and v2 cannot collide, and neither validator accepts the other's request", () => {
+  // `v` is the first field, so the tag is inside the digest rather than beside
+  // it. The cross-validator check is the half that matters operationally: a v2
+  // request must never be gradeable as v1, or the patch-set binding is optional
+  // in practice.
+  const v1req = vectors.valid[0].request;
+  const v2req = v2.valid[0].request;
+  assert.ok(validateClaimRequest(v2req).length > 0, "the v1 validator accepted a v2 request");
+  assert.ok(validateClaimRequestV2(v1req).length > 0, "the v2 validator accepted a v1 request");
+  assert.notEqual(v2.valid[0].digest, vectors.valid[0].digest);
+});
+
+test("canonicalPatchSet refuses rather than hashing unvalidated input", () => {
+  assert.throws(() => canonicalPatchSet([]), /invalid patch set/);
+  assert.throws(() => canonicalPatchSet([{ repo: "keycard", pr: "27", head_sha: "nope" }]), /invalid patch set/);
 });
