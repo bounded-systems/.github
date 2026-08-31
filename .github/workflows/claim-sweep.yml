@@ -40,9 +40,72 @@ name: claim-sweep
 # A release removes the label, unassigns, and leaves one comment naming the run.
 
 on:
+  # ── THE EVENT, and why it is this one ───────────────────────────────────────
+  # Rule 2 releases a claim because THE ISSUE IS CLOSED. `issues: [closed]` is
+  # not "an event that seems related"; it is that rule's precondition, arriving
+  # the moment it becomes true. Nothing else about the sweep is event-shaped:
+  # rule 3 becomes true by the PASSAGE OF TIME, and no event will ever announce
+  # it, which is why the cron below stays rather than being replaced.
+  #
+  # WHY NOT A `repository_dispatch`. The board-changed / claim-activity family
+  # is how the FEED lanes get woken, and it is the wrong shape twice over. A
+  # card moving on org project #2 is not a claim ending, so the semantics do not
+  # match; and cross-repo `repository_dispatch` needs `contents: write` on the
+  # target, which a caller's own GITHUB_TOKEN does not carry. That is the exact
+  # credential this lane was rebuilt to avoid needing — the broker refused it by
+  # name (`unknown app 'claim-sweep'`, HTTP 404), which is what made the original
+  # cross-repo design dead on arrival. A dispatch trigger here would ship a door
+  # with no key and no sender: inert, and inert in a way that reads as wired.
+  # `issues` is native to the repository being swept and costs no credential.
+  #
+  # WHY NOT `pull_request: [closed]`. A merge is not a release. Where a PR
+  # closes its issue, `issues: [closed]` already fires; where it does not — the
+  # `Claim-issue:` trailer of #781, work running under a claim without closing
+  # it — the claim SHOULD survive, because the issue is still open work. Checked
+  # against the six claims a human released by hand on 2026-08-31: #725 carries
+  # ELEVEN merged PRs, #735 seven, #717 four. A merge trigger would have woken
+  # this sweep eleven times for #725 and released nothing each time, because on
+  # every one of those wakings rule 2 was false and the cross-reference had just
+  # refreshed `updated_at`, making rule 3 false too. It fires hardest exactly
+  # where the claim is most legitimately held.
+  #
+  # WHAT THIS DOES NOT FIX, stated here because the section above reads like a
+  # cure. Those same six (#579 #641 #698 #717 #725 #735) were OPEN, and idle
+  # 0-2 days, when they were released by hand. Rule 2 cannot see them — they are
+  # still open now. Rule 3 cannot either, at 14 days or at any window short
+  # enough not to evict live sessions. They ended because a SESSION FINISHED,
+  # and GitHub emits no event for that. This trigger collapses rule 2's latency
+  # and leaves that gap exactly where it was; the door for it is a session
+  # releasing its own claim, which needs no passkey.
+  #
+  # NARROWED TO `closed` DELIBERATELY, not for tidiness. A bare `issues:` fires
+  # on `unlabeled` and `unassigned` too — which is precisely what a release
+  # writes, so the sweep would wake itself on its own output. It would converge
+  # rather than loop, since the second pass finds the label already gone, but it
+  # would double every run for no decision.
+  #
+  # THE BURST IS ALREADY DAMPED by the `concurrency` group below: GitHub keeps
+  # at most one pending run per group and cancels the previous pending one, so
+  # twenty closes in a minute collapse to about two runs. `cancel-in-progress`
+  # stays FALSE on purpose — a run killed between the release comment and the
+  # label removal leaves "Released by claim-sweep" on a still-claimed issue,
+  # which is the #652 half-applied shape the comment-first ordering exists to
+  # prevent.
+  issues:
+    types: [closed]
   schedule:
-    # Weekly backstop. A dropped slot costs a week of drift, not correctness:
-    # every release this makes is one a later run would also make.
+    # Weekly backstop, and now ALSO the only lane rule 3 has: it is the rule no
+    # event can announce. A dropped slot costs a week of drift, not correctness.
+    #
+    # WHY A BACKSTOP IS NOT ENOUGH ON ITS OWN, measured 2026-08-31 rather than
+    # assumed. Scheduled delivery in this org degraded sharply on 2026-08-27:
+    # in `.github-private` the hourly lanes fell from 20-25 runs a day to 2-6,
+    # and the daily 05:37 projection landed at 17:40 on 08-28 and 11:47 on
+    # 08-31 — six to twelve hours late. In THIS repo the two nine-week-old
+    # Monday lanes (`seam-coverage` 07:17, `registry-graph` 07:29) fired on
+    # 9 of 9 consecutive Mondays and then did not fire at all on 08-31. So a
+    # weekly cron here is a lane whose real period is a week PLUS an unbounded
+    # queue delay, and rule 2 should not wait behind it.
     - cron: "37 9 * * 1"
   workflow_dispatch:
     inputs:
@@ -75,7 +138,25 @@ jobs:
       issues: write
     with:
       # Cron is a real run by the #713 standing decision that a backlog drain
-      # must never need a session; a dispatch defaults to dry.
-      dry_run: ${{ github.event_name == 'schedule' && false || inputs.dry_run }}
-      release_closed: ${{ github.event_name == 'schedule' && true || inputs.release_closed }}
+      # must never need a session, and an issue-close waking is the same kind of
+      # run for the same reason; a dispatch defaults to dry.
+      #
+      # THE OPERANDS ARE ORDERED THE WAY THEY ARE BECAUSE `&&`/`||` RETURN AN
+      # OPERAND, NOT A BOOLEAN — GitHub's semantics, and JavaScript's. That makes
+      # `cond && false || X` a broken ternary: the `false` is falsy, so `||`
+      # discards it and the expression yields X on EVERY event. The previous
+      # `dry_run` line was exactly that shape, so on a scheduled run it resolved
+      # to `inputs.dry_run`, which on a non-dispatch event is empty — never the
+      # `false` that #713 requires. It was never caught because it was never
+      # executed: this lane has zero scheduled runs in either repo, so the branch
+      # has no history. Same class as #289 and #292 — a path the exercised cases
+      # never enter.
+      #
+      # The forms below put the DISPATCH case in the guarded half, so every other
+      # event falls through to a literal. `dry_run` yields literal `false` and
+      # `release_closed` literal `true` on both `schedule` and `issues`, and both
+      # reduce to exactly `inputs.<name>` on a dispatch — the same subexpression
+      # as before, so dispatch behaviour is unchanged by construction.
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      release_closed: ${{ github.event_name != 'workflow_dispatch' || inputs.release_closed }}
       stale_days: ${{ inputs.stale_days || '14' }}
