@@ -26,17 +26,23 @@ name: pr-claim
 # reports as `unreadable` and counts as NOT claimed, the fail-closed direction,
 # but a false red rather than a true one.
 #
-# WHY THE PIN IS bc4cb7d. That is #299, the newest commit to touch
+# WHY THE PIN IS bc4cb7d. That is `.github`#299, the newest commit to touch
 # `_pr-claim.yml`: it fails a PR whose BODY says keep an issue open and whose
-# COMMIT says close it. A squash merge honours the commit, which is how #296
-# closed the very issue it promised to leave open and made the follow-up PR
-# naming it unmergeable (`.github-private`#780, #781).
+# COMMIT says close it. That check exists because #296 carried
+# `Claim-issue: …#295` and `Closes #295` at once, went green, and closed the
+# issue on squash anyway -- which made the follow-up PR naming it unmergeable
+# (`.github-private`#780, #781). A squash merge honours the commit message, so
+# nothing before bc4cb7d can catch it.
 #
-# It supersedes 8a56f22 (#283). THIS REPO WAS ONE OF THE SIX still on that older
-# door while 37 of 43 deployed callers had moved past it (#322) -- so the repo
-# that owns `_pr-claim.yml` was checking its own PRs with a version of it that
-# predates #299. The roll script does not own this file, so it had to be bumped
-# by hand alongside the template and its GUARD.
+# It supersedes 8a56f22 (#283, which named which state each candidate issue is
+# in). That pin was carried here while 37 of 43 deployed callers had already
+# moved PAST it -- Dependabot bumps each repo's pin independently -- so the
+# template was rolling a door older than most of the fleet was running, and
+# `.github`'s own caller was among the six still on it (#322).
+#
+# The roll script refuses any template not pinned here, so this constant and
+# its GUARD must move together or the roll hard-fails. That is the guard
+# working, not an obstacle to route around.
 #
 # IT DOES NOT AUTHENTICATE THE CLAIMANT. A green `pr-claim` means "an open,
 # claimed issue was named", and no more — an author can name any claimed issue,
