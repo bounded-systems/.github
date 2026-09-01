@@ -54,7 +54,7 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs; do
 #     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
-PIN=e44409bf093ef0920d5d49f0a990db98ece092f1
+PIN=4f465d0bffbee609309468a541853095aefab6ad
 SUM_session_start_dispatch_mjs=f97ebc15b19a77bd21308229a355fbd5a0f767984063c13ded470dd3e0d40125
 SUM_register_mcp_mjs=40197da6e3dc5c771856a437b6a9e944ce530bb69f2b2724bd2513c281b84c1b
 SUM_stop_hook_git_check_sh=712c2a8041bbbec27b05e7c702a5654d0b882c4545288b065550276fc5c77562

@@ -44,6 +44,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -281,5 +282,49 @@ test("the pin is not stale — it serves what this branch contains", (t) => {
       `  On main this should self-heal: org-defaults.yml regenerates the pin on push\n` +
       `  and opens the bump PR. Seeing it here means that job did not run or did not\n` +
       `  land. Fix by hand with: node .claude/gen-bootstrap-pin.mjs <this commit>`,
+  );
+});
+
+// The pin must name a commit that SURVIVES on main, not merely one whose tree is
+// right. #335: .github#333 merged with PIN naming a BRANCH commit; this repo
+// squash-merges, so that object was never on main and both `org-defaults` and
+// the digest checks broke there — after passing every check on the PR, because
+// on a branch the commit is perfectly readable. That is the whole fuse: a branch
+// pin is invisible until merge, and then main is red and the bump lane cannot
+// regenerate out of it (planBump reads the OLD pin first).
+//
+// Skipped, not failed, when no main ref is available (a shallow or detached CI
+// checkout): a check that cannot see main must not invent a verdict about it.
+// And it is an ANCESTOR test, never an equality test — the pin legitimately
+// trails main by design.
+test("the pin names a commit reachable from main", (t) => {
+  const git = (args) => execFileSync("git", args, { cwd: HERE, stdio: "pipe" });
+  const mainRef = ["origin/main", "main"].find((ref) => {
+    try {
+      git(["rev-parse", "--verify", `${ref}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!mainRef) {
+    t.diagnostic("no main ref here — reachability unjudgeable; the merge-time lanes still catch it.");
+    return;
+  }
+  let reachable = true;
+  try {
+    git(["merge-base", "--is-ancestor", pin, mainRef]);
+  } catch {
+    reachable = false;
+  }
+  assert.ok(
+    reachable,
+    `PIN ${pin?.slice(0, 12)} is not an ancestor of ${mainRef}.\n` +
+      `  This repo squash-merges, so a BRANCH commit disappears when the PR lands and the\n` +
+      `  pin then names an object main does not have: fetch_verified cannot resolve it,\n` +
+      `  org-defaults' bump throws reading the old pin, and boot-manifest never runs.\n` +
+      `  Pin a commit that is ON MAIN — the previous merge is always a safe choice, and\n` +
+      `  on a PR that ADDS to the fetch set it is the RIGHT choice: the pin trails by design.\n` +
+      `    node .claude/gen-bootstrap-pin.mjs <a main commit whose tree has the fetch set>`,
   );
 });
