@@ -117,6 +117,11 @@ export function parseBootstrap(source) {
 const FIELD_PLUMBING = new Set([
   "set", "echo", "mkdir", "rm", "local", "return", "true",
   "curl", "sha256sum", "cut", "fetch_verified",
+  // `exit` REPORTS a verdict; it installs nothing. Added with #848's fix, which
+  // made the script refuse rather than print `ready` over an empty cache — the
+  // refusal needs a non-zero exit, and without this the parse would reject the
+  // very line that stops a silent no-op floor.
+  "exit",
 ]);
 
 /**

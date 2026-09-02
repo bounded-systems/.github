@@ -14,6 +14,7 @@ set -uo pipefail
 # directory. The caller may say (CLAUDE_SESSION_ROOT); otherwise probe, with the
 # historical layout as the last resort. Guards + assignments only — parseSteps in
 # gen-bootstrap-pin.mjs has no verb for loops, and needs none for this.
+MISSING=""                                         # artifacts that failed to install (#848)
 ROOT="${CLAUDE_SESSION_ROOT:-}"
 [ -d "$ROOT/.github/.claude" ] || ROOT="$PWD"
 [ -d "$ROOT/.github/.claude" ] || ROOT="${PWD%/*}"
@@ -87,11 +88,43 @@ fetch_verified() {
 # copy is verified, because only it is fetched.
 if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   echo "bootstrap: .github not attached — fetching pinned copies ($PIN)"
+  # WHERE THE CACHE LANDS, and why it is no longer just /opt (#848).
+  #
+  # /opt is root-owned on an ordinary Linux host. This branch had only ever run
+  # in a managed session, which runs as ROOT — so `mkdir -p /opt/bounded-boot`
+  # succeeded there and nowhere else. On the first real floor (an exe.dev VM,
+  # user `exedev`, 2026-09-02) it failed, every fetch_verified failed writing
+  # into a directory that did not exist, and this script printed `ready` and
+  # exited 0 having installed NOTHING. Reproduced in a mount namespace the same
+  # day: 0 of 7 as uid 1000, 7 of 7 as root, 7 of 7 as uid 1000 with the
+  # directory pre-created writable.
+  #
+  # -w rather than the mkdir status alone: a root-created /opt/bounded-boot
+  # makes `mkdir -p` succeed for an unprivileged caller while every write into
+  # it still fails, which is the same silent-empty-floor outcome by a different
+  # route.
+  # These are `if` blocks, not guard-or-assign one-liners, and that is not a
+  # style choice. session-start-dispatch.test.mjs resolves this file's variables
+  # to check where the dispatcher is installed FROM, and it reads a guard
+  # followed by an or-assignment as a PROBE CHAIN whose LAST value is canonical.
+  # That is correct for ROOT above, whose last fallback is the historical layout.
+  # Here the FIRST value is canonical and everything after it is error handling,
+  # so the one-liner spelling would tell that gate the documented dispatcher
+  # lives under the home directory — the exact confusion it exists to catch
+  # (#69: ~/.claude is right for the settings file, ~/.github is wrong for the
+  # dispatcher, one line apart).
+  #
+  # Note the resolver scans COMMENTS too, and its pattern is not anchored to the
+  # start of a line: an earlier draft of this very comment spelled the guard-or-
+  # assign form out literally and thereby reassigned BOOT to its own prose. Do
+  # not write that shape here, even inside a comment.
   BOOT=/opt/bounded-boot
-  mkdir -p "$BOOT"
-  fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs"
-  fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs"
-  fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh"
+  mkdir -p "$BOOT" 2>/dev/null || true
+  if [ ! -w "$BOOT" ]; then BOOT="${XDG_CACHE_HOME:-$HOME/.cache}/bounded-boot"; mkdir -p "$BOOT" 2>/dev/null || true; fi
+  if [ ! -w "$BOOT" ]; then echo "bootstrap: REFUSED — no writable cache directory (tried /opt/bounded-boot and the user cache)"; exit 1; fi
+  fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs" || MISSING="$MISSING,session-start-dispatch.mjs"
+  fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs" || MISSING="$MISSING,register-mcp.mjs"
+  fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh" || MISSING="$MISSING,stop-hook-git-check.sh"
   # The third SessionStart hook. Unlike the other two files it is not something
   # this script installs or invokes — the dispatcher's MANIFEST runs it — but it
   # is fetched here because it is reachable NO other way on this path: it is
@@ -100,15 +133,15 @@ if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   # log, no `path`, and nothing saying so, while cargo and the crates.io index
   # were both fine. Absence is the one state a best-effort hook cannot report
   # (#522).
-  fetch_verified setup-toolpath.sh          "$SUM_setup_toolpath_sh"
+  fetch_verified setup-toolpath.sh          "$SUM_setup_toolpath_sh" || MISSING="$MISSING,setup-toolpath.sh"
   # The verbs (#325). These two are the same shape of gap as setup-toolpath.sh
   # above and a step further: they are not just DECLARED nowhere a detached
   # session can see, they do not EXIST there. `verb-server.mjs` is the MCP stdio
   # server this org's .mcp.json names, and `chat-fetch.sh` is what its read_chat
   # tool shells out to — fetching the server without the script would register a
   # tool that fails on first use, which is worse than no tool.
-  fetch_verified chat-fetch.sh              "$SUM_chat_fetch_sh"
-  fetch_verified verb-server.mjs            "$SUM_verb_server_mjs"
+  fetch_verified chat-fetch.sh              "$SUM_chat_fetch_sh" || MISSING="$MISSING,chat-fetch.sh"
+  fetch_verified verb-server.mjs            "$SUM_verb_server_mjs" || MISSING="$MISSING,verb-server.mjs"
 
   # Make the cache a REGISTRATION SOURCE, not just a pile of files (#325).
   # Fetching verb-server.mjs does not make it reachable: register-mcp.mjs
@@ -206,4 +239,11 @@ if [ -f "$BOOT/stop-hook-git-check.sh" ] && [ -d "$CFG" ]; then
   echo "bootstrap: stop-hook patched (infra#112)"
 fi
 
+# The verdict must not outrun what happened (#848). This line used to print
+# unconditionally, so a run that installed nothing said `ready` and exited 0 —
+# and the exit code carried no information IN EITHER DIRECTION, since the
+# successful runs exited 0 too. warn-and-continue is the right posture and this
+# was never that: a partial floor that says so beats one that refuses to come
+# up, but a floor that installed NOTHING is not partial.
+if [ -n "$MISSING" ]; then echo "bootstrap: INCOMPLETE — could not install: ${MISSING#,}"; exit 1; fi
 echo "bootstrap: ready — dispatcher at $BOOT"
