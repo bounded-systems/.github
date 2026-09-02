@@ -57,9 +57,17 @@ _(Org posture: outward-only, composably-published.)_
   environment should start with every declared repo already checked out. A
   scope warning at start means the selector and the declaration have drifted —
   repair with `add_repo` for this session, and fix the selector for the next.
-- **A shared Claude chat is read with the `read_chat` MCP tool** (`bounded-verbs`,
-  registered by the bootstrap even with no checkout): pass the `claude.ai/share/<uuid>`
-  link. `read_session` reads your OWN session transcript from local disk, no bearer.
+- **A shared Claude chat is read with the `mcp__bounded-verbs__read_chat` tool**
+  (registered by the bootstrap even with no checkout — measured, #337 D1): pass the
+  `claude.ai/share/<uuid>` link. `mcp__bounded-verbs__read_session` reads your OWN
+  session transcript from local disk, no bearer.
+  **Use those names verbatim, prefix included.** The bare names `read_chat` and
+  `read_session` do not resolve — `ToolSearch select:read_session,read_chat` answers
+  `No matching deferred tools found`, measured independently by three probes on #337.
+  A session told the bare name still cannot find the tool, which is the exact failure
+  #325/#326 exist to prevent, reintroduced by this document rather than by the
+  mechanism. Note also that these arrive DEFERRED: listed by name, callable only after
+  `ToolSearch` loads their schemas.
   Do NOT fetch the share page or the vendor snapshot API — client-rendered SPA shell,
   Cloudflare bot-gated, proxy-blocked (all three measured, #325). With a checkout,
   `.claude/chat-fetch.sh <url>` is the same capability as a fallback.
