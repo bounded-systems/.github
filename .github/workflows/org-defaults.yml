@@ -47,6 +47,17 @@ jobs:
       # state #85 shipped in, which nothing caught until it was read out of
       # /tmp/env-manager.log by hand.
       - run: node --test .claude/bootstrap-steps.test.mjs
+      # boot.sh's FETCH branch, run as a bare host actually meets it (#848).
+      # That branch had only ever executed in a managed session, which runs as
+      # ROOT — so `mkdir -p /opt/bounded-boot` succeeded there and nowhere else.
+      # On the first real floor it failed, every artifact failed to install, and
+      # boot.sh still printed `ready` and exited 0. Nothing caught it because
+      # nothing ran that branch as anyone but root; this step is the environment
+      # the other bootstrap tests do not construct. Needs no privilege — it
+      # builds the bare host with `unshare -Urm` — and REFUSES rather than
+      # skipping if user namespaces are unavailable, because a cold-start check
+      # that quietly skips reports the same green as one that passed.
+      - run: bash .claude/boot-cold-start.test.sh
       # Reads GITHUB_EVENT_NAME: FRESHNESS is reported on a pull_request and
       # asserted on push. See the header of bootstrap-pin.test.mjs — PIN cannot
       # name a merge commit that does not exist yet, so no PR touching a fetched
