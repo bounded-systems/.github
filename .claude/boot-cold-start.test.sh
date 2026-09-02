@@ -15,9 +15,10 @@
 # what this file fixes: the environment, not just the code.
 #
 # ── How it gets a bare host without root ────────────────────────────────────
-# `unshare -Urm` — a USER + mount namespace, available unprivileged. Two
-# properties make it exactly right, and both were measured before relying on
-# them:
+# A mount namespace — entered unprivileged with `unshare -Urm` where that works,
+# or with `sudo -n unshare -m` on a runner where it does not (see the route
+# selection below). Two properties make it exactly right, and both were measured
+# before relying on them:
 #
 #   1. a tmpfs over /home/user hides the checkouts, so ROOT's probe falls all
 #      the way through and the fetch branch is taken. Setting
@@ -54,16 +55,35 @@ no() {
   FAIL=$((FAIL + 1))
 }
 
-command -v unshare >/dev/null || {
-  echo "FATAL: unshare(1) is absent — this test cannot construct a bare host, and a" >&2
-  echo "       cold-start test that silently skips is worse than none (rule 3)." >&2
-  exit 2
-}
-if ! unshare -Urm true 2>/dev/null; then
-  echo "FATAL: unprivileged user namespaces are unavailable here, so the bare-host" >&2
-  echo "       cases cannot run. Refusing rather than reporting green." >&2
+# HOW THE NAMESPACE IS ENTERED, and why there are two ways.
+#
+# `unshare -Urm` (user + mount namespace, unprivileged) works in a dev container
+# and is the preferred route: it needs nothing. It does NOT work on a GitHub
+# Actions runner — unprivileged user namespaces are unavailable there, and the
+# first version of this file discovered that by going red on its own first CI
+# run with `exit 2`. The refusal was correct; the assumption that one route
+# generalised was not.
+#
+# `sudo -n unshare -m` is the runner route. Runners have passwordless sudo, and
+# entering as real root is harmless here BECAUSE /opt is masked with a
+# read-only mount rather than a chmod — see bare() below. That masking is what
+# makes both routes produce the same measurement.
+#
+# If NEITHER works, this REFUSES. A cold-start check that quietly skips reports
+# the same green as one that passed (rule 3), and the whole point of this file
+# is that nothing was exercising the branch it covers.
+NS=()
+if command -v unshare >/dev/null && unshare -Urm true 2>/dev/null; then
+  NS=(unshare -Urm)
+elif command -v sudo >/dev/null && sudo -n unshare -m true 2>/dev/null; then
+  NS=(sudo -n unshare -m)
+else
+  echo "FATAL: cannot enter a mount namespace — tried 'unshare -Urm' (unprivileged" >&2
+  echo "       user namespaces) and 'sudo -n unshare -m'. The bare-host cases cannot" >&2
+  echo "       run, so this REFUSES rather than reporting green." >&2
   exit 2
 fi
+echo "namespace route: ${NS[*]}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -86,7 +106,7 @@ bare() {
   shift
   local home="$WORK/$name/home" cfg="$WORK/$name/cfg"
   mkdir -p "$home" "$cfg"
-  unshare -Urm bash -c "
+  "${NS[@]}" bash -c "
     mount -t tmpfs none /home/user
     mount -t tmpfs -o ro none /opt
     env HOME='$home' CLAUDE_CONFIG_DIR='$cfg' XDG_CACHE_HOME='$home/.cache' $* \
@@ -98,7 +118,7 @@ bare() {
 cached() { ls -A "$WORK/$1/home/.cache/bounded-boot" 2>/dev/null | wc -l; }
 said() { grep -q "$2" "$WORK/$1.out"; }
 
-echo "boot.sh cold start — bare hosts via unshare -Urm, real artifacts"
+echo "boot.sh cold start — bare hosts in a mount namespace, real artifacts"
 echo
 
 # ── 1. THE REGRESSION, and the positive control for everything below ────────
@@ -129,7 +149,7 @@ ro="$WORK/readonly"
 mkdir -p "$ro"
 chmod 500 "$ro"
 rc=0
-unshare -Urm bash -c "
+"${NS[@]}" bash -c "
   mount -t tmpfs none /home/user
   mount -t tmpfs -o ro none /opt
   mount -t tmpfs -o ro none '$ro'
@@ -185,7 +205,7 @@ echo
 # hosts that have a perfectly good shared one.
 echo "5. control — a writable /opt is still used in preference to the user cache"
 mkdir -p "$WORK/optok/home" "$WORK/optok/cfg"
-unshare -Urm bash -c "
+"${NS[@]}" bash -c "
   mount -t tmpfs none /home/user
   mount -t tmpfs none /opt
   env HOME='$WORK/optok/home' CLAUDE_CONFIG_DIR='$WORK/optok/cfg' XDG_CACHE_HOME='$WORK/optok/home/.cache' \
