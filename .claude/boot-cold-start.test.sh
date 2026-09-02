@@ -24,6 +24,15 @@
 #      the way through and the fetch branch is taken. Setting
 #      CLAUDE_SESSION_ROOT is NOT enough — boot.sh probes past an empty root to
 #      a hardcoded /home/user, so an env var alone cannot simulate a bare host.
+#
+#      AND MASKING /home/user IS NOT ENOUGH EITHER. ROOT's chain probes $PWD and
+#      ${PWD%/*} before it reaches /home/user, so on a GitHub runner — where the
+#      checkout lives at /home/runner/work/.github/.github — ${PWD%/*} finds the
+#      repo and the fetch branch is never taken. That is why every bare case
+#      `cd`s somewhere neutral first. Caught by CI, by this file's own "did NOT
+#      take the fetch branch" assertion: the suite was environment-dependent in
+#      precisely the way it exists to prevent, and passed locally for that
+#      reason.
 #   2. the caller is uid 0 INSIDE the namespace yet /opt stays unwritable,
 #      because /opt is owned by a real uid that is not mapped in. So `mkdir -p
 #      /opt/bounded-boot` fails with the same Permission denied a floor sees,
@@ -86,7 +95,15 @@ fi
 echo "namespace route: ${NS[*]}"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# The sudo route runs boot.sh as real root, so it leaves root-owned files behind
+# that an unprivileged trap cannot remove (CI showed `rm: Permission denied` on
+# $HOME/.local/bin/path). Escalate only if the plain removal leaves something.
+cleanup() {
+  rm -rf "$WORK" 2>/dev/null
+  [ -e "$WORK" ] && sudo -n rm -rf "$WORK" 2>/dev/null
+  return 0
+}
+trap cleanup EXIT
 BOOT_SH="$WORK/boot.sh"
 cp "$SOURCE_BOOT" "$BOOT_SH"
 
@@ -109,6 +126,7 @@ bare() {
   "${NS[@]}" bash -c "
     mount -t tmpfs none /home/user
     mount -t tmpfs -o ro none /opt
+    cd '$home'
     env HOME='$home' CLAUDE_CONFIG_DIR='$cfg' XDG_CACHE_HOME='$home/.cache' $* \
       bash '$BOOT_SH'
   " >"$WORK/$name.out" 2>&1
@@ -153,6 +171,7 @@ rc=0
   mount -t tmpfs none /home/user
   mount -t tmpfs -o ro none /opt
   mount -t tmpfs -o ro none '$ro'
+  cd /tmp
   env HOME='$ro' CLAUDE_CONFIG_DIR='$ro/cfg' XDG_CACHE_HOME='$ro/.cache' bash '$BOOT_SH'
 " >"$WORK/refuse.out" 2>&1 || rc=$?
 if [ "$rc" -ne 0 ] && said refuse "REFUSED"; then
@@ -208,6 +227,7 @@ mkdir -p "$WORK/optok/home" "$WORK/optok/cfg"
 "${NS[@]}" bash -c "
   mount -t tmpfs none /home/user
   mount -t tmpfs none /opt
+  cd '$WORK/optok/home'
   env HOME='$WORK/optok/home' CLAUDE_CONFIG_DIR='$WORK/optok/cfg' XDG_CACHE_HOME='$WORK/optok/home/.cache' \
     bash '$BOOT_SH'
 " >"$WORK/optok.out" 2>&1
