@@ -56,8 +56,8 @@ you change the flags, change both texts together.
 Doors, best reachable first (#529):
 
 Both mechanized doors REQUIRE a passkey since #264. Get the token first:
-`CLAIM_REPO=… CLAIM_ISSUE=… CLAIMANT=… KEEPER_URL=https://keeper.bounded.tools
-node claim-ceremony.mjs`, approve on your device, pass what it prints. **No
+`CLAIM_REPO=<plain repo name: infra, not bounded-systems/infra> CLAIM_ISSUE=…
+CLAIMANT=… KEEPER_URL=https://keeper.bounded.tools node claim-ceremony.mjs`, approve on your device, pass what it prints. **No
 token is a red run and there is no break-glass.** The window can be as short as
 two minutes, so fetch the token immediately before dispatching. Releasing a
 claim needs no token.
