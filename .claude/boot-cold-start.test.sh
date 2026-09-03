@@ -94,6 +94,22 @@ else
 fi
 echo "namespace route: ${NS[*]}"
 
+# WHERE NODE LIVES, and why masking /opt was hiding it (#343 follow-up). boot.sh
+# runs `node` for the settings merge and for register-mcp.mjs. node sits under
+# /opt on both hosts this runs on -- /opt/node22/bin in the managed image,
+# /opt/hostedtoolcache/node/... on a GitHub runner -- so `mount -t tmpfs none
+# /opt`, which every bare case below used to do, took node with it. Silently:
+# each node step fell through to its own absence branch and the suite still
+# reported green. Measured 2026-09-03: `command -v node` inside that mask
+# answered nothing, which means the bare cases had never once executed node, and
+# case 1's "wrote settings.json" was the fallback write rather than the merge.
+#
+# Only /opt/bounded-boot is masked now, and node's directory is bound somewhere
+# the mask does not reach and put on PATH. The cases are unchanged in intent: a
+# host where the shared cache location is not writable.
+command -v node >/dev/null || { echo "FATAL: no node on PATH — the bare cases cannot exercise the settings merge" >&2; exit 1; }
+NODE_BIN="$(cd "$(dirname "$(readlink -f "$(command -v node)")")" && pwd)"
+
 WORK="$(mktemp -d)"
 # The sudo route runs boot.sh as real root, so it leaves root-owned files behind
 # that an unprivileged trap cannot remove (CI showed `rm: Permission denied` on
@@ -104,6 +120,7 @@ cleanup() {
   return 0
 }
 trap cleanup EXIT
+mkdir -p "$WORK/nodebin"
 BOOT_SH="$WORK/boot.sh"
 cp "$SOURCE_BOOT" "$BOOT_SH"
 
@@ -124,8 +141,11 @@ bare() {
   local home="$WORK/$name/home" cfg="$WORK/$name/cfg"
   mkdir -p "$home" "$cfg"
   "${NS[@]}" bash -c "
+    mount --bind '$NODE_BIN' '$WORK/nodebin'
     mount -t tmpfs none /home/user
-    mount -t tmpfs -o ro none /opt
+    mkdir -p /opt/bounded-boot 2>/dev/null
+    mount -t tmpfs -o ro none /opt/bounded-boot
+    export PATH='$WORK/nodebin':\$PATH
     cd '$home'
     env HOME='$home' CLAUDE_CONFIG_DIR='$cfg' XDG_CACHE_HOME='$home/.cache' $* \
       bash '$BOOT_SH'
@@ -168,9 +188,12 @@ mkdir -p "$ro"
 chmod 500 "$ro"
 rc=0
 "${NS[@]}" bash -c "
+  mount --bind '$NODE_BIN' '$WORK/nodebin'
   mount -t tmpfs none /home/user
-  mount -t tmpfs -o ro none /opt
+  mkdir -p /opt/bounded-boot 2>/dev/null
+  mount -t tmpfs -o ro none /opt/bounded-boot
   mount -t tmpfs -o ro none '$ro'
+  export PATH='$WORK/nodebin':\$PATH
   cd /tmp
   env HOME='$ro' CLAUDE_CONFIG_DIR='$ro/cfg' XDG_CACHE_HOME='$ro/.cache' bash '$BOOT_SH'
 " >"$WORK/refuse.out" 2>&1 || rc=$?
@@ -225,8 +248,11 @@ echo
 echo "5. control — a writable /opt is still used in preference to the user cache"
 mkdir -p "$WORK/optok/home" "$WORK/optok/cfg"
 "${NS[@]}" bash -c "
+  mount --bind '$NODE_BIN' '$WORK/nodebin'
   mount -t tmpfs none /home/user
-  mount -t tmpfs none /opt
+  mkdir -p /opt/bounded-boot 2>/dev/null
+  mount -t tmpfs none /opt/bounded-boot
+  export PATH='$WORK/nodebin':\$PATH
   cd '$WORK/optok/home'
   env HOME='$WORK/optok/home' CLAUDE_CONFIG_DIR='$WORK/optok/cfg' XDG_CACHE_HOME='$WORK/optok/home/.cache' \
     bash '$BOOT_SH'
