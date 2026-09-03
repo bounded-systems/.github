@@ -242,15 +242,39 @@ test("link 4: the no-bearer refusal names the grant path", () => {
 
 // ── link 5: the prose pointer, for the session with NO checkout ──────────────
 
-test("link 5: claude/context.md points at the read_chat tool by name", () => {
+// THE ASSERTION THAT MAKES #346 UNREPEATABLE.
+//
+// What a session must type is neither of the two strings this repo stores. It is
+// their COMPOSITION: `mcp__` + the server key from .mcp.json + `__` + the tool
+// name from verb-server.mjs. Nothing owned that composition, so #346 shipped a
+// context.md naming the tools `read_chat` / `read_session` -- true to the server,
+// useless to a caller, and measured by three independent probes on #337 as
+// `No matching deferred tools found`.
+//
+// The old assertion here was `assert.match(ctx, /read_chat/)`, which the pre-#346
+// text SATISFIES: a bare name is a substring of a prefixed one. The gate meant to
+// prevent that defect would have passed it. So derive the name the way the client
+// does and assert THAT, and the two halves can no longer drift apart silently --
+// rename the server key in .mcp.json and this fails rather than context.md
+// quietly becoming wrong again.
+export function composedToolName(serverKey, toolName) {
+  return `mcp__${serverKey}__${toolName}`;
+}
+
+test("link 5: context.md names the tools by the name a client must actually type", () => {
   const ctx = read(CONTEXT);
-  assert.match(
-    ctx,
-    /read_chat/,
-    "CHAIN BROKEN at link 5: claude/context.md never names read_chat. This is the copy injected " +
-      "into a session with NO checkout — the one that cannot grep for chat-fetch.sh — so this " +
-      "bullet is its only pointer. Its absence is exactly the 2026-08-31 starting condition.",
-  );
+  const serverKey = Object.keys(JSON.parse(read(MCP_JSON)).mcpServers)[0];
+  for (const tool of [READ_CHAT_TOOL, READ_SESSION_TOOL]) {
+    const composed = composedToolName(serverKey, tool.name);
+    assert.ok(
+      ctx.includes(composed),
+      `CHAIN BROKEN at link 5: claude/context.md does not contain '${composed}'. That is the ` +
+        `string a session must type -- '${tool.name}' alone does NOT resolve (measured on #337: ` +
+        `ToolSearch answers 'No matching deferred tools found'). This is the copy injected into a ` +
+        `session with NO checkout, so this bullet is its only pointer, and a pointer that does not ` +
+        `resolve is worse than none: it spends the session's trust before it spends its time.`,
+    );
+  }
   assert.match(
     ctx,
     /do not fetch|don't fetch|never fetch/i,
@@ -258,4 +282,31 @@ test("link 5: claude/context.md points at the read_chat tool by name", () => {
       "fetching the share page. Offering the right door without closing the wrong one is what " +
       "left six dead ends on the record.",
   );
+});
+
+// The composed name has a SECOND producer, and it is the one that serves the
+// session this whole chain exists for. A checkout-less session never reads the
+// repo's .mcp.json: boot.sh writes its own declaration into the fetch cache
+// (#325). If those two keys drift, context.md is right for attached sessions and
+// wrong for exactly the population it was written for -- and every existing check
+// here reads only the committed copy, so nothing would say so.
+test("link 5: boot.sh's fetch-cache declaration uses the SAME server key as the repo's", () => {
+  const repoKey = Object.keys(JSON.parse(read(MCP_JSON)).mcpServers)[0];
+  const boot = read(join(HERE, "boot.sh"));
+  const declared = [...boot.matchAll(/"([A-Za-z0-9_-]+)":\s*\{\s*\n\s*"type":\s*"stdio"/g)].map((m) => m[1]);
+  assert.ok(
+    declared.length > 0,
+    "CHAIN BROKEN at link 5: boot.sh no longer writes a stdio server declaration into the fetch " +
+      "cache, so a session without .github registers no verbs at all (#325).",
+  );
+  for (const key of declared) {
+    assert.equal(
+      key,
+      repoKey,
+      `CHAIN BROKEN at link 5: boot.sh declares the server as '${key}' but .mcp.json declares it ` +
+        `as '${repoKey}'. The tool name a session must type is composed from that key, so a ` +
+        `checkout-less session would need 'mcp__${key}__read_chat' while context.md tells it to ` +
+        `type 'mcp__${repoKey}__read_chat'. One of those populations is being lied to.`,
+    );
+  }
 });
