@@ -52,7 +52,7 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 # On main this is automatic: org-defaults.yml regenerates on push and opens the
 # bump PR, because the pin can only name a merge commit once that commit exists.
 # The equivalent by hand, against the endpoint rather than the git objects:
-#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs; do
+#   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs harness-settings.mjs; do
 #     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
 PIN=946dbfb292f59c71c0fc17e63ecdb8fa981ced70
@@ -62,6 +62,7 @@ SUM_stop_hook_git_check_sh=712c2a8041bbbec27b05e7c702a5654d0b882c4545288b0655502
 SUM_setup_toolpath_sh=dabcd89df0467f9361c0c51d72cd2989aa8b91dfa1762e7c0f6a170a72a9ffa2
 SUM_chat_fetch_sh=ef4a577aadb27bca3b76859024acc31184c33e1896b3c469a71b80ff5afc78d5
 SUM_verb_server_mjs=593f675fd13e0045a4a23f3c7327b127bbb235cce9f83b531960a17cc23eae5f
+SUM_harness_settings_mjs=0000000000000000000000000000000000000000000000000000000000000000
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
@@ -168,6 +169,18 @@ if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   # tool that fails on first use, which is worse than no tool.
   fetch_verified chat-fetch.sh              "$SUM_chat_fetch_sh" || MISSING="$MISSING,chat-fetch.sh"
   fetch_verified verb-server.mjs            "$SUM_verb_server_mjs" || MISSING="$MISSING,verb-server.mjs"
+  # What keeps the settings write below a MERGE rather than a clobber (#343).
+  # Fetched with the rest rather than inlined into this script because it is the
+  # only part of this work that parses JSON, and JSON parsing in shell is how
+  # settings files get eaten.
+  #
+  # The ONLY fetch here that does not join MISSING, deliberately. Between this
+  # file merging and the pin bump landing, $PIN names a commit that does not
+  # contain it, so the endpoint 404s for every detached session in that window.
+  # Recording that as an incomplete floor would fail the whole bootstrap over a
+  # lag the bump lane closes on its own. The settings block below reports the
+  # consequence instead, which is the thing worth knowing.
+  fetch_verified harness-settings.mjs       "$SUM_harness_settings_mjs" || true
 
   # Make the cache a REGISTRATION SOURCE, not just a pile of files (#325).
   # Fetching verb-server.mjs does not make it reachable: register-mcp.mjs
@@ -210,13 +223,49 @@ fi
 # checkout and WRONG in the fetch cache. Naming the root explicitly is harmless in
 # the first case and load-bearing in the second.
 #
-# The heredoc terminator below is deliberately unquoted: $ROOT and $BOOT must
-# interpolate, and nothing else in that JSON is $-shaped. Escape any literal $
-# you add. (Spelled out in prose because a literal here-doc operator in this
-# comment would trip parseSteps' heredoc detection in gen-bootstrap-pin.mjs.)
+# MERGE, never clobber (#343). This file used to be written with the here-doc at
+# the bottom of this block and nothing else, so every bare boot erased the rest of
+# it -- a user's `env`, their `permissions`, a second SessionStart hook -- and left
+# a file that parses perfectly, so nothing reported it.
+#
+# harness-settings.mjs computes the merged document; this script still installs it,
+# because the settings write is the field's one anchored step and moving it into a
+# node script would take it out of parseSteps' enumeration. The merger exits
+# non-zero rather than guess at a settings file it cannot parse, and an empty
+# $SETTINGS means nothing below writes -- leaving that file exactly as found.
+#
+# Both values are spelled out at the use site rather than lifted into variables:
+# parseSteps in gen-bootstrap-pin.mjs classifies every line by its first word, so a
+# variable holding the dispatcher's command line would parse as a step of the
+# field. Inline, it is an argument.
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"          # where the harness reads settings
 mkdir -p "$CFG"
-if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
+SETTINGS=""
+if [ -f "$BOOT/session-start-dispatch.mjs" ] && [ -f "$BOOT/harness-settings.mjs" ]; then
+  SETTINGS="$(BOOT_HOOK_COMMAND="CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" \
+              node "$BOOT/harness-settings.mjs" "$CFG/settings.json")" || SETTINGS=""
+fi
+
+# A here-STRING, not a here-doc: the merged document may legitimately carry a `$`
+# or a backtick that came out of the user's own settings, and an unquoted here-doc
+# would expand it. The here-string passes the value through verbatim.
+if [ -n "$SETTINGS" ]; then
+  cat > "$CFG/settings.json" <<<"$SETTINGS"
+elif [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
+  echo "bootstrap: WARN no dispatcher -- repo SessionStart hooks will not run"
+elif [ -s "$CFG/settings.json" ]; then
+  # The one case that must NOT fall through to the write below: there IS a settings
+  # file, and the thing that knows how to preserve it did not run. Refusing to
+  # merge is recoverable; clobbering is not.
+  echo "bootstrap: WARN could not merge $CFG/settings.json -- left untouched, SessionStart hook NOT installed"
+else
+  # No merger, and nothing to preserve -- so the clobber this block exists to stop
+  # cannot happen here, and the plain write is the whole install.
+  #
+  # The heredoc terminator below is deliberately unquoted: $ROOT and $BOOT must
+  # interpolate, and nothing else in that JSON is $-shaped. Escape any literal $
+  # you add. (Spelled out in prose because a literal here-doc operator in this
+  # comment would trip parseSteps' heredoc detection in gen-bootstrap-pin.mjs.)
   cat > "$CFG/settings.json" <<JSON
 {
   "hooks": {
@@ -227,8 +276,6 @@ if [ -f "$BOOT/session-start-dispatch.mjs" ]; then
   }
 }
 JSON
-else
-  echo "bootstrap: WARN no dispatcher — repo SessionStart hooks will not run"
 fi
 
 # Keep this call. The dispatcher re-runs register-mcp.mjs as a fallback (#84), but

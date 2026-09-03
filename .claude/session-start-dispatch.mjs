@@ -367,6 +367,16 @@ export const IRREDUCIBLE = [
       "machinery can hold up.",
   },
   {
+    artifact: "harness-settings.mjs",
+    reason:
+      "It is not installed anywhere. The field fetches it, runs it once for its stdout, and " +
+      "nothing afterwards depends on the file being present -- so there is no state a fallback " +
+      "could restore. What it produces IS settings.json, declared irreducible directly above for " +
+      "the reason that covers this one too: a fallback would have to run before the pointer it " +
+      "computes. When it is absent the field says so and refuses to overwrite an existing " +
+      "settings file, which is the recoverable failure rather than the silent one.",
+  },
+  {
     artifact: "CLAUDE_SESSION_ROOT",
     reason:
       "An environment prefix on that same command, not a file. It is load-bearing only on " +
