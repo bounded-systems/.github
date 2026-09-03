@@ -55,14 +55,14 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs harness-settings.mjs; do
 #     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
-PIN=946dbfb292f59c71c0fc17e63ecdb8fa981ced70
-SUM_session_start_dispatch_mjs=f97ebc15b19a77bd21308229a355fbd5a0f767984063c13ded470dd3e0d40125
+PIN=e2719ac230e719b51a20ea93655505599b089145
+SUM_session_start_dispatch_mjs=cb712535d3e4df4afbc63020761b175c8a4c9193da5cd490b79e83260b3e6c3b
 SUM_register_mcp_mjs=40197da6e3dc5c771856a437b6a9e944ce530bb69f2b2724bd2513c281b84c1b
 SUM_stop_hook_git_check_sh=712c2a8041bbbec27b05e7c702a5654d0b882c4545288b065550276fc5c77562
 SUM_setup_toolpath_sh=dabcd89df0467f9361c0c51d72cd2989aa8b91dfa1762e7c0f6a170a72a9ffa2
 SUM_chat_fetch_sh=ef4a577aadb27bca3b76859024acc31184c33e1896b3c469a71b80ff5afc78d5
 SUM_verb_server_mjs=593f675fd13e0045a4a23f3c7327b127bbb235cce9f83b531960a17cc23eae5f
-SUM_harness_settings_mjs=0000000000000000000000000000000000000000000000000000000000000000
+SUM_harness_settings_mjs=48752bd996d68f3e1b120e2467bbc2d80d3fc0609f1b2b86d51a59c002276207
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
