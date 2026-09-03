@@ -40,25 +40,10 @@ ctx=""
 #    is the copy boot-deploy.yml publishes into CONTEXT_KV, and empirically the
 #    one that gets maintained first.
 #
-#    When both exist and DIFFER, this hook CANNOT tell drift from staleness and
-#    must not claim to (#359). Both operands are working-tree files; the two
-#    repos are cloned independently at session creation and drift apart on disk
-#    as `main` moves under them. Measured 2026-09-03: this hook announced
-#    "org context DRIFT" while the two copies on their default branches were
-#    byte-identical (0b9aa1d4…) and the .github checkout was one commit behind —
-#    behind by exactly the commit that had synced them.
-#
-#    That is not a noisy warning, it is a harmful one. The old text asserted an
-#    org-level fact ("bare sessions are getting the other text") and pointed at
-#    #581, whose remedy is to sync the files — so acting on the false positive
-#    means copying a STALE copy over a CURRENT one and CREATING the drift the
-#    message invented. The signal pointed at the harm.
-#
-#    Same class as .github-private#865/#866: a local read reported as a fact
-#    about the world. The correction is the same one applied to CLAUDE.md's
-#    `deno` line — report what was measured and CITE THE PROBE that can settle
-#    it, rather than restating a weaker measurement as a conclusion.
-#    context-parity.sh already does this correctly, against the repos.
+#    When both exist and DIFFER, that is the #581 defect recurring, and it is
+#    reported rather than silently resolved: the elected copy still loads (a
+#    session with context beats one without), but the divergence is named in
+#    the injected text so whoever reads it can see the org is inconsistent.
 R="${CLAUDE_SESSION_ROOT:-}"
 [ -f "$R/.github/.claude/boot.sh" ] 2>/dev/null || R="$PWD"
 [ -f "$R/.github/.claude/boot.sh" ] || R="${PWD%/*}"
@@ -67,25 +52,7 @@ priv="$R/.github-private/claude/context.md"
 pub="$R/.github/claude/context.md"
 drift=""
 if [ -f "$priv" ] && [ -f "$pub" ] && ! cmp -s "$priv" "$pub"; then
-  # A LOCAL, NO-NETWORK HINT — and it is only ever a hint. This hook runs on the
-  # bootstrap path and must work with egress down, so it cannot fetch. The
-  # remote-tracking ref is itself a local read that goes stale without a fetch,
-  # which is the whole defect one line up, so "not behind" is reported as NOT
-  # EVIDENCE rather than as a clean bill.
-  behind=""
-  for _repo in "$R/.github-private" "$R/.github"; do
-    _head="$(git -C "$_repo" rev-parse HEAD 2>/dev/null || true)"
-    _up="$(git -C "$_repo" rev-parse '@{u}' 2>/dev/null || true)"
-    if [ -n "$_head" ] && [ -n "$_up" ] && [ "$_head" != "$_up" ]; then
-      behind="$behind $(basename "$_repo")"
-    fi
-  done
-  if [ -n "$behind" ]; then
-    hint="Local remote-tracking refs say these checkouts differ from their upstream:${behind} — which is the likelier explanation. That ref is a local read and can itself be stale, so treat it as a hint, not a verification."
-  else
-    hint="No checkout differs from its remote-tracking ref — but those refs are local reads that go stale without a fetch, so this is NOT evidence that the difference is real drift."
-  fi
-  drift="⚠ org context: the two local checkouts differ — ${priv} and ${pub}. THIS MAY BE DRIFT, OR ONE CHECKOUT MAY SIMPLY BE BEHIND ITS DEFAULT BRANCH. This hook compares files on disk and cannot tell which without network, so it claims neither (#359). To settle it, run .github-private/.claude/context-parity.sh — it compares against bounded-systems/.github rather than against the disk. ${hint} Using the .github-private copy either way, because a session with context beats one without — background in .github-private#581."
+  drift="⚠ org context DRIFT: ${priv} and ${pub} differ. Using the .github-private copy. The .github copy is what a session WITHOUT a checkout is served, so bare sessions are getting the other text — see .github-private#581."
 fi
 if [ -f "$priv" ]; then
   ctx="$(cat "$priv" 2>/dev/null || true)"
