@@ -291,5 +291,66 @@ else
 fi
 echo
 
+# ── 8. THE CLOBBER REGRESSION (#343) ────────────────────────────────────────
+# boot.sh wrote $CFG/settings.json with `cat >` carrying a `hooks` block and
+# nothing else, so every run erased whatever else that file held -- a user's
+# `env`, their `permissions`, a second SessionStart hook -- and left a document
+# that parses perfectly, which is why nothing ever reported it.
+#
+# Run against an ATTACHED checkout rather than a bare host on purpose: the fetch
+# path cannot serve harness-settings.mjs until the pin names a commit containing
+# it, so only the checkout exercises the MERGE itself rather than the refusal
+# below. Both halves must hold, and they fail in opposite directions -- a merge
+# that drops the user's keys, and a merge that forgets to install the hook.
+echo "8. an existing settings.json must be MERGED, not overwritten"
+keep="$WORK/keep"
+mkdir -p "$keep/.github/.claude" "$keep/home" "$keep/cfg"
+cp "$ROOT/.claude/session-start-dispatch.mjs" "$keep/.github/.claude/" 2>/dev/null
+cp "$ROOT/.claude/harness-settings.mjs" "$keep/.github/.claude/" 2>/dev/null
+cat > "$keep/cfg/settings.json" <<'SETTINGS'
+{ "env": { "MINE": "cost is $5 and `date`" },
+  "permissions": { "allow": ["Bash(bash .claude/org-repair.sh)"] },
+  "hooks": { "SessionStart": [ { "matcher": "", "hooks": [ { "type": "command", "command": "bash mine.sh" } ] } ] } }
+SETTINGS
+env HOME="$keep/home" CLAUDE_CONFIG_DIR="$keep/cfg" CLAUDE_SESSION_ROOT="$keep" \
+  bash "$BOOT_SH" >"$WORK/keep.out" 2>&1
+merged="$keep/cfg/settings.json"
+if grep -q 'cost is [$]5 and `date`' "$merged" && grep -q 'org-repair.sh' "$merged" && grep -q 'bash mine.sh' "$merged"; then
+  ok "the user's env, permissions and own SessionStart hook all survived"
+else
+  no "the settings write clobbered content it did not put there"
+fi
+if grep -q 'session-start-dispatch.mjs' "$merged"; then
+  ok "and the dispatcher hook was still installed"
+else
+  no "merged without installing the dispatcher hook -- preserved everything, achieved nothing"
+fi
+echo
+
+# ── 9. the fail direction: no merger means DO NOT WRITE ─────────────────────
+# The half that keeps case 8 from being a worse bug than the one it fixes. When
+# harness-settings.mjs is absent -- a failed fetch, or the window between this
+# landing and the pin bump -- the old code would still have clobbered. Refusing
+# to merge is recoverable; a clobber is not, so the bytes must be untouched.
+echo "9. no merger and an existing settings.json — must leave it byte-identical"
+gone="$WORK/gone"
+mkdir -p "$gone/.github/.claude" "$gone/home" "$gone/cfg"
+cp "$ROOT/.claude/session-start-dispatch.mjs" "$gone/.github/.claude/" 2>/dev/null
+printf '{ "env": { "MINE": "1" } }\n' > "$gone/cfg/settings.json"
+cp "$gone/cfg/settings.json" "$WORK/gone.before"
+env HOME="$gone/home" CLAUDE_CONFIG_DIR="$gone/cfg" CLAUDE_SESSION_ROOT="$gone" \
+  bash "$BOOT_SH" >"$WORK/gone.out" 2>&1
+if cmp -s "$WORK/gone.before" "$gone/cfg/settings.json"; then
+  ok "left the file exactly as found"
+else
+  no "overwrote a settings file it had no way to merge"
+fi
+if said gone "could not merge"; then
+  ok "and said so rather than failing silently"
+else
+  no "left the hook uninstalled without reporting it"
+fi
+echo
+
 echo "boot cold start: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
