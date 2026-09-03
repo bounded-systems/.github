@@ -1,0 +1,719 @@
+From 91670c12ea929db911a5a0c33884f9af31bdf57c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:33:45 +0000
+Subject: [PATCH] fix(pilot): serve the tester leg its own tester profile, not
+ the executor's (GH-360)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The pilot's `tester` role maps to the `implement` session actor (it runs the
+unit's tests in the executor's worktree), but `openSession` had no role axis,
+so `OPEN_IMPLEMENT_SESSION` + headless ALWAYS built the executor SDK profile
+("execute the approved plan ... commit the work"). The testing leg therefore
+re-implemented the unit off the draft plan, reported "done", and the pilot
+looped executing→checking→testing until the retreat budget was spent —
+legCount 10 with 9 spawn@implement legs and 0 reviewer/author legs, abandoned (#360).
+
+- runtime_profiles: add `buildWorkUnitClaudeTestSdkRuntimeProfile` — a
+  headless TESTER profile (`PRX_AGENT_ROLE=tester`; allowlist is exactly
+  Read/Grep/Glob + `Bash(bun test:*)` + `Bash(bun run:*)` +
+  `Bash(prx tools git:*)`; Edit/Write denied; `omitOwnNamespace` so the tester
+  does NOT inherit `Bash(prx implement:*)` and cannot re-launch the executor)
+  whose prompt consumes the COMMITTED implementation and treats the plan as
+  context only.
+- session-entry: `OPEN_IMPLEMENT_SESSION` gains `role?: "executor"|"tester"`;
+  headless + tester selects the tester profile, everything else is unchanged.
+- session/schema + open: `SessionOpenInput.role` threads through to the event
+  and the spawn attestation is minted at `<unit>:spawn@tester` instead of
+  overwriting the executor's `spawn@implement`.
+- pilot-real: `roleSessionRole` carries the tester's identity into
+  `openSession` for the tester leg (same `implement` worktree, own profile).
+- tests: pilot-real asserts the tester leg opens with role "tester" and runs
+  the tester profile; session_entry / open / runtime_profiles cover the new
+  event axis, the spawn slot, and the profile shape.
+
+Closes #360
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ docs/prx/pipeline-orchestrator.md             |  10 +-
+ packages/prx/src/cli/pilot-real.test.ts       |  57 ++++++++
+ packages/prx/src/cli/pilot-real.ts            |  28 +++-
+ .../prx/src/machine/machines/session-entry.ts |  17 +++
+ packages/prx/src/machine/runtime_profiles.ts  | 138 ++++++++++++++++++
+ packages/prx/src/session/leg-input.ts         |   4 +-
+ packages/prx/src/session/open.ts              |  15 +-
+ packages/prx/src/session/schema.ts            |   6 +
+ .../prx/test/machine/session_entry.test.ts    |  61 ++++++++
+ .../test/pr-state/runtime_profiles.test.ts    |  80 ++++++++++
+ packages/prx/test/session/open.test.ts        |  38 +++++
+ 11 files changed, 447 insertions(+), 7 deletions(-)
+
+diff --git a/docs/prx/pipeline-orchestrator.md b/docs/prx/pipeline-orchestrator.md
+index 9f65bbe..89df062 100644
+--- a/docs/prx/pipeline-orchestrator.md
++++ b/docs/prx/pipeline-orchestrator.md
+@@ -221,7 +221,15 @@ ed25519 key — the executor leg and the summary carry genuine, verifiable
+ signatures (not stubs), and a failed `openSession` retreats correctly.
+ 
+ Role → session actor: `planner→plan`, `executor→implement`, `tester→implement`
+-(runs the unit's tests in the implement worktree), `reviewer→author`.
++(runs the unit's tests in the implement worktree), `reviewer→author`. Sharing
++the `implement` actor does not mean sharing the executor's profile (GH-360):
++the tester leg opens the session with `role: "tester"`, which selects the
++read-only tester SDK profile (`buildWorkUnitClaudeTestSdkRuntimeProfile` —
++`PRX_AGENT_ROLE=tester`, Edit/Write denied, test runner allowed, the committed
++implementation as its input and the plan as context only) and mints its own
++`<unit>:spawn@tester`. Before that the testing leg was served the executor
++profile + draft plan, re-implemented the unit, and looped the pilot through
++`executing→checking→testing` until the retreat budget was spent.
+ 
+ A live probe (`PRX_PILOT_REAL=1 prx pilot prx-eky`) confirmed the path reaches
+ `openSession`; completing a live run is gated only on (a) a real `waitFor`
+diff --git a/packages/prx/src/cli/pilot-real.test.ts b/packages/prx/src/cli/pilot-real.test.ts
+index 78e4aea..359a900 100644
+--- a/packages/prx/src/cli/pilot-real.test.ts
++++ b/packages/prx/src/cli/pilot-real.test.ts
+@@ -14,6 +14,7 @@ import {
+   buildRealLegRunner,
+   buildRealPilotDeps,
+   roleSessionActor,
++  roleSessionRole,
+   wantsRealPilot,
+   type OpenSessionFn,
+   type RunAgentFn,
+@@ -177,6 +178,60 @@ describe("real pilot wiring (openSession → headless agent → real signature)"
+     expect(execOpens).toBeGreaterThanOrEqual(2);
+   });
+ 
++  // GH-360: the tester leg shares the executor's `implement` worktree but NOT
++  // its profile. The pilot used to open the tester leg as a plain implement
++  // session, so the tester was served the executor profile + plan, re-ran the
++  // implementation, reported "done", and looped executing→checking→testing
++  // until the retreat budget was spent. The leg runner must now open the
++  // tester leg WITH the tester role, and run whatever profile that yields.
++  test("the tester leg opens the implement session as the TESTER role and runs the tester profile (GH-360)", async () => {
++    const kp = generateEd25519Keypair();
++    const opens: Array<{ actor: string; role: string | undefined }> = [];
++    const ranRoles: Array<string | undefined> = [];
++
++    const fakeOpen: OpenSessionFn = async ({ actor, role, workUnitId }) => {
++      opens.push({ actor, role });
++      // Mirror what the real openSession does with the role axis: the role
++      // decides the profile, the actor decides the worktree.
++      const profileRole = actor === "implement" ? (role ?? "executor") : actor;
++      return {
++        status: "opened",
++        worktree_path: `/wt/${workUnitId}/${actor}`,
++        profile: { env: { PRX_AGENT_ROLE: profileRole } },
++      } as unknown as Awaited<ReturnType<OpenSessionFn>>;
++    };
++    const fakeRun: RunAgentFn = async (profile) => {
++      ranRoles.push(profile.env?.PRX_AGENT_ROLE);
++      return okRun("ok");
++    };
++
++    const runner = buildRealLegRunner({
++      openSession: fakeOpen,
++      runAgent: fakeRun,
++      signer: ed25519Signer(kp.privateKey, kp.keyid),
++      savePlan: noopSavePlan,
++    });
++    const actor = createActor(createPilotMachine(runner), {
++      input: { workUnitId: "GH-360" },
++    }).start();
++    const done = await waitFor(actor, (s) => s.status === "done", { timeout: 3000 });
++    expect(done.value).toBe("merged");
++
++    // Same session actor for executor and tester (one worktree, the commit is
++    // there) — but the tester leg carries its OWN role into openSession.
++    expect(opens).toEqual([
++      { actor: "plan", role: undefined },
++      { actor: "implement", role: "executor" },
++      { actor: "implement", role: "tester" },
++      { actor: "author", role: undefined },
++    ]);
++    // And the profile the tester leg actually RAN is the tester's, not the
++    // executor's.
++    expect(ranRoles).toEqual(["plan", "executor", "tester", "author"]);
++    // The signed chain still records the leg under its pilot role.
++    expect(done.context.chain.map((l) => l.stage)).toContain("tester");
++  });
++
+   test("throws when no signer is configured; role map is total", () => {
+     expect(() => buildRealLegRunner({ signer: null })).toThrow("must hold a signing key");
+     expect(roleSessionActor).toEqual({
+@@ -185,6 +240,8 @@ describe("real pilot wiring (openSession → headless agent → real signature)"
+       tester: "implement",
+       reviewer: "author",
+     });
++    // GH-360: only the role-ambiguous `implement` actor carries a role axis.
++    expect(roleSessionRole).toEqual({ executor: "executor", tester: "tester" });
+   });
+ 
+   test("wantsRealPilot reads PRX_PILOT_REAL", () => {
+diff --git a/packages/prx/src/cli/pilot-real.ts b/packages/prx/src/cli/pilot-real.ts
+index f19e3e7..777b185 100644
+--- a/packages/prx/src/cli/pilot-real.ts
++++ b/packages/prx/src/cli/pilot-real.ts
+@@ -46,8 +46,13 @@ import { requireSigner } from "./agent-signing-guard.ts";
+ 
+ /**
+  * Role → the `openSession` actor that runs it. `tester` runs in the implement
+- * worktree (it executes the unit's tests); planner/executor/reviewer map to
+- * their canonical session actors.
++ * worktree (it executes the unit's tests against the executor's commit);
++ * planner/executor/reviewer map to their canonical session actors.
++ *
++ * GH-360: sharing the `implement` ACTOR does not mean sharing the executor's
++ * PROFILE — `roleSessionRole` carries the tester's identity into `openSession`
++ * so the testing leg gets the read-only tester profile (and its own
++ * `spawn@tester`), not the executor profile + plan it used to be served.
+  */
+ export const roleSessionActor: Record<TaskRole, SessionActor> = {
+   planner: "plan",
+@@ -56,10 +61,21 @@ export const roleSessionActor: Record<TaskRole, SessionActor> = {
+   reviewer: "author",
+ };
+ 
++/**
++ * GH-360: the `openSession` role axis per pilot role. Only the `implement`
++ * actor is role-ambiguous (executor vs tester); every other actor IS its role.
++ */
++export const roleSessionRole: Partial<Record<TaskRole, "executor" | "tester">> = {
++  executor: "executor",
++  tester: "tester",
++};
++
+ export type OpenSessionFn = (input: {
+   actor: SessionActor;
+   workUnitId: string;
+   interaction?: "headless" | "interactive";
++  /** GH-360: which role opens an `implement` session (executor | tester). */
++  role?: "executor" | "tester";
+ }) => Promise<OpenSessionResult>;
+ 
+ export type RunAgentFn = (
+@@ -233,7 +249,13 @@ export function buildRealLegRunner(deps: RealLegDeps = {}): LegRunner {
+ 
+   const roleAgent: RunRoleAgent = async (input) => {
+     const actor = roleSessionActor[input.role];
+-    const opened = await open({ actor, workUnitId: input.workUnitId, interaction: "headless" });
++    const role = roleSessionRole[input.role];
++    const opened = await open({
++      actor,
++      workUnitId: input.workUnitId,
++      interaction: "headless",
++      ...(role ? { role } : {}),
++    });
+     if (opened.status !== "opened" || !opened.profile) {
+       throw new Error(`openSession(${input.role}/${actor}) → status=${opened.status}, no profile`);
+     }
+diff --git a/packages/prx/src/machine/machines/session-entry.ts b/packages/prx/src/machine/machines/session-entry.ts
+index 6016e13..2894ccf 100644
+--- a/packages/prx/src/machine/machines/session-entry.ts
++++ b/packages/prx/src/machine/machines/session-entry.ts
+@@ -14,6 +14,7 @@ import {
+   buildOpsTriageSdkRuntimeProfile,
+   buildWorkUnitClaudeImplementSdkRuntimeProfile,
+   buildWorkUnitClaudePlanPrintRuntimeProfile,
++  buildWorkUnitClaudeTestSdkRuntimeProfile,
+   type RuntimeProfileProjection,
+ } from "../runtime_profiles.ts";
+ import { PRX_SESSION_OPEN_ALIAS_HINT } from "../session_open.ts";
+@@ -143,6 +144,12 @@ export type SessionEntryEvent =
+       // dispatches this event; the headless path here is the `openSession`
+       // (pilot/autonomous) caller.
+       interaction?: "headless" | "interactive" | undefined;
++      // GH-360: WHICH role opens the implement session. The pilot's executor
++      // and tester legs share the implement worktree (the tester runs the
++      // unit's tests against the executor's commit) but must NOT share a
++      // profile: `"tester"` + headless selects the read-only tester SDK
++      // profile; absent/`"executor"` keeps the executor builders.
++      role?: "executor" | "tester" | undefined;
+     }
+   | {
+       // GH-1206: work-unit-bound author session — PR-body authoring profile
+@@ -297,6 +304,16 @@ export const sessionEntryMachine = setup({
+         // implement allowlist, acceptEdits). Mirrors bootClaudePlan; the
+         // default stays the interactive tmux executor.
+         if (event.interaction === "headless") {
++          // GH-360: the tester leg gets its OWN profile (read-only, test
++          // runner, consumes the committed implementation) — never the
++          // executor profile + plan it used to be served.
++          if (event.role === "tester") {
++            return buildWorkUnitClaudeTestSdkRuntimeProfile({
++              workUnitId: event.workUnitId,
++              planPath: event.planPath,
++              planBody: event.planBody,
++            });
++          }
+           return buildWorkUnitClaudeImplementSdkRuntimeProfile({
+             workUnitId: event.workUnitId,
+             planPath: event.planPath,
+diff --git a/packages/prx/src/machine/runtime_profiles.ts b/packages/prx/src/machine/runtime_profiles.ts
+index 5b0672f..8ecd04f 100644
+--- a/packages/prx/src/machine/runtime_profiles.ts
++++ b/packages/prx/src/machine/runtime_profiles.ts
+@@ -1031,6 +1031,144 @@ export function buildWorkUnitClaudeImplementSdkRuntimeProfile(input: {
+   };
+ }
+ 
++/**
++ * GH-360: the headless TESTER's system prompt. Derived for the tester's real
++ * posture — read-only over a COMMITTED implementation, evidence over edits —
++ * so it can never be mistaken for the executor mandate ("execute the plan …
++ * commit the work"), which is what the pilot's testing leg used to receive.
++ */
++function buildHeadlessTesterStableSystemPrompt(): string {
++  return [
++    "You are the tester agent, running headlessly — there is no interactive approval, so any tool outside your granted allowlist simply cannot run.",
++    "Stay strictly scoped to your work unit, its current directory, and the configured tool boundaries. Do not invent or switch identities.",
++    "The executor has ALREADY implemented and committed this work unit in the current worktree. Your job is to validate that committed implementation, not to implement it: inspect the committed changes (`prx tools git log` / `prx tools git diff`), read the touched code, run the unit tests, and report the evidence.",
++    "You are read-only: do NOT edit or write source files, do NOT commit, and do NOT re-implement the plan. If the tests fail or the implementation does not match its scope, report precisely what fails and why — that is a valid, complete result.",
++    "If the test runner (`bun test`) is unavailable in your sandbox, say so explicitly and report what you could verify by inspection — never claim tests passed that you did not run.",
++    "Do NOT run `prx`, `bd`, `gh`, or raw `git` to re-derive scope or inspect the model — they are intentionally outside your headless toolset (the `prx tools git` read wrappers are the exception). Read the codebase directly with Read/Grep/Glob instead.",
++  ].join(" ");
++}
++
++/**
++ * GH-360: headless TEST profile — the pilot's `testing` leg. The tester and
++ * the executor share the `implement` session (same worktree, so the tests run
++ * against the executor's commit), but they are DIFFERENT roles with different
++ * authority: this profile is the SDK counterpart of
++ * `buildWorkUnitClaudeImplementSdkRuntimeProfile` with a tester identity
++ * (`PRX_AGENT_ROLE=tester`), a read-only + test-runner allowlist (Edit/Write
++ * denied), and a prompt that consumes the COMMITTED implementation rather than
++ * re-executing the draft plan.
++ *
++ * Before this existed the testing leg was served the executor profile + plan,
++ * re-implemented the unit, reported "done", and looped the pilot through
++ * executing→checking→testing until the retreat budget was spent (GH-360).
++ */
++export function buildWorkUnitClaudeTestSdkRuntimeProfile(input: {
++  workUnitId: string;
++  planPath?: string | undefined;
++  /**
++   * The consumed `<unit>:plan@draft` body — CONTEXT for the tester (what the
++   * implementation was supposed to do), never its scope of work.
++   */
++  planBody?: string | undefined;
++}): RuntimeProfileProjection {
++  const role: TaskAgentRole = "tester";
++  const systemPromptStable = buildHeadlessTesterStableSystemPrompt();
++  const dynamicSegments = [buildWorkUnitDynamicSystemSegment(input.workUnitId)];
++  if (input.planPath) {
++    dynamicSegments.push(`The plan the implementation was built from is at ${input.planPath}.`);
++  }
++  const systemPromptDynamic = dynamicSegments.join(" ");
++  const systemPrompt = `${systemPromptStable} ${systemPromptDynamic}`;
++  const userPrompt = [
++    `Test the committed implementation of ${input.workUnitId} in this worktree.`,
++    "Inspect the commit, run the unit tests that cover the changed code, and report pass/fail with evidence. Do not edit files, do not commit, do not ask clarifying questions.",
++    ...(input.planBody
++      ? [
++          "",
++          "For context only, the plan the implementation was built from is reproduced below. Verify the implementation against it; do NOT execute it.",
++          "",
++          "----- BEGIN PLAN (CONTEXT) -----",
++          input.planBody,
++          "----- END PLAN (CONTEXT) -----",
++        ]
++      : []),
++  ].join("\n");
++  // Read-only base + the test runner + the read-side git wrapper. The reader
++  // posture denies Edit/Write; SHARED_DENY keeps raw git/gh/bd out of reach.
++  // `omitOwnNamespace: true` — the tester must NOT inherit `Bash(prx implement:*)`
++  // (the actor's own-namespace glob), because that would re-admit
++  // `prx implement agent`, i.e. let the tester launch the very executor run
++  // this profile exists to replace (same hazard as `submit`, see above).
++  const { allowedTools, disallowedTools } = actorRuleset("implement", {
++    role: "reader",
++    omitOwnNamespace: true,
++    extraAllow: ["Bash(bun test:*)", "Bash(bun run:*)", "Bash(prx tools git:*)"],
++  });
++  const args = [
++    "--print",
++    "--output-format",
++    "json",
++    "--setting-sources",
++    "project,local",
++    "--permission-mode",
++    "acceptEdits",
++    "--allowedTools",
++    allowedTools.join(","),
++    "--disallowedTools",
++    disallowedTools.join(","),
++    "--append-system-prompt",
++    systemPrompt,
++    userPrompt,
++  ];
++
++  return {
++    profile: "work-unit",
++    mode: "dev",
++    command: "claude",
++    args,
++    env: {
++      PRX_AGENT_ROLE: role,
++      ...agentOtelEnv(role),
++    },
++    agentRuntime: "sdk",
++    interaction: "headless",
++    sdkSpec: {
++      prompt: userPrompt,
++      systemPromptStable: [systemPromptStable],
++      systemPromptDynamic: [systemPromptDynamic],
++      // prx-hz1: headless runs never use `plan` mode (it blocks on an approval
++      // that never comes). The allow/deny lists are the authority boundary.
++      permissionMode: "acceptEdits",
++      allowedTools,
++      disallowedTools,
++      strictMcpConfig: true,
++      settingSources: ["project", "local"],
++    },
++    trustTiers: {
++      tierA_controlled: [
++        "project cwd",
++        `${role} system prompt`,
++        "tester allowlist",
++        "project MCP config",
++      ],
++      tierB_partial: ["user-scoped MCP entries"],
++      tierC_ambient: ["claude.ai connectors", "built-in agents"],
++    },
++    sourcesOfTruth: {
++      agents: "inline_prompt",
++      mcp: "project-only",
++      plugins: ["beads", "worktrunk"],
++      connectors: [],
++    },
++    allowedActors: [...workUnitAllowedActors],
++    disallowedActors: [...workUnitDisallowedActors],
++    notes: [
++      `Headless ${role} surface: the pilot's testing leg (GH-360). Runs in the implement worktree against the executor's commit; read-only + test runner.`,
++      "Edit/Write are denied and raw git/gh/bd stay behind SHARED_DENY; the tester reports evidence, it never re-implements.",
++    ],
++  };
++}
++
+ export function buildWorkUnitCodexRuntimeProfile(input: {
+   workUnitId: string;
+   ioFormat: RuntimeIoFormat;
+diff --git a/packages/prx/src/session/leg-input.ts b/packages/prx/src/session/leg-input.ts
+index 335d8cf..40176b4 100644
+--- a/packages/prx/src/session/leg-input.ts
++++ b/packages/prx/src/session/leg-input.ts
+@@ -94,7 +94,9 @@ export function legInputResolver(actor: SessionActor): LegInputResolver | null {
+   switch (actor) {
+     case "plan":
+       return resolveSourceInput;
+-    // executor AND tester both open the `implement` session; both get the plan.
++    // executor AND tester both open the `implement` session; both get the
++    // plan — the executor as its scope, the tester (GH-360) as context for
++    // validating the executor's COMMITTED implementation.
+     case "implement":
+       return resolvePlanInput;
+     default:
+diff --git a/packages/prx/src/session/open.ts b/packages/prx/src/session/open.ts
+index 248063c..e7889ee 100644
+--- a/packages/prx/src/session/open.ts
++++ b/packages/prx/src/session/open.ts
+@@ -184,6 +184,8 @@ function buildSessionEntryEvent(
+     sourceBody?: string | undefined;
+     interaction?: "headless" | "interactive" | undefined;
+     message?: string | undefined;
++    /** GH-360: the role opening the implement session (executor | tester). */
++    role?: "executor" | "tester" | undefined;
+   },
+ ): SessionEntryEvent {
+   switch (actor) {
+@@ -223,6 +225,9 @@ function buildSessionEntryEvent(
+         // GH-196: see OPEN_PLAN_SESSION. Absent → the interactive
+         // `prx implement --interactive` tmux path; "headless" → SDK executor.
+         interaction: input.interaction,
++        // GH-360: "tester" + headless → the read-only tester SDK profile, so
++        // the pilot's testing leg is no longer served the executor profile.
++        role: input.role,
+       };
+     case "submit":
+       return {
+@@ -506,6 +511,9 @@ export async function openSession(
+   // hard-fail on a missing pin (the human can pin mid-session).
+   // -------------------------------------------------------------------------
+   let embeddedBody: string | undefined;
++  // GH-360: the spawn slot is per ROLE, not per session actor — the tester
++  // opening `implement` is a distinct identity from the executor.
++  const spawnRole = input.actor === "implement" && input.role === "tester" ? "tester" : input.actor;
+   if (input.workUnitId) {
+     const legInput = await (deps.resolveLegInput ?? resolveLegInput)(input.actor, input.workUnitId);
+     if (legInput?.missing) {
+@@ -543,7 +551,9 @@ export async function openSession(
+           const minted = await (deps.mintSpawn ?? mintSpawnAttestation)(
+             {
+               unit: input.workUnitId,
+-              role: input.actor,
++              // GH-360: a tester opening the implement session signs its OWN
++              // `<unit>:spawn@tester` rather than overwriting the executor's.
++              role: spawnRole,
+               actor: input.actor,
+               input: { ref: legInput.ref, sha: legInput.sha },
+               interaction: input.interaction,
+@@ -555,7 +565,7 @@ export async function openSession(
+           emit("SPAWN_ATTESTED", {
+             workUnitId: input.workUnitId,
+             details: {
+-              role: input.actor,
++              role: spawnRole,
+               ref: minted.emit.ref,
+               material: legInput.ref,
+               materialSha: legInput.sha,
+@@ -591,6 +601,7 @@ export async function openSession(
+         sourceBody: input.actor === "plan" ? embeddedBody : undefined,
+         interaction: input.interaction,
+         message: input.message,
++        role: input.role,
+       }),
+     );
+   } catch (err) {
+diff --git a/packages/prx/src/session/schema.ts b/packages/prx/src/session/schema.ts
+index 6b04658..9efe2b2 100644
+--- a/packages/prx/src/session/schema.ts
++++ b/packages/prx/src/session/schema.ts
+@@ -67,6 +67,12 @@ export const SessionOpenInput = z
+     // the dispatched profile carries the right (headless SDK / interactive
+     // tmux) shape. Absent ⇒ headless (the default for every agent mode).
+     interaction: z.enum(["headless", "interactive"]).optional(),
++    // GH-360: which ROLE opens the `implement` session. The pilot's executor
++    // and tester legs share the implement worktree (the tester runs the unit's
++    // tests against the executor's commit) but must not share a profile:
++    // `"tester"` selects the read-only tester profile and signs its own
++    // `<unit>:spawn@tester`. Absent ⇒ `"executor"`. Ignored by other actors.
++    role: z.enum(["executor", "tester"]).optional(),
+     // prx-28w: free-text seed for `prx intake agent --message "…"`. Aims the
+     // intake operator at one specific item (dedupe → file/merge) instead of a
+     // whole-queue sweep. Ignored by actors that don't consume it.
+diff --git a/packages/prx/test/machine/session_entry.test.ts b/packages/prx/test/machine/session_entry.test.ts
+index 38ac774..aa84f8a 100644
+--- a/packages/prx/test/machine/session_entry.test.ts
++++ b/packages/prx/test/machine/session_entry.test.ts
+@@ -621,6 +621,67 @@ describe("sessionEntryMachine", () => {
+     }
+   });
+ 
++  // GH-360: the pilot's testing leg opens the implement session (same worktree
++  // as the executor — the commit is there) but as the TESTER role. It must get
++  // the read-only tester SDK profile, not the executor profile + plan that
++  // made the tester re-implement the unit and loop the pilot.
++  test('OPEN_IMPLEMENT_SESSION headless + role:"tester" → SDK TESTER profile, not the executor (GH-360)', () => {
++    const { restore } = captureHints();
++    try {
++      const actor = createActor(sessionEntryMachine).start();
++      actor.send({
++        type: "OPEN_IMPLEMENT_SESSION",
++        workUnitId: "GH-360",
++        interaction: "headless",
++        role: "tester",
++        planBody: "## Scope\n\n- the thing the executor already built\n",
++      });
++      const snap = actor.getSnapshot();
++      expect(snap.value).toBe("implement");
++      const profile = snap.context.profile;
++      expect(profile?.command).toBe("claude");
++      expect(profile?.env?.PRX_AGENT_ROLE).toBe("tester");
++      expect(profile?.agentRuntime).toBe("sdk");
++      expect(profile?.interaction).toBe("headless");
++      // Read-only posture: Edit/Write denied, test runner + git-read allowed.
++      expect(profile?.sdkSpec?.allowedTools).not.toContain("Edit");
++      expect(profile?.sdkSpec?.allowedTools).not.toContain("Write");
++      expect(profile?.sdkSpec?.disallowedTools).toContain("Edit");
++      expect(profile?.sdkSpec?.disallowedTools).toContain("Write");
++      expect(profile?.sdkSpec?.allowedTools).toContain("Bash(bun test:*)");
++      expect(profile?.sdkSpec?.allowedTools).toContain("Bash(prx tools git:*)");
++      // The prompt consumes the COMMITTED implementation; the plan is context.
++      const prompt = profile?.sdkSpec?.prompt ?? "";
++      expect(prompt).toContain("Test the committed implementation of GH-360");
++      expect(prompt).toContain("BEGIN PLAN (CONTEXT)");
++      expect(prompt).not.toContain("Execute the approved implementation plan");
++      expect(profile?.sdkSpec?.systemPromptStable?.[0]).toContain("You are the tester agent");
++    } finally {
++      restore();
++    }
++  });
++
++  test('OPEN_IMPLEMENT_SESSION headless + role:"executor" (and absent role) → SDK executor profile unchanged (GH-360)', () => {
++    const { restore } = captureHints();
++    try {
++      for (const role of ["executor", undefined] as const) {
++        const actor = createActor(sessionEntryMachine).start();
++        actor.send({
++          type: "OPEN_IMPLEMENT_SESSION",
++          workUnitId: "GH-360",
++          interaction: "headless",
++          ...(role ? { role } : {}),
++        });
++        const profile = actor.getSnapshot().context.profile;
++        expect(profile?.env?.PRX_AGENT_ROLE).toBe("executor");
++        expect(profile?.agentRuntime).toBe("sdk");
++        expect(profile?.sdkSpec?.allowedTools).toContain("Edit");
++      }
++    } finally {
++      restore();
++    }
++  });
++
+   // GH-2380: deterministic across work-unit ids — the submit SDK profile's
+   // declared toolset must not vary by id.
+   test("OPEN_SUBMIT_SESSION headless sdkSpec.allowedTools is deterministic across ids", () => {
+diff --git a/packages/prx/test/pr-state/runtime_profiles.test.ts b/packages/prx/test/pr-state/runtime_profiles.test.ts
+index 9af1749..dcc426d 100644
+--- a/packages/prx/test/pr-state/runtime_profiles.test.ts
++++ b/packages/prx/test/pr-state/runtime_profiles.test.ts
+@@ -34,6 +34,7 @@ import {
+   buildTaskRoleGeminiRuntimeProfile,
+   buildTriageHaikuClassifierRuntimeProfile,
+   buildWorkUnitClaudeImplementSdkRuntimeProfile,
++  buildWorkUnitClaudeTestSdkRuntimeProfile,
+   buildWorkUnitClaudeInteractiveRuntimeProfile,
+   buildWorkUnitClaudePlanPrintRuntimeProfile,
+   resolveAgentBackend,
+@@ -1501,6 +1502,85 @@ describe("buildWorkUnitClaudeImplementSdkRuntimeProfile (headless-first step 2)"
+   });
+ });
+ 
++// GH-360: the pilot's testing leg. The tester shares the executor's implement
++// worktree but is a different role with a different (read-only) authority and
++// a prompt that consumes the COMMITTED implementation — it must never be the
++// executor profile + plan the leg used to be served.
++describe("buildWorkUnitClaudeTestSdkRuntimeProfile (GH-360)", () => {
++  test("is a headless SDK profile with the TESTER identity", () => {
++    const p = buildWorkUnitClaudeTestSdkRuntimeProfile({ workUnitId: "GH-360" });
++    expect(p.command).toBe("claude");
++    expect(p.interaction).toBe("headless");
++    expect(p.agentRuntime).toBe("sdk");
++    expect(resolveAgentBackend(p)).toBe("sdk");
++    expect(p.env?.PRX_AGENT_ROLE).toBe("tester");
++    expect(p.sdkSpec?.permissionMode).toBe("acceptEdits"); // prx-hz1: headless never uses plan mode
++  });
++
++  test("is read-only + test runner: Edit/Write denied, bun test + git-read wrapper allowed", () => {
++    const p = buildWorkUnitClaudeTestSdkRuntimeProfile({ workUnitId: "GH-360" });
++    const allowed = p.sdkSpec?.allowedTools ?? [];
++    const denied = p.sdkSpec?.disallowedTools ?? [];
++    expect(allowed).not.toContain("Edit");
++    expect(allowed).not.toContain("Write");
++    expect(denied).toContain("Edit");
++    expect(denied).toContain("Write");
++    expect(allowed).toContain("Read");
++    expect(allowed).toContain("Bash(bun test:*)");
++    expect(allowed).toContain("Bash(prx tools git:*)");
++    // The tester must not inherit the implement actor's own-namespace glob:
++    // `Bash(prx implement:*)` would re-admit `prx implement agent`, i.e. let
++    // the tester re-launch the executor it is supposed to be validating.
++    expect(allowed).not.toContain("Bash(prx implement:*)");
++    expect(allowed.some((tool) => tool.startsWith("Bash(prx implement"))).toBe(false);
++    // Raw git/gh/bd stay behind the shared deny.
++    expect(denied).toContain("Bash(git:*)");
++    expect(denied).toContain("Bash(gh:*)");
++    // And it is NOT the executor's allowlist.
++    expect(allowed).not.toEqual([...SESSION_PROFILES.implement.allowedTools]);
++  });
++
++  test("prompt consumes the committed implementation; the plan is context, not scope", () => {
++    const planBody = "## Scope\nUpdate the README only.";
++    const p = buildWorkUnitClaudeTestSdkRuntimeProfile({ workUnitId: "GH-360", planBody });
++    const prompt = p.sdkSpec?.prompt ?? "";
++    expect(prompt).toContain("Test the committed implementation of GH-360");
++    expect(prompt).toContain("BEGIN PLAN (CONTEXT)");
++    expect(prompt).toContain("Update the README only.");
++    expect(prompt).toContain("do NOT execute it");
++    expect(prompt).not.toContain("BEGIN APPROVED PLAN");
++    expect(prompt).not.toContain("commit the work");
++    const sys = p.sdkSpec?.systemPromptStable?.join(" ") ?? "";
++    expect(sys).toContain("You are the tester agent");
++    expect(sys).toContain("ALREADY implemented and committed");
++    expect(sys).not.toContain("You are the executor agent");
++    // Cache-stable prefix carries no per-unit plan body.
++    expect(sys).not.toContain("Update the README only.");
++  });
++
++  test("cache-stable system prefix is identical across work units (GH-1407)", () => {
++    const a = buildWorkUnitClaudeTestSdkRuntimeProfile({ workUnitId: "GH-1111" });
++    const b = buildWorkUnitClaudeTestSdkRuntimeProfile({ workUnitId: "GH-2222" });
++    expect(a.sdkSpec?.systemPromptStable).toEqual(b.sdkSpec?.systemPromptStable);
++    expect(a.sdkSpec?.systemPromptDynamic).not.toEqual(b.sdkSpec?.systemPromptDynamic);
++  });
++
++  test("differs from the executor SDK profile on role, prompt, and allowlist", () => {
++    const tester = buildWorkUnitClaudeTestSdkRuntimeProfile({
++      workUnitId: "GH-360",
++      planBody: "x",
++    });
++    const executor = buildWorkUnitClaudeImplementSdkRuntimeProfile({
++      workUnitId: "GH-360",
++      planBody: "x",
++    });
++    expect(tester.env?.PRX_AGENT_ROLE).not.toBe(executor.env?.PRX_AGENT_ROLE);
++    expect(tester.sdkSpec?.prompt).not.toBe(executor.sdkSpec?.prompt);
++    expect(tester.sdkSpec?.systemPromptStable).not.toEqual(executor.sdkSpec?.systemPromptStable);
++    expect(tester.sdkSpec?.allowedTools).not.toEqual(executor.sdkSpec?.allowedTools);
++  });
++});
++
+ describe("scratch session profile (GH-2394)", () => {
+   // The safe-mode builder writes a sandbox settings file under
+   // `<cwd>/.pr/local/runtime/` when present, else `$TMPDIR`. Use a fresh tmp
+diff --git a/packages/prx/test/session/open.test.ts b/packages/prx/test/session/open.test.ts
+index b62e680..271cc39 100644
+--- a/packages/prx/test/session/open.test.ts
++++ b/packages/prx/test/session/open.test.ts
+@@ -896,6 +896,44 @@ describe("openSession — leg input gate + signed spawn (GH-288 / GH-293)", () =
+     });
+   });
+ 
++  // GH-360: the tester opens the SAME implement session (worktree) but as its
++  // own role — the event carries `role: "tester"` (→ the tester SDK profile)
++  // and the spawn attestation is minted at `spawn@tester`, not over the
++  // executor's `spawn@implement`.
++  test('implement/headless + role:"tester": dispatches OPEN_IMPLEMENT_SESSION with the tester role and mints spawn@tester (GH-360)', async () => {
++    const capture: Capture = {};
++    const result = await openSession(
++      {
++        actor: "implement",
++        workUnitId: "GH-360",
++        interaction: "headless",
++        role: "tester",
++        now: "2026-06-06T00:00:00Z",
++      },
++      {
++        ...baseDeps(capture),
++        resolveLegInput: async () => ({
++          missing: false,
++          ref: "GH-360:plan@draft",
++          sha: "sha256:planmaterial",
++          body: "THE PLAN BODY",
++          signedBy: "planner",
++        }),
++      },
++    );
++    expect(result.status).toBe("opened");
++    const ev = capture.event as { type: string; planBody?: string; role?: string };
++    expect(ev.type).toBe("OPEN_IMPLEMENT_SESSION");
++    expect(ev.role).toBe("tester");
++    // The plan still rides along — as CONTEXT for the tester profile.
++    expect(ev.planBody).toBe("THE PLAN BODY");
++    expect(capture.mint).toEqual({
++      unit: "GH-360",
++      role: "tester",
++      input: { ref: "GH-360:plan@draft", sha: "sha256:planmaterial" },
++    });
++  });
++
+   test("implement/headless: FAILS CLOSED when no plan@draft exists (GH-325)", async () => {
+     const capture: Capture = {};
+     const result = await openSession(
+-- 
+2.43.0
+

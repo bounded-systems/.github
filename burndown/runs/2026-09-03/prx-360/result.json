@@ -1,0 +1,20 @@
+{
+  "id": "prx-360",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/prx-360/0001-fix-pilot-serve-the-tester-leg-its-own-tester-profil.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Tester leg now opens the implement session with role=tester and is served a dedicated read-only tester SDK profile (own spawn@tester) instead of the executor profile + plan; fix round added omitOwnNamespace so the tester cannot re-launch `prx implement agent`, pinned by test; 9 new tests, targeted suites 196/196, full suite failure set identical to main. Live PRX_PILOT_REAL=1 acceptance drive not exercised.",
+  "unresolved": [
+    "Not exercised against a live PRX_PILOT_REAL=1 drive (issue's literal acceptance criterion; no API key / beads server in sandbox). Proven by mocked full-machine drive + profile-selection seam tests.",
+    "Tester that reports failing tests still advances (successful agent run => advance); retreat-on-red-verdict is a separate design decision.",
+    "Tester's spawn attestation still records plan@draft as its input material (binding to the executor commit is deferred in-repo).",
+    "Repo checks run with vendored-from-git deps and TS 6.0.3 / an agent-SDK stub because registry.npmjs.org and jsr.io are blocked by egress policy; openapi:check fails identically on untouched main.",
+    "CLAUDE.md org bootstrap/claim-ticket not performed and PR not opened (no GitHub credentials) -- see 'Before merging (owner)' in REPORT.md."
+  ],
+  "fix_round": {
+    "must_fix_addressed": 2,
+    "patch_regenerated": true
+  }
+}

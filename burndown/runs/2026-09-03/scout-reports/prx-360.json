@@ -1,0 +1,31 @@
+{
+  "id": "prx-360",
+  "feasible": true,
+  "reason": "Root cause confirmed in source: packages/prx/src/cli/pilot-real.ts maps tester -> SessionActor 'implement' (roleSessionActor), and openSession dispatches OPEN_IMPLEMENT_SESSION which, for interaction=headless, always builds buildWorkUnitClaudeImplementSdkRuntimeProfile (the EXECUTOR profile: acceptEdits + implement allowlist + 'execute the approved plan ... commit'). The tester leg therefore re-runs the executor over the plan@draft body, reports 'done', and the machine cycles executing->checking->testing until the retreat budget is spent. No tester profile exists in runtime_profiles.ts for the headless path (only a role-string branch in the legacy buildRoleStableSystemPrompt / buildAllowedToolsForRole helpers used by the task-role builder, which openSession never uses).",
+  "current_state": {
+    "role_map": "packages/prx/src/cli/pilot-real.ts:52-57 roleSessionActor = {planner:plan, executor:implement, tester:implement, reviewer:author}; roleAgent() at :234-247 calls open({actor, workUnitId, interaction:'headless'}) with no role axis.",
+    "session_open": "packages/prx/src/session/open.ts:175-262 buildSessionEntryEvent(actor) has no role; :580-594 dispatches OPEN_IMPLEMENT_SESSION with planBody=embedded plan@draft; spawn attestation minted with role=input.actor (so tester also writes <unit>:spawn@implement).",
+    "session_entry": "packages/prx/src/machine/machines/session-entry.ts:294-313 bootClaudeImplement -> headless => buildWorkUnitClaudeImplementSdkRuntimeProfile (executor).",
+    "profile": "packages/prx/src/machine/runtime_profiles.ts:930-1035 buildWorkUnitClaudeImplementSdkRuntimeProfile: role='executor', permissionMode acceptEdits, prompt 'Execute the approved implementation plan ... commit the work'.",
+    "leg_input": "packages/prx/src/session/leg-input.ts:97-99 comment explicitly states executor AND tester both open implement and both get the plan.",
+    "existing_test": "packages/prx/src/cli/pilot-real.test.ts:113 asserts openedActors == [plan, implement, implement, author] and :182 pins the role map (tester:implement)."
+  },
+  "plan": [
+    "runtime_profiles.ts: add buildWorkUnitClaudeTestSdkRuntimeProfile({workUnitId, planBody?}) — headless TESTER profile: role 'tester', PRX_AGENT_ROLE=tester, read+Bash(test runner)+git-read allowlist, Edit/Write denied, prompt = 'the implementation is COMMITTED in this worktree; inspect the commit (git log/diff via wrappers), run the unit tests, report pass/fail with evidence; do not edit or widen; the plan is context only'.",
+    "session-entry.ts: OPEN_IMPLEMENT_SESSION gains optional role?: 'executor'|'tester'; bootClaudeImplement picks the tester SDK profile when interaction==='headless' && role==='tester'.",
+    "session/schema.ts + open.ts: SessionOpenInput gains role?: z.enum(['executor','tester']).optional() (only meaningful for actor=implement); thread it into buildSessionEntryEvent for 'implement' and use it as the spawn-attestation role (spawn@tester instead of clobbering spawn@implement).",
+    "pilot-real.ts: OpenSessionFn accepts role?; roleAgent passes role:'tester' for the tester leg (keeps worktree = implement worktree so tests run against the committed implementation).",
+    "leg-input.ts: fix the comment (tester gets the plan as context, not as its scope).",
+    "Tests: pilot-real.test.ts asserts the tester leg opens implement WITH role 'tester' and the tester profile is what runAgent receives; open.test.ts asserts implement/headless+role tester dispatches OPEN_IMPLEMENT_SESSION with role tester and mints spawn@tester; session-entry / runtime_profiles tests assert the tester profile shape (role tester, no Edit/Write, prompt mentions tests not commit)."
+  ],
+  "verify_command": "cd /tmp/work/prx-360/prx && bun test packages/prx/src/cli/pilot-real.test.ts packages/prx/test/session/open.test.ts packages/prx/test/pr-state/runtime_profiles.test.ts packages/prx/test/machine && bun run typecheck && bun run check",
+  "est_size": "M (~150-250 LOC across 5 src files + 3 test files)",
+  "risks": [
+    "SessionOpenInput is a Zod schema — confirm it is not part of the exported JSON schema set (grep shows it is not exported via schemas:export).",
+    "Architecture/audit tests (packages/prx/test/audit/architecture.test.ts) may pin profile names or event shapes — run the full suite.",
+    "Docs/CLI snapshots are generated; only the src typed event changes, no CLI help changes expected, but run docs:check.",
+    "The tester's Bash allowlist must let it run tests: the executor prompt says bun is outside the sandbox — tester profile should still grant Bash(bun test:*) and report honestly if unavailable; 'independent advancement' (issue bullet 3) is satisfied by the tester no longer re-implementing, not by machine changes.",
+    "Cannot dispatch the org claim-ticket workflow from this sandbox (no gh auth); noted in report."
+  ],
+  "claimed": false
+}

@@ -1,0 +1,453 @@
+From 8be1b11760654038de716ff559de49af7d1ae8fd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:12:40 +0000
+Subject: [PATCH 1/3] =?UTF-8?q?feat(profiles):=20the=20nopodman=20profile?=
+ =?UTF-8?q?=20=E2=80=94=20a=20room=20with=20doors=20but=20no=20walls?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Open a room on a host with no container runtime (a Cowork cloud sandbox):
+every door's guest side is where its broker listens, sockets live in a
+private run dir (world-writable dirs refused), an injecting parent
+(HTTPS_PROXY) is refused unless GUEST_ROOM_ALLOW_INJECTING_PARENT=1 and is
+then named in the rulebook, and the rulebook says NO WALLS in as many words.
+
+profiles/allowlist-door.ts is the egress door's decision without its
+chokepoint: `connect {host}` answered from `host=` caveats via checkCaveats
+over a real unix socket, fail closed; a door with no allowlist refuses to
+serve. Proven by features/nopodman.feature + nopodman.test.ts, which run
+without podman. Engine files are untouched (the names-no-guest test holds).
+
+Refs: burndown gr-cowork-port (off-board; no tracking issue)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ features/nopodman.feature  |  36 +++++++++++++
+ guest-room.test.ts         |  28 +++++++++-
+ jsr.json                   |   5 +-
+ nopodman.test.ts           |  88 ++++++++++++++++++++++++++++++++
+ package.json               |   4 +-
+ profiles/allowlist-door.ts |  69 +++++++++++++++++++++++++
+ profiles/nopodman.ts       | 101 +++++++++++++++++++++++++++++++++++++
+ 7 files changed, 327 insertions(+), 4 deletions(-)
+ create mode 100644 features/nopodman.feature
+ create mode 100644 nopodman.test.ts
+ create mode 100644 profiles/allowlist-door.ts
+ create mode 100644 profiles/nopodman.ts
+
+diff --git a/features/nopodman.feature b/features/nopodman.feature
+new file mode 100644
+index 0000000..6d30b24
+--- /dev/null
++++ b/features/nopodman.feature
+@@ -0,0 +1,36 @@
++# Executed against guest-room/profiles/nopodman.ts by guest-room.test.ts.
++# Some hosts have no container runtime: the guest shares a filesystem and a uid
++# with its brokers. The nopodman profile opens a room THERE — every door's guest
++# side is where its broker actually listens — and renders a rulebook that says
++# so: doors, no walls. The rulebook is a default a careful guest honors, not a
++# fence, and it names the one thing that can still act as the operator past any
++# door: a credential-injecting parent gateway.
++#
++# What this feature does NOT claim: confinement. Nothing here stops a process
++# from reaching past a door; see docs/working-in-a-cowork-sandbox.md (gap list).
++
++Feature: A room can be opened without walls, and its rulebook says so
++
++  Scenario: same-host doors — the guest connects where the broker listens
++    Given the hotel's door catalog and rooms
++    When the room "dev" is opened without walls
++    Then the open doors are "keeper, net, scout"
++    And every door's in-room socket is where its broker listens
++    And the rulebook says there are no walls
++
++  Scenario: what is not granted is still denied by name
++    Given the hotel's door catalog and rooms
++    When the room "read" is opened without walls
++    Then the rulebook grants mention "scout"
++    And the rulebook denies "keeper"
++    And the rulebook denies "net"
++
++  Scenario: an injecting parent is refused unless the room says otherwise
++    Given the hotel's door catalog and rooms
++    And an injecting gateway fronts the host
++    When the room "read" is opened without walls
++    Then opening is refused
++    When the room says an injecting parent is acceptable
++    And the room "read" is opened without walls
++    Then the open doors are "scout"
++    And the rulebook names the injecting gateway
+diff --git a/guest-room.test.ts b/guest-room.test.ts
+index 2b49bbe..02cdb54 100644
+--- a/guest-room.test.ts
++++ b/guest-room.test.ts
+@@ -12,7 +12,8 @@
+  */
+ import { describe, test } from "bun:test";
+ import { expect } from "bun:test";
+-import { readFileSync, readdirSync } from "node:fs";
++import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
++import { tmpdir } from "node:os";
+ import {
+   type DoorCatalog,
+   type DoorGrant,
+@@ -32,8 +33,12 @@ import {
+   type ProviderEntry,
+ } from "./mod.ts";
+ import { parseFeature, StepRegistry, type World } from "./gherkin.ts";
++import { ALLOW_INJECTING_PARENT, nopodmanRoom } from "./profiles/nopodman.ts";
+ 
+ const env: Env = {};
++// The nopodman profile resolves REAL socket paths, so it gets a private run dir.
++const noWallsEnv = (w: World): Env =>
++  ({ XDG_RUNTIME_DIR: mkdtempSync(`${tmpdir()}/gr-feature-`), ...((w.env as Env) ?? {}) });
+ 
+ // A fixture hotel — same SHAPE as claude-box's catalog, none of its identity.
+ const catalog: DoorCatalog = {
+@@ -164,7 +169,26 @@ const steps = new StepRegistry()
+   .step(/^the held capability is not confined at time (\d+)$/, (w, now) => {
+     const held = w.held as DoorGrant | null;
+     expect(held === null || !isConfined(held, w.entries as ProviderEntry[], w.capability as string, Number(now))).toBe(true);
+-  });
++  })
++
++  // the nopodman profile: a room opened same-host (no container, no mount) —
++  // doors resolve to where their brokers listen, and the rulebook says NO WALLS
++  .step(/^an injecting gateway fronts the host$/, (w) => { w.env = { HTTPS_PROXY: "http://gateway:1" }; })
++  .step(/^the room says an injecting parent is acceptable$/, (w) => {
++    w.env = { ...((w.env as Env) ?? {}), [ALLOW_INJECTING_PARENT]: "1" };
++  })
++  .step(/^the room "([^"]*)" is opened without walls$/, (w, name) => {
++    w.suppress = new Set<string>();
++    try {
++      const room = nopodmanRoom(w.rooms as RoomCatalog, w.catalog as DoorCatalog, name, noWallsEnv(w));
++      w.grants = room.grants; w.rulebook = room.rulebook.join("\n"); w.error = undefined;
++    } catch (e) { w.error = e; w.grants = []; }
++  })
++  .step(/^every door's in-room socket is where its broker listens$/, (w) => {
++    for (const d of w.grants as DoorGrant[]) expect(transportString(d.guest)).toBe(transportString(d.host));
++  })
++  .step(/^the rulebook says there are no walls$/, (w) => { expect(w.rulebook as string).toContain("NO WALLS"); })
++  .step(/^the rulebook names the injecting gateway$/, (w) => { expect(w.rulebook as string).toContain("http://gateway:1"); });
+ 
+ // ── the seam is enforced, not just documented ────────────────────────────────
+ // "The room doesn't know it's Claude" is the whole thesis of the extraction.
+diff --git a/jsr.json b/jsr.json
+index 3d382fe..076fecd 100644
+--- a/jsr.json
++++ b/jsr.json
+@@ -7,7 +7,9 @@
+     "./protocol": "./protocol.ts",
+     "./interpose": "./interpose.ts",
+     "./daemon": "./daemon.ts",
+-    "./gherkin": "./gherkin.ts"
++    "./gherkin": "./gherkin.ts",
++    "./profiles/nopodman": "./profiles/nopodman.ts",
++    "./profiles/allowlist-door": "./profiles/allowlist-door.ts"
+   },
+   "publish": {
+     "include": [
+@@ -16,6 +18,7 @@
+       "interpose.ts",
+       "daemon.ts",
+       "gherkin.ts",
++      "profiles/*.ts",
+       "README.md",
+       "LICENSE",
+       "docs/**/*.md"
+diff --git a/nopodman.test.ts b/nopodman.test.ts
+new file mode 100644
+index 0000000..abab96b
+--- /dev/null
++++ b/nopodman.test.ts
+@@ -0,0 +1,88 @@
++/**
++ * nopodman profile — a room with doors but no walls, proven without a container
++ * runtime. The allowlist door is served over a real unix socket in a private tmp
++ * run dir and driven through `call()`; a denied host reaches no `ALLOW`, an
++ * unattenuated egress door refuses to serve at all, and the profile's other
++ * refusals (world-writable dir, injecting parent) fail closed.
++ */
++import { afterEach, describe, expect, test } from "bun:test";
++import { chmodSync, mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { attenuate, attenuatesDoors, type DoorCatalog, type RoomCatalog } from "./mod.ts";
++import { call, DoorCallError } from "./protocol.ts";
++import { ALLOW_INJECTING_PARENT, nopodmanRoom, sameHostDoor } from "./profiles/nopodman.ts";
++import { allowlistDoorHandlers, allowlistDoorMethods, hasAllowlist } from "./profiles/allowlist-door.ts";
++
++const catalog: DoorCatalog = {
++  net: {
++    flag: "--net", inBox: "/run/egress.sock", env: "EGRESS_SOCK", hostDefault: "/tmp/egress.sock",
++    grants: "policed egress", use: "All egress goes through the net door.", deny: "No network here.",
++  },
++};
++const rooms: RoomCatalog = { out: { doors: ["net"], about: "egress only" } };
++
++const dirs: string[] = [];
++const freshRunDir = (): string => { const d = mkdtempSync(`${tmpdir()}/gr-nopodman-`); dirs.push(d); return d; };
++afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
++
++describe("nopodman profile — same-host doors", () => {
++  test("the guest side is the host side, in a private run dir, and the child env points at it", () => {
++    const env = { XDG_RUNTIME_DIR: freshRunDir() };
++    const room = nopodmanRoom(rooms, catalog, "out", env, { caveats: { net: ["host=example.com"] } });
++    const [net] = room.grants;
++    expect(net!.guest).toEqual(net!.host);
++    expect(room.childEnv).toEqual({ EGRESS_SOCK: `${env.XDG_RUNTIME_DIR}/net.sock` });
++    expect(room.rulebook.join("\n")).toContain("NO WALLS");
++    expect(room.rulebook.join("\n")).toContain("RESTRICTED to: host=example.com");
++  });
++
++  test("a running broker's own env var wins over the default path", () => {
++    const g = sameHostDoor(catalog, "net", { EGRESS_SOCK: `${freshRunDir()}/live.sock` });
++    expect(g.guest).toEqual(g.host);
++    expect((g.guest as { path: string }).path.endsWith("/live.sock")).toBe(true);
++  });
++
++  test("a world-writable socket dir is refused", () => {
++    const dir = freshRunDir(); chmodSync(dir, 0o777);
++    expect(() => sameHostDoor(catalog, "net", { XDG_RUNTIME_DIR: dir })).toThrow(/world-writable/);
++  });
++
++  test("an injecting parent is refused unless the room says otherwise — and is then named", () => {
++    const env = { XDG_RUNTIME_DIR: freshRunDir(), HTTPS_PROXY: "http://gateway:1" };
++    expect(() => nopodmanRoom(rooms, catalog, "out", env)).toThrow(/injecting parent/);
++    const room = nopodmanRoom(rooms, catalog, "out", { ...env, [ALLOW_INJECTING_PARENT]: "1" });
++    expect(room.rulebook.join("\n")).toContain("http://gateway:1");
++  });
++});
++
++describe("nopodman profile — the allowlist door over a real unix socket", () => {
++  test("an egress door without a host= caveat refuses to serve", () => {
++    const bare = sameHostDoor(catalog, "net", { XDG_RUNTIME_DIR: freshRunDir() });
++    expect(hasAllowlist(bare)).toBe(false);
++    expect(() => allowlistDoorMethods(bare, () => {})).toThrow(/no host= caveat/);
++  });
++
++  test("allowed host answers, off-list host is DENIED and never logged ALLOW; narrowing narrows", async () => {
++    const env = { XDG_RUNTIME_DIR: freshRunDir() };
++    const { grants } = nopodmanRoom(rooms, catalog, "out", env, { caveats: { net: ["host=example.com,.jsr.io"] } });
++    const door = grants[0]!;
++    const log: string[] = [];
++    const server = Bun.listen({ unix: (door.host as { path: string }).path, socket: allowlistDoorHandlers(door, (l, m) => log.push(`${l} ${m}`)) });
++    try {
++      const sock = (door.guest as { path: string }).path; // what the child gets via EGRESS_SOCK
++      expect(await call(sock, "connect", { host: "example.com" })).toEqual({ host: "example.com", allowed: true });
++      expect(await call(sock, "connect", { host: "api.jsr.io" })).toEqual({ host: "api.jsr.io", allowed: true });
++      for (const host of ["evil.example.com", "github.com", ""]) {
++        const e = await call(sock, "connect", { host }).catch((x: unknown) => x);
++        expect(e).toBeInstanceOf(DoorCallError);
++        expect((e as DoorCallError).message).toMatch(/^DENIED/);
++      }
++      expect(log.filter((l) => l.startsWith("ALLOW"))).toEqual(["ALLOW example.com", "ALLOW api.jsr.io"]);
++      expect(log.filter((l) => l.startsWith("DENY")).length).toBe(3);
++    } finally { server.stop(true); }
++    // handing the door onward: a narrower child is fine; dropping the allowlist is refused
++    const child = attenuate(door, ["host=example.com"]);
++    expect(attenuatesDoors([child], [door]).ok).toBe(true);
++    expect(attenuatesDoors([{ ...door, caveats: [] }], [door]).ok).toBe(false);
++  });
++});
+diff --git a/package.json b/package.json
+index d602976..0c6fb10 100644
+--- a/package.json
++++ b/package.json
+@@ -15,7 +15,9 @@
+     "./protocol": "./protocol.ts",
+     "./interpose": "./interpose.ts",
+     "./daemon": "./daemon.ts",
+-    "./gherkin": "./gherkin.ts"
++    "./gherkin": "./gherkin.ts",
++    "./profiles/nopodman": "./profiles/nopodman.ts",
++    "./profiles/allowlist-door": "./profiles/allowlist-door.ts"
+   },
+   "scripts": {
+     "test": "bun test"
+diff --git a/profiles/allowlist-door.ts b/profiles/allowlist-door.ts
+new file mode 100644
+index 0000000..efe85bf
+--- /dev/null
++++ b/profiles/allowlist-door.ts
+@@ -0,0 +1,69 @@
++/**
++ * @module
++ * profiles/allowlist-door.ts — an egress-shaped door for the `nopodman` profile.
++ *
++ * A consumer's egress door is a forward proxy in front of a box with no NIC: the
++ * bytes pass THROUGH it, so a denied host is unreachable, full stop. Without
++ * walls there is no such chokepoint — a child can reach whatever the host can.
++ * What can still exist same-host is the DECISION: one broker holding the grant,
++ * asked `connect {host}` before a child reaches out, answering from the grant's
++ * caveats via `checkCaveats` (fail closed), and logging every verdict.
++ *
++ * This is therefore a decision oracle, not a proxy — a stand-in that keeps the
++ * policy and the audit trail while the substrate cannot enforce them. It is
++ * named as such in docs/working-in-a-cowork-sandbox.md (gap G2), so the rulebook
++ * cannot claim a wall this door does not provide.
++ *
++ * Grammar (the broker's, not the engine's): `host=<a>,<b>,.<suffix>` — an OR-set
++ * of exact hosts, a leading dot matching the apex and any subdomain. A door with
++ * NO `host=` caveat is refused outright: an egress door without an allowlist is
++ * a hole, and this profile has no wall behind it to fall back on.
++ */
++import { type CaveatVerifiers, type DoorGrant, checkCaveats, parseCaveat } from "../mod.ts";
++import { type MethodRegistry, createDoorHandlers } from "../protocol.ts";
++
++/** The request context a `host=` caveat is checked against. */
++export type ConnectContext = { host: string };
++
++/** Exact host, or `.suffix` (apex + any subdomain). Case-insensitive. */
++export function matchesHost(host: string, pattern: string): boolean {
++  const h = host.toLowerCase();
++  const p = pattern.toLowerCase();
++  return p.startsWith(".") ? h === p.slice(1) || h.endsWith(p) : h === p;
++}
++
++/** The one caveat key this door interprets. */
++export const hostVerifiers: CaveatVerifiers<ConnectContext> = {
++  host: (value, ctx) => value.split(",").map((s) => s.trim()).filter(Boolean).some((p) => matchesHost(ctx.host, p)),
++};
++
++/** Does the grant carry at least one `host=` caveat? Anything else is a hole. */
++export function hasAllowlist(grant: DoorGrant): boolean {
++  return (grant.caveats ?? []).some((c) => parseCaveat(c)?.key === "host");
++}
++
++type Log = (level: "INFO" | "ERR" | "ALLOW" | "DENY" | "WARN", msg: string) => void;
++
++/** `connect {host}` → `{host, allowed: true}`, or throws `DENIED …` (the client
++ *  sees a `HANDLER_ERROR` whose message names the caveat and reason). */
++export function allowlistDoorMethods(grant: DoorGrant, log: Log): MethodRegistry {
++  if (!hasAllowlist(grant)) throw new Error(`door "${grant.name}" has no host= caveat; refusing to serve an unbounded egress door`);
++  return {
++    connect(params) {
++      const host = String(params.host ?? "").trim().toLowerCase();
++      const verdict = host ? checkCaveats(grant, { host }, hostVerifiers) : { ok: false as const, caveat: "host", reason: "unsatisfied" as const };
++      if (!verdict.ok) {
++        log("DENY", `${host || "?"} (${verdict.caveat}: ${verdict.reason})`);
++        throw new Error(`DENIED ${host || "?"}: ${verdict.caveat} ${verdict.reason}`);
++      }
++      log("ALLOW", host);
++      return { host, allowed: true };
++    },
++  };
++}
++
++/** Socket handlers for `Bun.listen({ unix: <grant.host path>, socket })`. Unix
++ *  only: the profile never leaves the filesystem, so no wire auth is required. */
++export function allowlistDoorHandlers(grant: DoorGrant, log: Log): ReturnType<typeof createDoorHandlers<{ buffer: string }>> {
++  return createDoorHandlers(grant.name, allowlistDoorMethods(grant, log), log);
++}
+diff --git a/profiles/nopodman.ts b/profiles/nopodman.ts
+new file mode 100644
+index 0000000..9d6de2c
+--- /dev/null
++++ b/profiles/nopodman.ts
+@@ -0,0 +1,101 @@
++/**
++ * @module
++ * profiles/nopodman.ts — the `nopodman` profile: a room with doors but no walls.
++ *
++ * A consumer's normal launch puts the guest behind WALLS (a container with no
++ * network, a user namespace) and mounts each door's socket into it. Some hosts
++ * offer no container runtime at all — a Cowork cloud sandbox is the motivating
++ * one: the guest runs on the same filesystem as its brokers, as the same uid,
++ * behind a gateway that injects credentials on the way out. This profile
++ * resolves a room for THAT substrate, and says exactly what it does not buy:
++ *
++ *   - every door's GUEST side IS its HOST side (same filesystem, no mount), so a
++ *     child reaches a broker at the path the broker actually listens on;
++ *   - socket paths live in a private run dir (`XDG_RUNTIME_DIR`, else
++ *     `$HOME/.guest-room/run`, 0700) and a world-writable dir is refused — the
++ *     fail-closed check `defaultHostSock` (mod.ts) leaves to the launch site;
++ *   - an injecting parent (`HTTPS_PROXY` set) is refused unless the room opts in
++ *     with `GUEST_ROOM_ALLOW_INJECTING_PARENT=1`, and is then NAMED in the
++ *     rulebook: a door here cannot deny reach or strip identity;
++ *   - the rulebook says in as many words that there are NO WALLS — the surface
++ *     is a default a careful child honors, not enforcement.
++ *
++ * What it does NOT do is confine. The gap list lives in
++ * docs/working-in-a-cowork-sandbox.md (§ The `nopodman` profile).
++ */
++import { statSync } from "node:fs";
++import { dirname } from "node:path";
++import {
++  attenuate, deniedDoors, deniedDoorSection, expandRoom, grantedDoorLines, resolveDoor, unix,
++  type DoorCatalog, type DoorGrant, type Env, type RoomCatalog,
++} from "../mod.ts";
++import { defaultSocketPath } from "../daemon.ts";
++
++/** Opt-in: serve a room behind a credential-injecting gateway anyway. */
++export const ALLOW_INJECTING_PARENT = "GUEST_ROOM_ALLOW_INJECTING_PARENT";
++
++/** The private run dir when `XDG_RUNTIME_DIR` is unset. Never `/tmp`. */
++export function runDir(env: Env): string {
++  return `${env.HOME ?? "/tmp"}/.guest-room/run`;
++}
++
++/** Is a credential-injecting gateway fronting this host? From inside, a set
++ *  `HTTPS_PROXY` is the only signal, so its presence is treated as injecting
++ *  (fail closed) unless the room says otherwise. */
++export function injectingParent(env: Env): { proxy?: string; allowed: boolean } {
++  const proxy = env.HTTPS_PROXY ?? env.https_proxy;
++  return { proxy: proxy || undefined, allowed: env[ALLOW_INJECTING_PARENT] === "1" };
++}
++
++/** Refuse a socket whose directory anyone can write into (a stranger could
++ *  replace the broker). A missing dir is fine — the broker creates it 0700. */
++export function assertPrivateDir(sockPath: string): void {
++  let mode: number;
++  try { mode = statSync(dirname(sockPath)).mode; } catch { return; }
++  if (mode & 0o002) throw new Error(`refusing world-writable socket dir for ${sockPath}`);
++}
++
++/** Resolve one door same-host: the broker's socket is the child's socket. The
++ *  door's own env var (`<NAME>_SOCK`) wins so an already-running broker is found. */
++export function sameHostDoor(catalog: DoorCatalog, name: string, env: Env): DoorGrant {
++  const envKey = catalog[name]?.env ?? `${name.toUpperCase().replace(/-/g, "_")}_SOCK`;
++  const path = env[envKey] ?? defaultSocketPath(name, runDir, env);
++  assertPrivateDir(path);
++  const g = resolveDoor(catalog, name, unix(path), env);
++  return { ...g, guest: g.host, env: envKey };
++}
++
++/** A room opened without walls: its grants, the env a child is launched with
++ *  (`env -i` + exactly these), and the honest rulebook. */
++export type NopodmanRoom = { grants: DoorGrant[]; childEnv: Record<string, string>; rulebook: string[] };
++
++/** Open a named room same-host. Throws (fail closed) for an unknown room, a
++ *  world-writable socket dir, or an injecting parent the room did not opt into.
++ *  `caveats` narrows doors by name (append-only, via `attenuate`). */
++export function nopodmanRoom(
++  rooms: RoomCatalog, catalog: DoorCatalog, room: string, env: Env,
++  opts: { caveats?: Record<string, string[]>; workcell?: string } = {},
++): NopodmanRoom {
++  const parent = injectingParent(env);
++  if (parent.proxy && !parent.allowed) {
++    throw new Error(`refusing to open "${room}" behind an injecting parent (${parent.proxy}); set ${ALLOW_INJECTING_PARENT}=1 to acknowledge`);
++  }
++  const grants = expandRoom(rooms, catalog, room, env)
++    .map((d) => attenuate(sameHostDoor(catalog, d.name, env), opts.caveats?.[d.name] ?? []));
++  const childEnv = Object.fromEntries(grants.map((g) => [g.env, (g.guest as { path: string }).path]));
++  const denied = deniedDoors(catalog, new Set(grants.map((g) => g.name)));
++  const workcell = opts.workcell ?? room;
++  const rulebook = [
++    `[${workcell} — capability surface for THIS launch; nopodman profile: doors, NO WALLS]`,
++    `Your authority is EXACTLY the doors listed below. This launch has NO WALLS: nothing physically stops a process here from reaching past a door, so this list is the record of what was GRANTED, not a fence. Treat a denied door as denied anyway; brokers log what they serve.`,
++    ...(parent.proxy
++      ? [`An injecting gateway fronts this host (${parent.proxy}): hosts on ITS allowlist answer as the operator regardless of any door. A door here cannot deny reach or strip identity.`]
++      : []),
++    "",
++    "GRANTED:",
++    ...grantedDoorLines(grants),
++    "",
++    ...deniedDoorSection(denied),
++  ];
++  return { grants, childEnv, rulebook };
++}
+-- 
+2.43.0
+

@@ -1,0 +1,200 @@
+From e621e7489783e051ff83bb7b07f12f2209d793cf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:15:20 +0000
+Subject: [PATCH] docs: bootstrapping a first release, and the tag-creation
+ bypass actor
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`mint version` reads intents and writes the version; `mint release` reads
+only the manifest version and needs a `## <version>` changelog entry — it
+never looks at `.release/`. The README showed the steady-state flow and
+nothing about how a never-tagged repo gets to its first `v0.1.0`, so
+adopters (repo-health, #17) conflated the two commands.
+
+README gains two sections under Use:
+
+- "First release": the invariant above, then two numbered bootstrap paths —
+  by hand (set 0.1.0 + write the entry) or by intent (0.0.0 + `bump: minor`
+  + `mint version`) — and the CI variant (merge, dispatch release.yml
+  dry-run, then for real).
+- "Tag creation under rulesets — the bypass actor": a ruleset restricting
+  tag creation rejects `git push origin v0.1.0` for any actor not on its
+  bypass list, admins included. Names the actor per path — the releaser's
+  own account from a checkout, `github-actions[bot]` via GITHUB_TOKEN for
+  the dispatched cut (not whoever clicked Run workflow) — and that a dry-run
+  dispatch never exercises the push. Documents the rejection signature,
+  that the tag + provenance already exist locally when the push fails (so
+  `mint release` will refuse a re-run and the fix is `git push origin
+  <tag>`), and `--no-push` as the deliberate hand-off to an authorised actor.
+
+Plus a pointer from .release/README.md, a comment beside the push in
+release-cut.yml naming the actor, and a patch intent.
+
+Fixes #18.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .github/workflows/release-cut.yml |   7 +++
+ .release/README.md                |   3 +
+ .release/first-release-docs.md    |   4 ++
+ README.md                         | 101 ++++++++++++++++++++++++++++++
+ 4 files changed, 115 insertions(+)
+ create mode 100644 .release/first-release-docs.md
+
+diff --git a/.github/workflows/release-cut.yml b/.github/workflows/release-cut.yml
+index 006868e..59fa23d 100644
+--- a/.github/workflows/release-cut.yml
++++ b/.github/workflows/release-cut.yml
+@@ -297,6 +297,13 @@ jobs:
+           # Annotated, not signed: a workflow holds no signing key. The release
+           # Statement that release-provenance.yml keyless-signs is the stronger
+           # attestation, and it binds this exact tag to this exact commit.
++          #
++          # THE ACTOR HERE IS github-actions[bot] (GITHUB_TOKEN), not the person
++          # who dispatched. A ruleset that restricts tag creation rejects this
++          # push ("Cannot create ref due to creations being restricted") unless
++          # that identity is on the ruleset's bypass list — and the dry run
++          # skips this step, so a green dry run does not prove it. See
++          # README.md "Tag creation under rulesets" (#18).
+           git config user.name "github-actions[bot]"
+           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+           # THE ANNOTATION IS THE CHANGELOG ENTRY (#42). Both release workflows
+diff --git a/.release/README.md b/.release/README.md
+index b50a646..929a5e0 100644
+--- a/.release/README.md
++++ b/.release/README.md
+@@ -16,3 +16,6 @@ scan: promote to a verb (CLI + MCP) + shared Zod type contracts
+ - `mint plan` — preview the next version + changelog entry (pure; pass `--date` to pin it).
+ - `mint version` — apply: bump `package.json` + lockfile, prepend `CHANGELOG.md`, consume these intents.
+ - `mint release` — cut the `v<version>` tag + emit the in-toto release provenance (keyless-signed in CI). `--dry-run` previews it.
++
++A repo that has never been tagged starts from the [First release](../README.md#first-release)
++steps in the README — `mint release` reads the manifest version, not these intents.
+diff --git a/.release/first-release-docs.md b/.release/first-release-docs.md
+new file mode 100644
+index 0000000..fc88086
+--- /dev/null
++++ b/.release/first-release-docs.md
+@@ -0,0 +1,4 @@
++---
++bump: patch
++---
++docs: how to bootstrap a first release (by hand or by intent), and which actor must be on the ruleset bypass list for the tag push (#18)
+diff --git a/README.md b/README.md
+index a7213d3..578cc45 100644
+--- a/README.md
++++ b/README.md
+@@ -38,6 +38,107 @@ mint release   # cut the v<version> tag + emit release provenance (CI keyless-si
+ `mint plan --json` emits the machine-readable plan. `--date YYYY-MM-DD` pins the
+ changelog date (the pure core never reads the clock; the CLI injects it).
+ 
++### First release
++
++The two commands read different inputs, and that is what makes a first release
++confusing (#18):
++
++- `mint version` reads the intents in `.release/` plus the manifest version and
++  **writes** the next version + changelog entry.
++- `mint release` reads **only** the manifest version (`deno.json` → `jsr.json`
++  → `package.json`, first one with a `version`) and requires a matching
++  `## <version>` heading in `CHANGELOG.md`. It never reads `.release/`, so no
++  intent is required to release — a missing changelog entry is what fails it:
++  ``no CHANGELOG.md entry for <version> — run `mint version` first.``
++
++So a repo that has never been tagged can bootstrap either way. Pick one.
++
++**Path A — by hand.** Set the version and write the first entry yourself:
++
++1. Set `"version": "0.1.0"` in the manifest (every manifest present, in lockstep).
++2. Add the entry to `CHANGELOG.md`. The `## 0.1.0` heading is what `mint release`
++   matches on; the body becomes the tag annotation and the release notes:
++
++   ```markdown
++   # Changelog
++
++   ## 0.1.0 — YYYY-MM-DD
++
++   ### Minor
++
++   - first release
++   ```
++
++3. Commit (the tree must be clean), then `mint release --dry-run`, then
++   `mint release`.
++
++**Path B — by intent.** Let mint compute the first version. The manifest must
++already hold a valid semver to bump *from*; `0.0.0` is the conventional start:
++
++1. Set `"version": "0.0.0"` in the manifest.
++2. Add `.release/first.md`:
++
++   ```markdown
++   ---
++   bump: minor
++   ---
++   first release
++   ```
++
++3. `mint version` — bumps `0.0.0 → 0.1.0`, creates or prepends `CHANGELOG.md`,
++   deletes the intent.
++4. Commit, then `mint release --dry-run`, then `mint release`.
++
++Both paths end in the same state: manifest at `0.1.0`, a `## 0.1.0` entry, an
++empty `.release/`, tag `v0.1.0`. To cut in CI instead of from a checkout, merge
++that state to the default branch and dispatch `release.yml` — once with
++**dry-run** checked (every guard runs, nothing is cut), then again with it
++unchecked. The CI cut refuses while `.release/` still holds an intent, which is
++why `mint version` must be applied *and merged* first. From the second release
++on, the steady-state flow above applies.
++
++### Tag creation under rulesets — the bypass actor
++
++`mint release` ends in `git push origin v0.1.0`, and so does the CI cut. If an
++org or repository **ruleset** restricts tag creation (a rule targeting tags with
++*Restrict creations*), that push is rejected for every actor not on the
++ruleset's **bypass list** — being an admin does not help by itself:
++
++```
++! [remote rejected] v0.1.0 -> v0.1.0 (Cannot create ref due to creations being restricted)
++```
++
++Which actor pushes depends on the path, and the two are not interchangeable:
++
++| path | actor that creates the tag |
++| --- | --- |
++| `mint release` from a checkout (the `push: tags` trigger) | **your GitHub account** — whichever identity your git credential authenticates as |
++| dispatched `release.yml` → [`release-cut.yml`](.github/workflows/release-cut.yml) | **`github-actions[bot]`**, via the run's `GITHUB_TOKEN` (`contents: write`) — *not* the person who clicked *Run workflow* |
++
++Before the first release, grant bypass to the actor for the path you will use:
++*Settings → Rules → Rulesets → \<the tag rule\> → Bypass list*, on the repo or
++on the org for an org-level ruleset. For a checkout cut, add a role or team that
++includes the releaser. For the CI cut, add the GitHub Actions app identity if the
++bypass picker offers it; a ruleset that cannot list it rejects the CI cut no
++matter who dispatched, so then either narrow the rule so `v*` tags are not
++covered, or cut from a checkout as a bypass-listed human. A **dry-run dispatch
++never pushes**, so a green dry run says nothing about bypass — the rejection
++only shows on the real cut.
++
++When the push is rejected, the tag and `v<version>.intoto.json` already exist
++locally (mint tags first, then pushes). Do not re-run `mint release` — it refuses
++because the tag exists. Fix the bypass list, then push the tag yourself:
++
++```sh
++git push origin v0.1.0
++```
++
++`mint release --no-push` is the deliberate form of that split: cut the tag and
++provenance locally and hand the push to an authorised actor (a bypass-listed
++account, or a token minted for one). A tag pushed from a checkout fires the
++`push: tags` path of `release.yml`, so the release proceeds exactly as if
++`mint release` had pushed it.
++
+ ## Release provenance
+ 
+ `mint release` cuts the annotated tag `v<version>` (signed when a git signing key
+-- 
+2.43.0
+

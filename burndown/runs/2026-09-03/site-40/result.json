@@ -1,0 +1,12 @@
+{
+  "id": "site-40",
+  "done": true,
+  "patch_files": [],
+  "verify_passed": true,
+  "summary": "Issue is stale/superseded: none of the named homepage strings exist (removed in #84/#219), body prose stays inline by documented decision (#134/#135), all 23 atomic strings already resolve from strings.json, meta-description divergence from the brand token is deliberate (#219 + door deny-lexicon); npm run check and build pass on main; closing comment delivered, no patch.",
+  "unresolved": [
+    "<meta name=description> differs from brand core `description` token by design (#219 removed 'door' wording; lexicon.txt denies it) — aligning would be a brand-repo wording change, out of scope",
+    "Issue not claimed via claim-ticket.yml (no GitHub credentials in sandbox)",
+    "Issue #39 (baseline) is superseded by the same commits and still open"
+  ]
+}

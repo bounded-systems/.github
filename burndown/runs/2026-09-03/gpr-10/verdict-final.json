@@ -1,0 +1,28 @@
+{
+  "id": "gpr-10",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/gh-project-room (main @ f28b2b2, still the default-branch head) into /tmp/final/gpr-10/repo; `git am` of the regenerated patch applied cleanly (8 files, +452/-25, one commit, subject no longer carries the '(#10)' suffix). Every check the prior verifiers ran reproduced on deno 2.9.6 with the local @std/assert import map: `deno fmt --check` 31 files clean; `deno lint` (empty config) on the 5 touched/adjacent files clean; `deno lint --rules-include=no-slow-types` on the two JSR-relevant files clean; `deno check` on the 8 network-free modules clean; `deno test window-meter_test.ts --filter window` 5 passed / 0 failed; the 7 network-free test files 34 passed / 0 failed; CLI: ledger with 250k units + 4.5 pts + a 2020 sample -> rolling-5h 'exhausted: 10.5/10 pts' exit 1, weekly 'healthy (10.5/40 pts)' exit 0, no --ledger warn + exit 0, unreadable ledger warn + exit 0, no args usage exit 2. `deno task check` still fails only on the sandbox 403 for registry.npmjs.org, exactly as the REPORT discloses. deno.lock is untouched. All four must_fix items from verdicts A and B are resolved in the artifacts: the commit body has an explicit 'This does NOT close #10' paragraph and the trailers are 'Refs #10, epic #5' + 'Claim-issue: bounded-systems/gh-project-room#10' with no 'Closes' anywhere in the diff; '#75' appears nowhere in the patch, REPORT, or comment (replaced by 'the telemetry/OTLP source, which is not yet filed in this repo'); front-desk-budget.yml now grants `--allow-read=\"$LEDGER\"` only when a ledger is passed. The one thing the patch cannot do itself, claiming #10 so pr-claim goes green, is correctly listed as an owner process item; WebFetch confirms #10 is still open, unassigned, with no linked branches/PRs, so that step is genuinely still required. The ready-to-paste comment was checked line by line against the tree and the re-run: every claim in it (file names, export path, flag semantics, scoped read grant, epoch-anchored/injectable anchor, 34/34, fmt clean, 'not yet pushed', 'does NOT close #10') is true. Its final 'Apply' line says `deno task check && deno task test`, which is the right instruction for an owner with network access and is not a claim that it was run here.",
+  "resolved": [
+    "A must_fix / B(3): no 'Closes #10'; commit body, REPORT header, Unresolved #2 and the comment all state the meter + --ledger seam only, production unchanged (unmetered, fail-open) until an emitter exists.",
+    "B(1): '#75' cross-reference removed from commit body and comment; replaced by 'telemetry/OTLP source, not yet filed in this repo'. grep for '#75' across the patch and REPORT.md returns nothing.",
+    "B(2) patch-level: 'Claim-issue: bounded-systems/gh-project-room#10' present as a commit trailer on its own line, with 'Refs #10, epic #5' and no 'Closes' (pr-claim@bc4cb7d both-forms failure avoided).",
+    "B nit: bare `--allow-read` in front-desk-budget.yml replaced by `--allow-read=\"$LEDGER\"` inside the non-empty-ledger branch; no read grant when unmetered. Verified the shell snippet logic reads correctly.",
+    "B nit: commit subject '(#10)' suffix removed.",
+    "A nit: REPORT's `deno lint --config '{}'` corrected to a real empty config file; reproduced with one.",
+    "All numbers in the REPORT and comment (31 files, 5 lint files, 8 check modules, 5/5 filtered, 34/34, CLI exit codes and totals) reproduced exactly on the fresh clone."
+  ],
+  "still_open": [
+    "Full `deno task check` / `deno task test` / repo-wide `deno lint` and `npx jsr publish --dry-run` still cannot run in the sandbox (registry.npmjs.org 403); the 6 npm/jsr-dependent test files remain unexercised. They do not import budget-check.ts or window-meter.ts and deno.lock/prioritization.ts are untouched, so residual risk is confined to the deno.json export/publish list, which jsr-check.yml will exercise on the PR. Disclosed correctly in REPORT and result.json.",
+    "Calendar windows are epoch-anchored (168h resets Thursday 00:00 UTC); `anchor` is injectable in code but there is no `--anchor` CLI flag. Documented as a deliberate scope choice; harmless until a ledger is actually supplied.",
+    "docs/behavioral-prioritization-delivered.md still claims metering was 'delivered reflexively' via an `api_spend` table; the patch does not touch that doc. Called out in the comment as a different meter; owner may want to reconcile.",
+    "spike-behavioral-prioritization.md still lists '#101 — wire window-burn metering' unchecked with stale numbering; intentionally left as a historical record."
+  ],
+  "owner_actions": [
+    "Claim #10 via claim-ticket.yml (bounded-systems/.github) BEFORE opening the PR; #10 is currently open, unassigned, no linked branches — pr-claim will be red until it carries a live claim.",
+    "Push `claude/burndown-gpr-10` and open the PR against main; PR body must contain `Claim-issue: bounded-systems/gh-project-room#10` on its own line and must NOT contain `Closes #10`.",
+    "Treat jsr-check.yml on the PR as the first full run of `deno task check` / `deno task test` / `deno lint` and of the new `./window-meter` JSR export.",
+    "Optionally file the telemetry/OTLP emitter as its own issue and link it from #10 so the 'Depends on' has a real number; optionally reconcile docs/behavioral-prioritization-delivered.md's `api_spend` claim.",
+    "Decide the calendar anchor policy (epoch vs Monday 00:00 UTC) before any caller starts supplying a ledger; adding `--anchor` to budget-check.ts is a small follow-up."
+  ]
+}

@@ -1,0 +1,382 @@
+From 3c63bdf6ead6d9f06142c83020be674450573dbf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:10:51 +0000
+Subject: [PATCH] #1: prove the delta sync fetches only the delta
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The delta lane itself shipped in f3c0f61 (Search API) and 1b1683c
+(repository_dispatch), and the full pull dropped to ~15 points in 3f9285a
+(#57; measured 16 points on 2026-07-31, src/mirror.ts), but nothing
+exercised syncPullDelta: it shelled out to dolt, gh and rate_limit with no
+seam, so the closest test (closed-at-freshness) could only grep the source
+text.
+
+Add `DeltaIo` — sql / gh / graphqlLimit — as an optional second parameter
+defaulting to the live trio (no caller changes), report `fetched` (the size
+of the delta the search returned) in DeltaResult, and add
+test/sync-delta.test.ts: run a first sync against an in-memory mirror,
+change ONE issue on a scripted Search API, run again, and assert the
+second search is bounded by the first sync's cursor, returns exactly one
+issue, and issues exactly one UPDATE for that row. Also pins the
+delta-search metering, reopen clearing closed_at, unknown issues being
+counted not written, and the date-granularity cursor.
+
+No behaviour change on the live path. The full pull (mirror-sync.yml) runs
+every 6h, not weekly — the "weekly" wording in older comments nearby is
+stale and left untouched here.
+
+Closes #1
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ scripts/sync-delta.ts   |   2 +-
+ src/mirror.ts           |  45 ++++++---
+ test/sync-delta.test.ts | 214 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 249 insertions(+), 12 deletions(-)
+ create mode 100644 test/sync-delta.test.ts
+
+diff --git a/scripts/sync-delta.ts b/scripts/sync-delta.ts
+index 045dded..0a6b4e2 100644
+--- a/scripts/sync-delta.ts
++++ b/scripts/sync-delta.ts
+@@ -12,7 +12,7 @@
+ import { syncPullDelta } from "../src/mirror.ts";
+ 
+ const res = await syncPullDelta();
+-console.log(`delta: refreshed ${res.changed} changed item(s) since ${res.since} (0 GraphQL points).`);
++console.log(`delta: search returned ${res.fetched} issue(s) updated since ${res.since}; refreshed ${res.changed} mirror row(s) (0 GraphQL points).`);
+ if (res.newSeen > 0) {
+   console.log(`  ${res.newSeen} newly-changed issue(s) not yet on the mirror — the weekly full sync will add them.`);
+ }
+diff --git a/src/mirror.ts b/src/mirror.ts
+index bde6a80..f117f5a 100644
+--- a/src/mirror.ts
++++ b/src/mirror.ts
+@@ -1070,11 +1070,32 @@ export async function syncPull(estimatePoints?: number): Promise<SyncResult | Sy
+ // --- delta sync (#1): refresh only what changed, via the Search API ---
+ 
+ export interface DeltaResult {
++  readonly fetched: number; // issues the search returned — the size of the delta itself
+   readonly changed: number; // existing rows refreshed
+   readonly newSeen: number; // changed issues not yet on the mirror (weekly full-add covers these)
+   readonly since: string;
+ }
+ 
++/**
++ * The delta path's three effects, as a seam. Everything `syncPullDelta` does to
++ * the world goes through one of these, so a test can run the whole path against
++ * an in-memory mirror and a scripted Search API and observe EXACTLY what was
++ * fetched and written — the "second sync after one change touches only that
++ * delta" claim of #1 is otherwise unobservable without dolt, gh, and a token.
++ * The default is the live trio (dolt sql, gh, rate_limit); callers pass nothing.
++ */
++export interface DeltaIo {
++  readonly sql: (query: string) => Promise<string>;
++  readonly gh: (args: readonly string[]) => Promise<string>;
++  readonly graphqlLimit: () => Promise<GraphqlLimit>;
++}
++
++const liveDeltaIo: DeltaIo = {
++  sql: dsql,
++  gh: async (args) => (await pexecFile("gh", [...args], { maxBuffer: 32 * 1024 * 1024 })).stdout,
++  graphqlLimit: fetchGraphqlLimit,
++};
++
+ /**
+  * Cheap incremental refresh. The full pull measured 1,415 GraphQL points on the
+  * legacy `gh project item-list` path (the "~610" this comment used to claim was
+@@ -1090,19 +1111,21 @@ export interface DeltaResult {
+  * stale); open items keep their board status (Todo/In Progress/Blocked), which
+  * the full pull reconciles.
+  */
+-export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResult> {
++export async function syncPullDelta(org = "bounded-systems", io: DeltaIo = liveDeltaIo): Promise<DeltaResult> {
++  const rows = async <T>(query: string): Promise<T[]> =>
++    ((JSON.parse((await io.sql(query)) || "{}") as { rows?: T[] }).rows ?? []);
+   // Metered, not assumed. This path is believed to spend no GraphQL (Search is a
+   // separate budget), but it runs ~10x more often than the full pull, and it used
+   // to record `0`/`-1` as literals — so 174 of the last 192 runs told the ledger
+   // nothing. When points DID disappear between full syncs (2026-07-25: remaining
+   // fell to 935) there was no row to attribute them to. Measuring costs one free
+   // rate_limit call and turns "we assume this is free" into a checkable claim.
+-  const before = await fetchGraphqlLimit().catch(() => null);
+-  const last = await dsqlRows<{ synced_at: string }>(
++  const before = await io.graphqlLimit().catch(() => null);
++  const last = await rows<{ synced_at: string }>(
+     "SELECT synced_at FROM sync_log ORDER BY id DESC LIMIT 1",
+   );
+   const since = (last[0]?.synced_at ?? "2020-01-01 00:00:00").slice(0, 10); // date granularity
+-  const { stdout } = await pexecFile("gh", [
++  const stdout = await io.gh([
+     "search", "issues",
+     "--owner", org,
+     "--updated", `>=${since}`,
+@@ -1116,7 +1139,7 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
+     // its card moving stayed schedulable, which is #89 itself recurring.
+     "--json", "number,repository,title,state,isPullRequest,closedAt",
+     "--limit", "500",
+-  ], { maxBuffer: 32 * 1024 * 1024 });
++  ]);
+   const results = JSON.parse(stdout) as {
+     number: number; title: string; state: string; isPullRequest: boolean;
+     closedAt?: string | null;
+@@ -1124,7 +1147,7 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
+   }[];
+ 
+   const known = new Map(
+-    (await dsqlRows<{ item_id: string; repository: string; number: number }>(
++    (await rows<{ item_id: string; repository: string; number: number }>(
+       "SELECT item_id, repository, number FROM items WHERE origin='github'",
+     )).map((r) => [`${r.repository}#${r.number}`, r.item_id]),
+   );
+@@ -1142,19 +1165,19 @@ export async function syncPullDelta(org = "bounded-systems"): Promise<DeltaResul
+     // "closed", so a reopened item would silently never rank again. The two
+     // directions have to be symmetric or the field is write-once in practice.
+     sets.push(`closed_at = ${sqlDatetimeOrNull(r.closedAt)}`);
+-    await dsql(`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(id)}'`);
++    await io.sql(`UPDATE items SET ${sets.join(", ")} WHERE item_id = '${sqlEscape(id)}'`);
+     changed++;
+   }
+-  const after = before ? await fetchGraphqlLimit().catch(() => null) : null;
++  const after = before ? await io.graphqlLimit().catch(() => null) : null;
+   // -1 stays the "not sampled" sentinel, so a failed reading is distinguishable
+   // from a genuine zero-cost run rather than silently logging as free.
+   const cost = before && after ? Math.max(before.remaining - after.remaining, 0) : 0;
+   const remaining = after ? after.remaining : -1;
+-  await dsql(
++  await io.sql(
+     `INSERT INTO sync_log (synced_at, items_count, graphql_cost_points, graphql_remaining) VALUES (UTC_TIMESTAMP(), ${changed}, ${cost}, ${remaining})`,
+   );
+-  await dsql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'delta-search', ${cost})`);
+-  return { changed, newSeen, since };
++  await io.sql(`INSERT INTO api_spend (at, verb, points) VALUES (UTC_TIMESTAMP(), 'delta-search', ${cost})`);
++  return { fetched: results.length, changed, newSeen, since };
+ }
+ 
+ // --- reads (no GitHub credential, pinned to the mirror) ---
+diff --git a/test/sync-delta.test.ts b/test/sync-delta.test.ts
+new file mode 100644
+index 0000000..9f20a51
+--- /dev/null
++++ b/test/sync-delta.test.ts
+@@ -0,0 +1,214 @@
++/**
++ * #1's claim, made checkable: a second sync after ONE item changed fetches only
++ * that delta, and writes only that row.
++ *
++ * The delta lane shipped in f3c0f61 (Search API, ~1 GraphQL point vs the
++ * full board pull) and 1b1683c (event-driven via repository_dispatch), but
++ * nothing exercised `syncPullDelta` itself — the only test near it greps source
++ * text (closed-at-freshness). The path shells out to dolt, gh and rate_limit, so
++ * these tests drive it through the `DeltaIo` seam: an in-memory mirror that
++ * understands the five statements the path issues, and a scripted Search API
++ * that filters by the `--updated` qualifier the way GitHub does.
++ *
++ * What is asserted is the SHAPE of the traffic, not just the counters: which
++ * `--updated` bound went out, how many issues came back, and which `UPDATE`s hit
++ * the mirror. A counter alone could be right for the wrong reason.
++ *
++ * Scope, honestly: the delta lane refreshes github-owned fields on rows the
++ * mirror already has. Brand-new items and board FIELD changes are the full
++ * pull's job (mirror-sync.yml, every 6h; CLAUDE.md, "delta lane"), and that is
++ * asserted here too —
++ * an unknown issue is counted in `newSeen` and NOT written.
++ */
++
++import { strict as assert } from "node:assert";
++import { test } from "node:test";
++import { type DeltaIo, type GraphqlLimit, syncPullDelta } from "../src/mirror.ts";
++
++interface FakeIssue {
++  number: number;
++  repository: { name: string };
++  title: string;
++  state: "open" | "closed";
++  isPullRequest: boolean;
++  closedAt: string | null;
++  updatedAt: string; // ISO — what GitHub's `updated:` qualifier filters on
++}
++
++interface Row { item_id: string; repository: string; number: number; title: string; status: string; closed_at: string | null }
++
++/** In-memory mirror + scripted Search API, recording every effect. */
++function fakeWorld(opts: { items: Row[]; github: FakeIssue[]; lastSync?: string; remaining?: number }) {
++  const syncLog: { synced_at: string; items_count: number; cost: number; remaining: number }[] = [];
++  const apiSpend: { verb: string; points: number }[] = [];
++  const updates: string[] = [];
++  const ghCalls: string[][] = [];
++  let sqlCalls = 0;
++  let now = opts.lastSync ?? "2026-09-01 10:00:00";
++  if (opts.lastSync) syncLog.push({ synced_at: opts.lastSync, items_count: 0, cost: 0, remaining: -1 });
++  const limit: GraphqlLimit = { remaining: opts.remaining ?? 4990, limit: 5000, resetAt: "2026-09-01T11:00:00Z" };
++
++  const io: DeltaIo = {
++    async sql(q) {
++      sqlCalls++;
++      if (q.startsWith("SELECT synced_at FROM sync_log")) {
++        const last = syncLog.at(-1);
++        return JSON.stringify({ rows: last ? [{ synced_at: last.synced_at }] : [] });
++      }
++      if (q.startsWith("SELECT item_id, repository, number FROM items")) {
++        return JSON.stringify({ rows: opts.items.map(({ item_id, repository, number }) => ({ item_id, repository, number })) });
++      }
++      if (q.startsWith("UPDATE items SET ")) {
++        updates.push(q);
++        const id = /WHERE item_id = '([^']+)'$/.exec(q)?.[1];
++        const row = opts.items.find((r) => r.item_id === id);
++        assert.ok(row, `UPDATE targets a row the mirror has: ${q}`);
++        const title = /title = '((?:[^'\\]|\\.)*)'/.exec(q)?.[1];
++        if (title !== undefined) row.title = title.replace(/\\'/g, "'");
++        const status = /status = '([^']+)'/.exec(q)?.[1];
++        if (status) row.status = status;
++        const closed = /closed_at = (NULL|'[^']+')/.exec(q)?.[1];
++        assert.ok(closed, "every UPDATE assigns closed_at (reopen must clear it)");
++        row.closed_at = closed === "NULL" ? null : closed.slice(1, -1);
++        return "";
++      }
++      if (q.startsWith("INSERT INTO sync_log")) {
++        const m = /VALUES \(UTC_TIMESTAMP\(\), (-?\d+), (-?\d+), (-?\d+)\)/.exec(q);
++        assert.ok(m, `sync_log insert shape: ${q}`);
++        syncLog.push({ synced_at: now, items_count: +m[1], cost: +m[2], remaining: +m[3] });
++        return "";
++      }
++      if (q.startsWith("INSERT INTO api_spend")) {
++        const m = /'([a-z-]+)', (-?\d+)\)/.exec(q);
++        assert.ok(m, `api_spend insert shape: ${q}`);
++        apiSpend.push({ verb: m[1], points: +m[2] });
++        return "";
++      }
++      throw new Error(`unexpected SQL from the delta path: ${q}`);
++    },
++    async gh(args) {
++      ghCalls.push([...args]);
++      assert.deepEqual(args.slice(0, 2), ["search", "issues"], "the delta lane is the Search API, not GraphQL");
++      const i = args.indexOf("--updated");
++      assert.ok(i > 0, "search must be bounded by --updated");
++      const bound = /^>=(.+)$/.exec(args[i + 1])?.[1];
++      assert.ok(bound, `--updated must be a lower bound: ${args[i + 1]}`);
++      const sinceMs = Date.parse(bound.length === 10 ? `${bound}T00:00:00Z` : bound);
++      const hits = opts.github.filter((g) => Date.parse(g.updatedAt) >= sinceMs);
++      return JSON.stringify(hits.map(({ updatedAt: _u, ...rest }) => rest));
++    },
++    async graphqlLimit() {
++      return limit;
++    },
++  };
++
++  return {
++    io, syncLog, apiSpend, updates, ghCalls,
++    get sqlCalls() { return sqlCalls; },
++    /** Advance the fake clock; the next sync_log row lands at this instant. */
++    tick(to: string) { now = to; },
++  };
++}
++
++const board = (): Row[] => [
++  { item_id: "PVTI_a", repository: "alpha", number: 1, title: "one", status: "Todo", closed_at: null },
++  { item_id: "PVTI_b", repository: "alpha", number: 2, title: "two", status: "In Progress", closed_at: null },
++  { item_id: "PVTI_c", repository: "beta", number: 7, title: "seven", status: "Done", closed_at: "2026-08-20 09:00:00" },
++];
++
++const github = (): FakeIssue[] => [
++  { number: 1, repository: { name: "alpha" }, title: "one", state: "open", isPullRequest: false, closedAt: null, updatedAt: "2026-08-15T12:00:00Z" },
++  { number: 2, repository: { name: "alpha" }, title: "two", state: "open", isPullRequest: false, closedAt: null, updatedAt: "2026-08-30T12:00:00Z" },
++  { number: 7, repository: { name: "beta" }, title: "seven", state: "closed", isPullRequest: false, closedAt: "2026-08-20T09:00:00Z", updatedAt: "2026-08-20T09:00:00Z" },
++];
++
++test("second sync after a single-item change fetches only that delta and writes only that row", async () => {
++  const gh = github();
++  const w = fakeWorld({ items: board(), github: gh });
++
++  // First sync: nothing has ever synced, so the bound is the epoch-ish floor and
++  // the whole (three-item) board comes back. This is the baseline, not the claim.
++  const first = await syncPullDelta("bounded-systems", w.io);
++  assert.equal(first.since, "2020-01-01");
++  assert.equal(first.fetched, 3);
++  assert.equal(first.changed, 3);
++  assert.equal(w.syncLog.length, 1, "the first sync records its cursor in sync_log");
++  w.updates.length = 0;
++
++  // ONE thing changes on GitHub after the first sync: alpha#2 is closed.
++  w.tick("2026-09-02 15:00:00");
++  const two = gh.find((g) => g.repository.name === "alpha" && g.number === 2)!;
++  two.state = "closed";
++  two.title = "two (fixed)";
++  two.closedAt = "2026-09-02T14:30:00Z";
++  two.updatedAt = "2026-09-02T14:30:00Z";
++
++  const second = await syncPullDelta("bounded-systems", w.io);
++
++  // The bound sent to GitHub is the FIRST sync's cursor, not the floor.
++  const args = w.ghCalls[1];
++  assert.equal(args[args.indexOf("--updated") + 1], ">=2026-09-01", "the search is bounded by the last sync_log cursor");
++  assert.equal(second.since, "2026-09-01");
++
++  // Only the delta came back, and only the delta was written.
++  assert.equal(second.fetched, 1, "the Search API returned exactly the one changed issue");
++  assert.equal(second.changed, 1);
++  assert.equal(second.newSeen, 0);
++  assert.equal(w.updates.length, 1, "exactly one UPDATE reached the mirror");
++  assert.match(w.updates[0], /WHERE item_id = 'PVTI_b'$/);
++  assert.match(w.updates[0], /status = 'Done'/, "closed → Done is the transition the delta lane owns");
++  assert.match(w.updates[0], /closed_at = '2026-09-02 14:30:00'/);
++  assert.match(w.updates[0], /title = 'two \(fixed\)'/);
++
++  assert.equal(w.syncLog.length, 2, "each delta run appends its own cursor");
++  assert.equal(w.syncLog[1].items_count, 1);
++});
++
++test("the delta lane is metered as delta-search and costs no GraphQL", async () => {
++  const w = fakeWorld({ items: board(), github: github(), lastSync: "2026-09-01 10:00:00", remaining: 4321 });
++  const res = await syncPullDelta("bounded-systems", w.io);
++  assert.equal(res.fetched, 0, "nothing updated since the cursor — an idle hour fetches nothing");
++  assert.equal(w.updates.length, 0);
++  assert.deepEqual(w.apiSpend, [{ verb: "delta-search", points: 0 }]);
++  assert.equal(w.syncLog.at(-1)?.cost, 0);
++  assert.equal(w.syncLog.at(-1)?.remaining, 4321, "graphql_remaining is the LIVE reading, not a literal");
++});
++
++test("a reopen in the delta clears closed_at, and status is left to the board", async () => {
++  const items = board();
++  const gh = github();
++  const seven = gh.find((g) => g.number === 7)!;
++  seven.state = "open";
++  seven.closedAt = null;
++  seven.updatedAt = "2026-09-02T08:00:00Z";
++  const w = fakeWorld({ items, github: gh, lastSync: "2026-09-01 10:00:00" });
++  const res = await syncPullDelta("bounded-systems", w.io);
++  assert.equal(res.fetched, 1);
++  assert.equal(w.updates.length, 1);
++  assert.match(w.updates[0], /closed_at = NULL/, "reopen must CLEAR closed_at or the item never ranks again");
++  assert.doesNotMatch(w.updates[0], /status = /, "an open item keeps its board status; the full pull reconciles");
++  assert.equal(items.find((r) => r.item_id === "PVTI_c")?.closed_at, null);
++});
++
++test("a changed issue the mirror does not have is counted, not written", async () => {
++  const gh = github();
++  gh.push({ number: 99, repository: { name: "alpha" }, title: "brand new", state: "open", isPullRequest: false, closedAt: null, updatedAt: "2026-09-02T08:00:00Z" });
++  const w = fakeWorld({ items: board(), github: gh, lastSync: "2026-09-01 10:00:00" });
++  const res = await syncPullDelta("bounded-systems", w.io);
++  assert.equal(res.fetched, 1);
++  assert.equal(res.newSeen, 1, "new items are the full pull's job (every 6h) — they need a project-item id search can't give");
++  assert.equal(res.changed, 0);
++  assert.equal(w.updates.length, 0);
++});
++
++test("the cursor is the last sync_log row at date granularity", async () => {
++  // `since` is truncated to the date, so an item changed EARLIER THE SAME DAY as
++  // the last sync is re-fetched. That is a deliberate over-fetch (a handful of
++  // rows) rather than an under-fetch; pin it so a future tightening is a choice.
++  const gh = github();
++  gh[0].updatedAt = "2026-09-01T09:00:00Z"; // before the 10:00 cursor, same day
++  const w = fakeWorld({ items: board(), github: gh, lastSync: "2026-09-01 10:00:00" });
++  const res = await syncPullDelta("bounded-systems", w.io);
++  assert.equal(res.since, "2026-09-01");
++  assert.equal(res.fetched, 1, "same-day-but-earlier is re-fetched at date granularity");
++});
+-- 
+2.43.0
+

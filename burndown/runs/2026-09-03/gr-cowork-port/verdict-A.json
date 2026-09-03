@@ -1,0 +1,27 @@
+{
+  "id": "gr-cowork-port",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Both patches `git am` cleanly onto a fresh clone of bounded-systems/guest-room main (e6c3896, still the tip on 2026-09-03). Every claim in REPORT.md reproduced from the patch files alone: `bun test` 130 pass / 0 fail / 12 files with no podman on PATH (main alone is 121), the 9 new tests (6 socket-level in nopodman.test.ts, 3 feature scenarios) actually run — no skip/todo/only anywhere, and the allowlist test drives a real `Bun.listen` unix socket through `call()` rather than a mock. `grep -c 'G[0-9]'` on the doc = 11 (scout verify_command satisfied). `deno check profiles/*.ts` and `deno publish --dry-run` both pass; the only failure I hit (`npm:@types/node` resolution) reproduces identically on untouched main and is a sandbox artifact of package.json+no node_modules, cured by DENO_NO_PACKAGE_JSON=1. I went further than the worker could: I ran descriptor-kit `check .` for real (borrowing an on-disk zod@4.4.3 matching its lockfile) — `no drift`, and it correctly flags DRIFT when I tamper a digest, so the hand-regenerated README rows are genuine; `git hash-object` for guest-room.test.ts/features/nopodman.feature match the README digests (02cdb5453e3b / 6d30b24d5b6e). Engine files mod/gherkin/protocol/daemon have zero diff and the 'names no guest' tests pass. Cross-repo factual claims in the doc check out against claude-box 33776c8: no NETD_ALLOW_INJECTING_PARENT anywhere, no work.sh, run-netd.sh hard-requires podman/socat/squid, netd.ts imports ../lib/runtime. There is no issue body (off-board item, none exists); the scout's stated scope (honest gap list + nopodman profile + fail-closed allowlist door test, no engine changes) is met literally, and the patch is explicit that the allowlist door is a decision oracle rather than enforcement, so no 'passed' claim rests on a stand-in pretending to be the real thing. Nothing rises to must-fix.",
+  "evidence": [
+    "cd /tmp/verify-A/gr-cowork-port && git am 0001-*.patch 0002-*.patch → both applied on e6c3896; git diff main --stat: 10 files, +398/-11, no engine files",
+    "bun test (no podman, bun 1.3.13) → ' 130 pass / 0 fail / 40224 expect() calls / Ran 130 tests across 12 files'",
+    "bun test nopodman.test.ts guest-room.test.ts → 33 pass 0 fail; grep skip|todo|.only in new test/feature files → no matches",
+    "grep -c 'G[0-9]' docs/working-in-a-cowork-sandbox.md → 11",
+    "DENO_NO_PACKAGE_JSON=1 deno check mod.ts profiles/*.ts → Check ok; deno publish --dry-run --allow-dirty → 'Success Dry run complete' (without the env var, main also fails with npm:@types/node — sandbox artifact)",
+    "git clone descriptor-kit + zod@4.4.3 copied from /tmp/work/prx-360 (lockfile wants ^4.4.3); bun /tmp/verify-A/dk/src/cli.ts check . → 'descriptor: ✓ no drift'; tampering README digest → '✗ DRIFT in README.md' (check is live, not vacuous)",
+    "git hash-object guest-room.test.ts features/nopodman.feature → 02cdb5453e3b, 6d30b24d5b6e = README.md:188,194",
+    "guest-room.test.ts:203-212 engineFiles regex /podman|netd|.../ — git diff main -- mod.ts gherkin.ts protocol.ts daemon.ts is empty",
+    "mod.ts:240-253 checkCaveats returns not-ok for uninterpretable/unknown caveat keys → allowlist door fails closed; profiles/allowlist-door.ts:52 refuses a grant with no host= caveat",
+    "/tmp/scout/cb (claude-box 33776c8): grep -rn NETD_ALLOW_INJECTING_PARENT → none outside vendored guest-room docs; ls work.sh → missing; netd/run-netd.sh:28,42 podman required; netd/netd.ts:31-37 imports ../lib/runtime and ../guest-room/mod.ts",
+    "Note: /tmp/verify/gr-cowork-port was concurrently reset by another verifier (branch verify-b appeared); all evidence above is from an isolated clone at /tmp/verify-A/gr-cowork-port"
+  ],
+  "must_fix": [],
+  "nits": [
+    "profiles/nopodman.ts:38 runDir falls back to `${env.HOME ?? \"/tmp\"}/.guest-room/run` while the comment on line 37 and the doc say 'never /tmp' — with HOME unset the parent /tmp is world-writable and a stranger could pre-create /tmp/.guest-room; assertPrivateDir only stats the immediate dirname so it would not catch that. Throw on missing HOME instead.",
+    "guest-room.test.ts noWallsEnv mkdtemps a fresh run dir per scenario and never removes it (nopodman.test.ts does clean up); leaves /tmp/gr-feature-* litter after each run.",
+    "REPORT.md says descriptor-kit `check .` could not be run; it can (zod is the only dep and a matching copy is on disk) and it passes — the report undersells its own verification.",
+    "assertPrivateDir checks only other-writable (0o002); group-writable dirs are accepted. Harmless in a uid-0 sandbox, worth a comment."
+  ]
+}

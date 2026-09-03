@@ -1,0 +1,26 @@
+{
+  "id": "gr-cowork-port",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/guest-room (main still e6c3896 on 2026-09-03) into /tmp/final/gr-cowork-port; all three patches `git am` cleanly (b9b0e2f, 3f896a3, fe8a90a; 11 files, +437/-12, engine files mod/gherkin/protocol/daemon have zero diff). Re-ran the prior verifiers' checks: `bun test` with no podman on PATH, uid 0 -> 131 pass / 0 fail / 12 files (matches REPORT and verify.txt); `bun test guest-room.test.ts nopodman.test.ts` -> 34 pass and no /tmp/gr-feature-* left behind; `grep -c 'G[0-9]'` on the doc = 11; no skip/todo/.only in the new test/feature files; `DENO_NO_PACKAGE_JSON=1 deno check profiles/*.ts` -> Check ok and `deno publish --dry-run --allow-dirty` -> Success; descriptor-kit `check .` (the on-disk copy verifier A used) -> 'no drift'; git hash-object pins for guest-room.test.ts (756d38873cb6) and features/nopodman.feature (6d30b24d5b6e) match README rows 187/194. Every must_fix from verdict-B is addressed: B1 `.release/nopodman-profile.md` exists with `bump: minor` in the same format as `.release/grant-in-call.md`; B3 `sameHostDoor` appends `sameHostNote(path, envKey)` to `use`, `grantedDoorLines` prints `use` at the end of each card, tests assert the note for a catalogued door and for the uncatalogued `/run/<name>.sock` fallback, and the doc states `$<NAME>_SOCK` is authoritative; B2 (tracking issue / claim-ticket.yml / `Closes #N`) is correctly classified as an owner process item since the sandbox has no GitHub credentials and it is listed under 'Before merging (owner)'. Verdict-A had no must_fix; its nits are taken (runDir throws on missing HOME instead of /tmp fallback, tested; afterAll cleanup; assertPrivateDir scope comment; descriptor-kit actually run). The ready-to-paste comment contains no false statement: 131/131, engine untouched, 'deno publish --dry-run passed locally (CI's bunx jsr publish --dry-run not run offline)', no-drift, no tracking issue, and the doc corrections (NETD_ALLOW_INJECTING_PARENT and work.sh now described as non-existent, gaps G4/G5) are accurate against the doc text.",
+  "resolved": [
+    "B1: .release/nopodman-profile.md added (bump: minor, names both new entrypoints) — commit fe8a90a",
+    "B3: same-host GRANTED cards now end with 'Same-host: this door is the unix socket at <real path> ($<NAME>_SOCK); any other path named here does not exist in this launch.' — profiles/nopodman.ts sameHostDoor/sameHostNote, tested in nopodman.test.ts for catalogued and uncatalogued doors, documented as authoritative in docs/working-in-a-cowork-sandbox.md",
+    "A-nit/B-nit: runDir throws when neither XDG_RUNTIME_DIR nor HOME is set (no /tmp fallback), tested",
+    "A-nit/B-nit: guest-room.test.ts removes per-scenario run dirs in afterAll — verified no /tmp/gr-feature-* after the run",
+    "A-nit: assertPrivateDir documents immediate-parent/other-writable scope",
+    "A-nit: descriptor-kit check . actually run -> no drift; README pin for guest-room.test.ts regenerated (756d38873cb6)",
+    "B-nit: report/comment now say deno publish --dry-run passed locally and name the real CI gate (bunx jsr publish --dry-run)"
+  ],
+  "still_open": [
+    "Gaps G1-G8 are documented substrate/cross-repo limits, not closed (by design of the task scope)",
+    "README tree lists only profiles/nopodman.ts ('+ its allowlist door'); profiles/allowlist-door.ts is a separate exported entrypoint (nit, not taken)",
+    "Two typed-expect TS2769s in nopodman.test.ts under strict tsc, same class as pre-existing interpose.test.ts (nit, not taken; harmless under bun test)",
+    "CI gates `bunx jsr publish --dry-run` and `mint plan` not runnable offline"
+  ],
+  "owner_actions": [
+    "Open a tracking issue and claim it via claim-ticket.yml; put `Closes #N` (or `Claim-issue: bounded-systems/guest-room#N`) in the PR body — pr-claim.yml fails closed otherwise",
+    "Push branch claude/burndown-gr-cowork-port (3 commits on main e6c3896) and open the PR; let CI run `bunx jsr publish --dry-run` and `mint plan` over .release/nopodman-profile.md",
+    "Cross-repo follow-ups G2/G4/G5 need a claude-box PR (claude-box vendors guest-room as a subdirectory)"
+  ]
+}

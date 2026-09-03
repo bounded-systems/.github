@@ -1,0 +1,28 @@
+$ deno check (jsr shimmed locally)
+[0m[32mCheck[0m schema.ts
+[0m[32mCheck[0m registry.ts
+[0m[32mCheck[0m assemble.ts
+[0m[32mCheck[0m verbs.ts
+[0m[32mCheck[0m status.ts
+[0m[32mCheck[0m check/parse.ts
+[0m[32mCheck[0m check/keeper-wire.ts
+[0m[32mCheck[0m check/scout-wire.ts
+[0m[32mCheck[0m check/concierge-wire.ts
+[0m[32mCheck[0m check/lattice.ts
+[0m[32mCheck[0m check/overlap.ts
+exit=0
+$ deno lint
+Checked 17 files
+$ deno fmt --check
+Checked 17 files
+exit=0
+$ deno test --allow-read (jsr shimmed locally)
+
+[0m[32mok[0m | 36 passed | 0 failed [0m[38;5;245m(296ms)[0m
+
+$ ! grep -q continue-on-error .github/workflows/ci.yml
+exit=0
+$ python yaml parse ci.yml
+['contract-check', 'deno', 'overlap', 'status'] False
+$ nix flake check
+nix: not installed (nixos.org / cache.nixos.org / install.determinate.systems blocked by sandbox egress — cannot run)

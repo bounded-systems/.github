@@ -1,0 +1,33 @@
+{
+  "id": "trellis-2",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "medium",
+  "reason": "Independently reproduced from a fresh clone (/tmp/verify/trellis-2-A): all three patches `git am` cleanly onto current origin/main 40ec246 and touch only ci.yml, README.md, flake.nix, flake.lock (no TypeScript). The issue's four acceptance criteria hold: door-kit#21 and door-keeper#15 are both Closed upstream; door-keeper/door-kit inputs are re-pinned (0002) to revs that are exactly the current HEAD of main for all nine bumped/added repos (I cloned each and compared); continue-on-error is gone from ci.yml (grep exit=1, YAML parses with no job carrying it). The hand-computed flake.lock is not a stand-in: I wrote my own NAR serializer and recomputed narHash + committer-timestamp lastModified for all 11 non-nixpkgs entries, and every one matches the patched lock byte-for-byte — including the two untouched nix-generated entries (fs, seam-check), which validates the method against real nix output; no .gitattributes/submodules that would make a GitHub tarball differ. I re-ran all seven checks exactly as the flake derivations invoke them (deno 2.9.6, --no-remote, the repo's own check/*.ts, no shims) against the inputs checked out at the NEW pins: keeper-wire/scout-wire/concierge-wire CONFORM, door-kit-mirror byte-identical, sanctioned-reader-seam, descriptor-honesty and lattice all exit 0; deno lint and fmt --check pass unmodified. The signed status branch (8b2dc83, built by CI with real nix from main 40ec246) records pass for every flake check at the OLD pins, so 0001 alone is also green. The residual gap, honestly disclosed in the REPORT, is that `nix flake check` itself was not executed by the worker or by me (nix uninstallable in this sandbox; the deno job's `deno check`/`deno test` are also unreproducible here because jsr/npm are 403 — the worker's 36-test pass used a local @std/assert shim and vendored jsr clones, but the patch changes no .ts file so that job's outcome is unaffected). The only failure mode left is a nix-level eval/fetch surprise at the new pins; with revs, narHashes and timestamps all independently confirmed and every derivation's script reproduced, that risk is low but nonzero, hence medium rather than high confidence.",
+  "evidence": [
+    "cd /tmp/verify/trellis-2-A && git am /home/claude/burndown/out/trellis-2/000*.patch -> 3 commits applied on 40ec246, `git status --short` empty",
+    "git diff --stat 40ec246 HEAD -> .github/workflows/ci.yml | README.md | flake.lock | flake.nix (4 files); no .ts touched",
+    "python yaml.safe_load(ci.yml): {'deno': False, 'overlap': False, 'contract-check': False, 'status': False} for 'continue-on-error'; grep -n continue-on-error .github/workflows/ci.yml -> exit=1",
+    "WebFetch github.com/bounded-systems/trellis/issues/2 -> AC: both upstream issues resolved; door-keeper+door-kit inputs updated; nix flake check succeeds with keeper-wire passing; continue-on-error removed",
+    "WebFetch door-kit#21 -> Status: Closed (marked Done); WebFetch door-keeper#15 -> Status: Closed, resolved by door-keeper PR #32",
+    "git clone of concierge-wire, door-concierge, door-keeper, door-kit, door-scout, drift-gate, guest-room, keeper-wire, scout-wire: HEAD of main == rev in patched flake.lock for all 9 (e.g. door-keeper 5984e37dd96abc530da96874fc1d0f1d0acd50b7, door-kit b817c0750ecbf72fc08eaa1d2b6a948424de440b, keeper-wire 9d5bec6e2ac563b996b3a5441893ec8c2f54a7b2)",
+    "/tmp/verify/nar_A.py (independent NAR sha256 implementation) + `git show -s --format=%ct`: narHash OK + lastModified OK for all 11 entries concierge-wire, door-concierge, door-keeper, door-kit, door-scout, drift-gate, fs, guest-room, keeper-wire, scout-wire, seam-check (fs and seam-check are pre-existing nix-generated entries -> method validated)",
+    "no .gitattributes or .gitmodules in any of the 11 input repos",
+    "deno run --no-remote --allow-read check/keeper-wire.ts <keeper-wire@9d5bec6>/manifest.json <door-keeper@5984e37>/keeperd.ts <door-kit@b817c07>/lib/keeper.ts -> 'keeper-wire: CONFORMS' exit=0",
+    "check/scout-wire.ts -> CONFORMS exit=0; check/concierge-wire.ts -> CONFORMS exit=0; diff -q door-keeper/lib/{keeper,runtime}.ts door-kit/lib/{keeper,runtime}.ts -> exit=0 both",
+    "check/sanctioned-reader-seam.ts -> 'fs UPHOLDS its claim' exit=0; check/descriptor-drift.ts drift-gate@af65bea guest-room@e6c3896 -> 'guest-room UPHOLDS its descriptor — 10 claims' exit=0; check/lattice.ts -> '✓' exit=0",
+    "deno lint -> Checked 17 files exit=0; deno fmt --check -> Checked 17 files exit=0 (unmodified)",
+    "deno task check / deno task test -> 403 'Host not in allowlist: registry.npmjs.org' (not reproducible here; patch changes no .ts so the deno job is unaffected)",
+    "git show origin/status:status.json (commit 8b2dc83 'status: 40ec246...'): keeper-wire pass, scout-wire pass, concierge-wire pass, door-kit-mirror pass, sanctioned-reader-seam pass, descriptor-honesty pass; trellis-kit-lattice fail (registry/flake name mismatch, not a flake check output — as REPORT states)",
+    "WebFetch actions/runs/33282224080 (main 40ec246): deno, overlap, contract-check, status all Success",
+    "keeper-wire manifest.json at 9d5bec6: import-and-push params include 'ledgerRef'; door-kit lib/keeper.ts:300 sends ledgerRef; door-keeper keeperd.ts:390-392 derives manifestDigest from CLAUDE_BOX_CAPABILITIES env (no params.manifestDigest read) — the upstream resolution is agreement-side, consistent with door-kit#21 being closed",
+    "nix: `which nix` -> not found; `nix flake check` not executed by worker or verifier (REPORT discloses this)"
+  ],
+  "must_fix": [],
+  "nits": [
+    "flake.nix keeper-wire comment (line ~86) still says 'via the projected specs/keeper-wire.json manifest' — that file no longer exists (manifest now comes from the keeper-wire input); patch 0001 retired other stale comments but left this one.",
+    "README still references specs/keeperd.ts / specs/keeper-wire.json / `deno task gen` (REPORT acknowledges; out of scope for #2).",
+    "AC #3 ('nix flake check succeeds') is only proven by CI at the OLD pins (status branch) and by script-level reproduction at the NEW pins; the PR's contract-check job — now blocking — is the first real nix execution at the new lock. If a maintainer distrusts the hand-computed lock, `nix flake lock` regenerates identical entries (verified by hash reproduction), or apply 0001 alone.",
+    "status.json's trellis-kit-lattice 'fail' (registry says verified:true but no checks.<sys>.trellis-kit-lattice output) remains and will keep showing red in the status projection; unrelated to this gate but worth its own issue as the REPORT suggests."
+  ]
+}

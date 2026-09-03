@@ -1,0 +1,24 @@
+{
+  "id": "dev-contracts-2",
+  "feasible": false,
+  "reason": "The issue's concrete acceptance criterion is dismissing 2 GitHub Secret Scanning alerts as 'Used in tests' in the repo's Security tab (or via the secret-scanning REST API), which requires GitHub write/security-alert credentials the sandbox does not have. The other two criteria are a decision (history scrub, explicitly declined) and 'fold .trunk hygiene into the broader rework', which is open-ended and unspecified. The repo's HEAD is already clean of the fixture keys, .trunk/plugins/ is already gitignored, and trunk is not installed in the sandbox (and cannot be installed: trunk.io downloads are outside github.com + package registries), so the verify criterion 'Trunk check runs clean on fixtures' cannot be executed here either. Only a small optional code change (a scoped lint.ignore in .trunk/trunk.yaml) is doable from the sandbox, and it does not close the issue.",
+  "current_state": "Clone at /tmp/scout/dev-contracts-2 (depth 50, HEAD 3f1d3e2 'ci: adopt the repaired pr-claim caller (#22)'). The offending commits 41f47c4 / cd4c69b are older than the shallow window and .trunk/plugins/ appears in no tracked tree in the window; `git ls-files .trunk` shows only .trunk/trunk.yaml and .trunk/configs/{.jsonlintrc,.prettierrc,.rubocop.yml,.standard.yml,.yamllint.yml,schema.json}. /tmp/scout/dev-contracts-2/.gitignore (generated from contracts.toml) already ignores .trunk/plugins/, .trunk/actions, .trunk/logs, .trunk/notifications, .trunk/out, .trunk/tools (and the templates/trunk/ equivalents). /tmp/scout/dev-contracts-2/.trunk/trunk.yaml enables standardrb, yamllint, git-diff-check, deno; plugin source trunk-io/plugins@v1.6.7; it has no lint.ignore block. /tmp/scout/dev-contracts-2/.github/workflows/ci.yml runs only deno check/test/publish --dry-run, no trunk step. /tmp/scout/dev-contracts-2/mise.toml defines trunk-check/trunk-fmt/sync-trunk-versions tasks that reference tools/trunk/sync-trunk-versions.ts, tools/docs/generate-readme.ts and templates/trunk/.trunk/trunk.yaml, none of which exist in the repo (evidence the 'rework' is real drift). The secret-scanning alerts live in the GitHub Security tab, not in any file. Issue #2 is open with no comments and is NOT listed on claims.bounded.tools.",
+  "plan": [
+    "Requires a human/credentialed step: in GitHub -> bounded-systems/dev-contracts -> Security -> Secret scanning, dismiss the 2 open OpenSSH private key alerts with resolution 'Used in tests' and a comment citing issue #2 (or via REST: PATCH /repos/bounded-systems/dev-contracts/secret-scanning/alerts/{n} with {\"state\":\"resolved\",\"resolution\":\"used_in_tests\"} using a token with security_events scope).",
+    "Optional in-repo hardening (scoped to fixture paths only): add to /tmp/scout/dev-contracts-2/.trunk/trunk.yaml a `lint.ignore` entry with `linters: [ALL]` and `paths: ['.trunk/plugins/**', 'templates/trunk/.trunk/plugins/**']` so any local plugin cache with test_data fixtures never surfaces in `trunk check`; do not widen to '.trunk/**' or '**/test_data/**'.",
+    "Confirm the ignore is consistent with contracts.toml [structure.'.trunk'...] entries (the .gitignore is generated from contracts.toml, so any structure change belongs in /tmp/scout/dev-contracts-2/contracts.toml, not in .gitignore directly).",
+    "Record the history-scrub decision on issue #2 (declined; keys are scanner dummies) and leave the 'broader rework' checkbox for a separate issue since no spec for it exists.",
+    "Close issue #2 once the alerts are dismissed."
+  ],
+  "verify_command": "",
+  "est_size": "small",
+  "risks": [
+    "Alert dismissal is not doable without GitHub security_events credentials; a PR alone cannot satisfy the acceptance criteria.",
+    "trunk CLI is unavailable in the sandbox and its installer is outside the allowed network, so 'trunk check runs clean' cannot be demonstrated here; CI has no trunk job either.",
+    "An over-broad lint.ignore (e.g. '**/test_data/**') would mask real findings; keep it to .trunk/plugins/**.",
+    "The 'broader rework' is unscoped: mise.toml references tools/ and templates/ trees that do not exist, so attempting the rework risks scope creep far beyond the issue.",
+    "History scrub via git filter-repo + force-push on public main would break forks/clones and was explicitly declined; do not do it.",
+    "CLAUDE.md requires claiming via claim-ticket.yml before working; the issue is currently unclaimed and the sandbox has no credentials to claim it."
+  ],
+  "claimed": false
+}

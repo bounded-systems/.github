@@ -1,0 +1,14 @@
+{
+  "id": "fds-1",
+  "done": true,
+  "partial": true,
+  "patch_files": ["/home/claude/burndown/out/fds-1/0001-1-prove-the-delta-sync-fetches-only-the-delta.patch"],
+  "verify_passed": true,
+  "summary": "Delta sync already shipped (f3c0f61, 1b1683c, 3f9285a/#57); patch adds DeltaIo seam + test/sync-delta.test.ts proving a second sync after one change fetches and writes only that delta (5/5 pass; suite otherwise unchanged, 7 pre-existing env-only failures from blocked registry). Fix round: commit message cites 3f9285a not the unreachable efcd8d6, carries Closes #1, every-6h (not weekly) cadence corrected in test header and PR body; the deliverable is now a PR body, not an issue comment. Partial because closing #1 still needs owner-side process: claim #1 via claim-ticket.yml, open the PR, CI green.",
+  "unresolved": [
+    "PROCESS (owner): claim #1 (claim-ticket.yml) before opening the PR — pr-claim.yml fails closed on an unclaimed issue; then open the PR from claude/burndown-fds-1 with the body in REPORT.md",
+    "deno install --frozen impossible in sandbox (registry.npmjs.org not in allowlist): 7 pre-existing tests fail on ERR_MODULE_NOT_FOUND zod, identical on main; CI is the real gate",
+    "since cursor kept at date granularity (pinned by test, not tightened) to avoid changing the live hourly workflow",
+    "stale point figures (~610/1,314/1,415) and stale 'weekly' wording in pre-existing comments left untouched to keep the diff scoped; called out in the PR body"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "claude-box-245",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/claude-box-245/0001-fix-room-fully-qualify-the-claude-room-image-bounded.patch"
+  ],
+  "verify_passed": true,
+  "summary": "prx: claude-room image pinned to ghcr.io/bounded-systems/claude-box/claude-room:0.7.0 (was bare claude-box -> docker.io 404) with tests + changeset; grep verify + room spec/pod/podman tests pass. Addresses request 3 of claude-box#245 only; issue stays open (HOSTING.md docs + public packages are owner follow-ups).",
+  "unresolved": [
+    "Issue #245 is NOT fully closed by this patch: requests 1 (HOSTING.md: private packages, podman login ghcr.io with read:packages, digests) and 2 (public packages) remain open in claude-box. PR must not say 'Closes #245'.",
+    "Owner must claim the issue (claim-ticket.yml / assign + comment) before opening the prx PR; pr-claim.yml checks every PR.",
+    "Full prx test/typecheck/biome not runnable in sandbox (npm + jsr registries blocked); 6 room test files needing door-kit/ocap-provenance/verbspec unverified locally \u2014 rely on CI.",
+    "Tag pin (:0.7.0) instead of @sha256 digest: private GHCR package unreadable from sandbox; owner can repin + add to BOX_PINS."
+  ],
+  "partial": true
+}

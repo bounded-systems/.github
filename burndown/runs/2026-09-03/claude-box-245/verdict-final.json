@@ -1,0 +1,26 @@
+{
+  "id": "claude-box-245",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/prx main @ 9de9551 into /tmp/final/claude-box-245/prx: the regenerated patch (commit f8500ac, 5 files, +54/-3) applies cleanly with `git am`. All three must_fix items from verdict-B are addressed: (1) the patch now adds `.changeset/claude-room-image-fully-qualified.md` (`@bounded-systems/prx: patch`, valid package name, matches #981 precedent) and the exact grep logic from changeset-check.yml passes on the diff; (2) claiming the issue is correctly deferred as an owner/process item (no GitHub write access from the sandbox; listed first under 'Before merging (owner)'); (3) the REPORT now carries a PR description with 'Refs …#245 — addresses request 3 only; does NOT close the issue', the issue comment says the same, and result.json has `partial: true` with an explicit 'must not say Closes #245'. Verdict-A had no must_fix; its nit about HOSTING.md is explicitly deferred as an owner follow-up (separate repo/PR) and is now accurately described, not mislabeled. Re-ran the prior verifiers' checks: grep verify GREP_OK; spec 19/0, pod 14/0, podman 47/0, repin 5/0, concierged-room 7/0, pod-identity 5/0 (worker node_modules symlinked, real zod); regression proof reproduces (constant reverted to \"claude-box\" fails exactly spec 18/1 + pod 13/1, podman still 47/0 as REPORT notes); no added line >100 cols; the revised pod.test.ts regex accepts localhost/x, host:5000/x, ghcr.io refs incl. @sha256 and rejects claude-box, claude-box:latest, library/claude-box. Every factual claim in the ready-to-paste comment was re-checked: podman.ts:149 renders room.image verbatim; claude-box has only claude-box-v0.6.0/v0.7.0 tags (version.txt=0.8.0 unreleased, so 0.7.0 is the latest published); publish-ghcr.yml REGISTRY=ghcr.io/<owner>/claude-box, [claude-image]=claude-room, pushes ${ref}:${VERSION} with the bare version from release.yml; sibling constants BEADSD/KEEPERD/FORGE_D/CONCIERGED_ROOM_IMAGE exist; issue #245 is open, unlinked, and its three requested actions are exactly as the comment describes (request 3 explicitly allows 'a fully-qualified ghcr.io/.../claude-room default'). No false statement found. Remaining limits are honestly stated: tag existence on GHCR unverifiable (ghcr.io CONNECT 403 from sandbox), typecheck/biome/6 dependency-blocked room tests left to CI, tag pin rather than digest.",
+  "resolved": [
+    "B-must_fix-1: changeset added (.changeset/claude-room-image-fully-qualified.md, @bounded-systems/prx: patch); changeset-check.yml grep logic passes on the diff",
+    "B-must_fix-3: PR description and issue comment state 'addresses request 3 only, does NOT close #245'; result.json partial:true; no 'Closes #245' anywhere",
+    "B-nit: pod.test.ts regex relaxed to /^(localhost|[^/]*[.:][^/]*)\\// — verified accept/reject set",
+    "A-nit: result.json/REPORT now state explicitly that #245 stays open and HOSTING.md is an owner follow-up (no longer mislabeled)",
+    "Reproduction: git am clean on 9de9551; room suites 19/14/47/5/7/5 pass; regression proof reproduces; all added lines <=100 cols"
+  ],
+  "still_open": [
+    "Tag pin :0.7.0 instead of @sha256 digest + BOX_PINS entry (GHCR private and unreachable from sandbox; deliberately deferred, spec test accepts either)",
+    "bun run typecheck, biome check, and the 6 room test files needing door-kit/ocap-provenance/verbspec not runnable in sandbox — CI must confirm (low risk: string constant + regex tests)",
+    "Existence of ghcr.io/bounded-systems/claude-box/claude-room:0.7.0 on GHCR could not be confirmed directly (ghcr.io blocked); inferred from publish-ghcr.yml + v0.7.0 release",
+    "Issue requests 1 (HOSTING.md pull-path/auth/digest docs in claude-box) and 2 (public packages) remain open — out of scope for this prx patch"
+  ],
+  "owner_actions": [
+    "Claim claude-box#245 (dispatch claim-ticket.yml or assign + comment) before opening the prx PR; pr-claim.yml checks every PR. Check Front Desk for a concurrent PR first.",
+    "Open the prx PR from the patch with the provided description; use 'Refs bounded-systems/claude-box#245', never 'Closes #245'.",
+    "Confirm CI green: typecheck, biome, full bun test, changeset-check.",
+    "Optional follow-up: replace :0.7.0 with @sha256 digest and add claude-room to BOX_PINS in repin.ts once the digest is readable; bump on next claude-box release (0.8.0 once tagged).",
+    "Optional follow-up: small claude-box docs PR to HOSTING.md (private packages, podman login ghcr.io with read:packages, pinned ref/digest) to close request 1; decide on request 2 (public packages)."
+  ]
+}

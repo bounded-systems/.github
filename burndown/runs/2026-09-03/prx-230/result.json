@@ -1,0 +1,12 @@
+{
+  "id": "prx-230",
+  "done": true,
+  "patch_files": [],
+  "verify_passed": true,
+  "summary": "Already fixed on main (0312766/2701169/9e5424e): planner prompt embeds the pinned issue body; named test 'embeds the consumed source body' passes (91/91 in runtime_profiles.test.ts). No patch; closing comment in REPORT.md.",
+  "unresolved": [
+    "Full bun test / typecheck / lint not run: npm and JSR registries are policy-blocked (403 host_not_allowed) in this sandbox; only runtime_profiles.test.ts could be run by cloning its 5 @bounded-systems deps from GitHub.",
+    "Issue's secondary suggestions (demote parity-chain/XState system-prompt directives to advisory; scope-fidelity gate before validated=true) are not implemented — outside the task's stated scope.",
+    "Observation: --resume partial-draft path does not re-embed the source body (not the GH-230 scenario)."
+  ]
+}

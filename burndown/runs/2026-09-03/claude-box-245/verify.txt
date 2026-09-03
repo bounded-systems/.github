@@ -1,0 +1,48 @@
+### grep verify
+OK: no unqualified image: refs in packages/prx/src/room/*.ts; claude-room pinned to ghcr.io
+
+### fix round (commit f8500ac): re-run identical, plus changeset-check grep OK; see REPORT.md "Fix round"
+
+### bun test (room suite, per file)
+== packages/prx/test/room/concierged-room.test.ts
+ 7 pass
+ 0 fail
+== packages/prx/test/room/launch-attest.test.ts
+error: Cannot find module '@bounded-systems/door-kit/keeper' from '/tmp/work/claude-box-245/prx/packages/prx/src/keeperd/host.ts'
+ 0 pass
+ 1 fail
+== packages/prx/test/room/launch-pod.test.ts
+error: Cannot find module '@bounded-systems/ocap-provenance/attestation' from '/tmp/work/claude-box-245/prx/packages/prx/src/provenance/launch-store.ts'
+ 0 pass
+ 1 fail
+== packages/prx/test/room/lifecycle-runner.test.ts
+error: Cannot find module '@bounded-systems/ocap-provenance/attestation' from '/tmp/work/claude-box-245/prx/packages/prx/src/provenance/launch-store.ts'
+ 0 pass
+ 1 fail
+== packages/prx/test/room/pod-identity.test.ts
+ 5 pass
+ 0 fail
+== packages/prx/test/room/pod-secrets.test.ts
+error: Cannot find module '@bounded-systems/door-kit/keeper' from '/tmp/work/claude-box-245/prx/packages/prx/src/keeperd/host.ts'
+ 0 pass
+ 1 fail
+== packages/prx/test/room/pod-up-verb.test.ts
+error: ENOENT reading "/tmp/work/claude-box-245/prx/packages/prx/node_modules/@bounded-systems/verbspec"
+ 0 pass
+ 1 fail
+== packages/prx/test/room/pod.test.ts
+ 14 pass
+ 0 fail
+== packages/prx/test/room/podman-runtime.test.ts
+error: Cannot find module '@bounded-systems/door-kit/keeper' from '/tmp/work/claude-box-245/prx/packages/prx/src/keeperd/host.ts'
+ 0 pass
+ 1 fail
+== packages/prx/test/room/podman.test.ts
+ 47 pass
+ 0 fail
+== packages/prx/test/room/repin.test.ts
+ 5 pass
+ 0 fail
+== packages/prx/test/room/spec.test.ts
+ 19 pass
+ 0 fail

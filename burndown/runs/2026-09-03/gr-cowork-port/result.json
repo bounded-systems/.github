@@ -1,0 +1,17 @@
+{
+  "id": "gr-cowork-port",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/gr-cowork-port/0001-feat-profiles-the-nopodman-profile-a-room-with-doors.patch",
+    "/home/claude/burndown/out/gr-cowork-port/0002-docs-nopodman-profile-Cowork-sandbox-gap-list-G1-G8.patch",
+    "/home/claude/burndown/out/gr-cowork-port/0003-fix-profiles-same-host-cards-name-the-real-socket-re.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Added the nopodman profile (same-host doors whose rulebook cards name the real socket path, injecting-parent refusal, allowlist decision door) with feature+socket tests, a .release intent, and a G1-G8 gap list in docs/working-in-a-cowork-sandbox.md; 131/131 tests pass without podman, descriptor-kit check clean, engine files untouched. Partial: the merge is blocked on owner process items (tracking issue + claim + Closes #N) and the cross-repo claude-box gaps remain documented, not closed.",
+  "unresolved": [
+    "PROCESS (owner): no tracking issue exists; must be opened and claimed via claim-ticket.yml, and the PR must carry `Closes #N` or pr-claim.yml fails closed. No GitHub credentials in sandbox; branch not pushed.",
+    "G1-G8 are documented substrate/cross-repo gaps, not closed: no walls, no egress chokepoint, platform-owned reach/identity, injecting-parent rule not in claude-box netd, no work.sh launcher, same-uid peer creds, root-only bun, no transit grants",
+    "CI's `bunx jsr publish --dry-run` and `mint plan` not runnable offline; `deno publish --dry-run` (with DENO_NO_PACKAGE_JSON=1, a sandbox-only workaround) passes locally"
+  ],
+  "partial": true
+}

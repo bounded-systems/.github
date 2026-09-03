@@ -1,0 +1,23 @@
+{
+  "id": "prx-270",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Both must_fix items from verdict-B are resolved in the current patch and REPORT, and the two factual nits from verdict-A are fixed in the header prose. Re-verified on a fresh clone of origin/main @ 9de9551: `git am` applies cleanly (one commit, 2 files, +24 lines: .changeset/gh270-intake-source-doc-comment.md +6 and packages/prx/src/intake/intake-source.ts +18); every changed line under packages/ is a ` *` JSDoc line (zero non-comment changed lines); bun transpile of before/after is byte-identical (TRANSPILED_IDENTICAL); the scout header grep passes (HEADER_OK) and the five `export`s (lines 46/51/58/71/78) are all named in the header; longest header line 81 cols (biome lineWidth 100), no tabs/trailing whitespace. The changeset-check workflow's own grep logic, simulated against the diff, prints 'changeset present — OK.'; the empty-frontmatter format matches the repo's prior empty changesets (gh1068 precedent, consumed since) and release-cut.yml guard 3's awk treats an empty frontmatter as no version intent, so it will not block a release cut. Header claims re-checked against code: `deps.signer ?? realStatementSigner(requireSigner(\"intake\"))` (hard refusal without key), ScoutSourceError-only rewrap, `pinned <ref>` output, `return 0`; the reworded 'tests can run offline (with a dev key or an injected signer)' now matches the test file (PRX_PROVENANCE_KEY=dev + the 'refuses to pin without a signer' case), and 'an agent invoking the same command on the pipeline's behalf' no longer asserts a separate in-process caller. Git-history facts in REPORT (ef696de/#241, 395b45f, 92bfe92/#297, origin/GH-270 @ 7800b8e) all resolve. Issue #270 is still open, unassigned, no linked PR; its AC (top-of-file comment; typecheck clean; tests pass) is met on the first point and cannot change on the other two given identical transpiled output. The ready-to-paste comment contains no false statement: it correctly says the header pre-existed since ef696de, describes the +18-line in-place extension, states the empty changeset is included and no `add --empty` step is needed, and honestly says typecheck/check/test were not runnable in the sandbox. Residual: bun run typecheck/check/test still unexecuted anywhere (registry blocked here too) — correctly deferred to CI/applier, not claimed as passed (verify_passed=false).",
+  "resolved": [
+    "B.must_fix[1] empty changeset: .changeset/gh270-intake-source-doc-comment.md (empty frontmatter `---\\n---` + note) is in the amended commit; changeset-check grep logic passes on the fresh-clone diff; release-cut guard 3 will not count it as pending.",
+    "B.must_fix[2] REPORT/comment mention the changeset: 'What changed', 'Unresolved', 'Before merging (owner)' and the ready-to-paste comment all state the changeset is included and no extra step is needed.",
+    "A.nit 'stub signer' inaccuracy: header now says 'tests can run offline (with a dev key or an injected signer)', matching intake-source.test.ts.",
+    "A.nit/B.nit 'intake actor inside the pipeline' overstatement: header now says 'an agent invoking the same command on the pipeline's behalf'; sole caller remains pr-state/cli.ts."
+  ],
+  "still_open": [
+    "`bun run typecheck && bun run check && bun test packages/prx/test/intake/intake-source.test.ts` not executed by worker or any verifier (sandbox blocks registry.npmjs.org / npm.jsr.io); rests on the byte-identical-transpile argument and must be confirmed by CI.",
+    "Style nit (not a defect): issue asks for a 'one-paragraph' summary; header is ~32 lines with an 'Exports (GH-270)' list unlike sibling intake-*.ts headers. Explicitly retained by the worker because the burndown verify criterion requires every export be named; a maintainer may ask to condense.",
+    "Pre-existing field JSDoc on `IntakeSourceDeps.signer` still says 'Tests inject a stub' (not touched by this patch; outside its scope)."
+  ],
+  "owner_actions": [
+    "Run `.claude/org-repair.sh bootstrap` and claim #270 via claim-ticket.yml (or assign + comment) before opening the PR — needs GitHub credentials the sandbox lacks.",
+    "`git am` the patch on `main`, push `claude/burndown-prx-270`, open PR titled `docs(prx): expand intake-source.ts module doc comment (GH-270)` referencing #270; confirm `ci` and `changeset-check` are green and that typecheck/check/test pass in CI.",
+    "Delete the stale unmerged `origin/GH-270` branch (7800b8e) after merge.",
+    "Optionally drop the non-conventional `Claude-Session:` commit trailer when applying (harmless)."
+  ]
+}

@@ -1,0 +1,22 @@
+$ deno run --no-remote --allow-read check/keeper-wire.ts /tmp/work/trellis-2/inputs-head/keeper-wire/manifest.json /tmp/work/trellis-2/inputs-head/door-keeper/keeperd.ts /tmp/work/trellis-2/inputs-head/door-kit/lib/keeper.ts
+keeper-wire: CONFORMS — daemon + client match the agreement.
+exit=0
+$ deno run --no-remote --allow-read check/scout-wire.ts /tmp/work/trellis-2/inputs-head/scout-wire/manifest.json /tmp/work/trellis-2/inputs-head/door-scout/scoutd.ts /tmp/work/trellis-2/inputs-head/door-kit/lib/scout.ts
+scout-wire: CONFORMS — daemon + client match the agreement.
+exit=0
+$ deno run --no-remote --allow-read check/concierge-wire.ts /tmp/work/trellis-2/inputs-head/concierge-wire/manifest.json /tmp/work/trellis-2/inputs-head/door-concierge/concierged.ts /tmp/work/trellis-2/inputs-head/door-kit/lib/concierge.ts
+concierge-wire: CONFORMS — daemon + client match the agreement.
+exit=0
+$ diff -q /tmp/work/trellis-2/inputs-head/door-keeper/lib/keeper.ts /tmp/work/trellis-2/inputs-head/door-kit/lib/keeper.ts
+exit=0
+$ diff -q /tmp/work/trellis-2/inputs-head/door-keeper/lib/runtime.ts /tmp/work/trellis-2/inputs-head/door-kit/lib/runtime.ts
+exit=0
+$ deno run --no-remote --allow-read check/sanctioned-reader-seam.ts /tmp/work/trellis-2/inputs-head/seam-check/src /tmp/work/trellis-2/inputs-head/fs fs
+sanctioned-reader-seam: fs UPHOLDS its claim (prod ⊆ [node:fs, node:path], no ambient authority).
+exit=0
+$ deno run --no-remote --allow-read check/descriptor-drift.ts /tmp/work/trellis-2/inputs-head/drift-gate /tmp/work/trellis-2/inputs-head/guest-room guest-room
+descriptor-honesty: guest-room UPHOLDS its descriptor — 10 trellis claims checked against 10 README pin rows.
+exit=0
+$ deno run --no-remote --allow-read check/lattice.ts
+lattice: one agreement per pair, and a build DAG. ✓
+exit=0

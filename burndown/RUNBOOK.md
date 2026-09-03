@@ -22,14 +22,26 @@ strips tool inputs; observed 2026-09-03). Use plain parallel Agent calls,
     fix     <id>.fix       resolve must_fix items, regenerate patches, owner checklist in REPORT.md
     final   <id>.final     one skeptic confirms every must_fix resolved or correctly deferred
 
+    apply   (no template)  clone each target repo fresh, `git am` the patches, record the
+                           head SHA tested against. Use `git am`, not `git apply` —
+                           multi-commit series depend on order. A patch that does not
+                           apply is FAILED, not done.
+
 Verifiers default to REFUTED. Two lenses beat two identical refuters.
 Output of a run: `out/<id>/*.patch`, `REPORT.md` (with ready-to-paste issue
-comment + owner checklist), `result.json`, `verdict-*.json`, `out/SUMMARY.md`.
+comment + owner checklist), `result.json`, `verdict-*.json`, `out/SUMMARY.md`,
+and `out/APPLY.md` — the command table with the head SHA each set was tested
+against. Two traps APPLY.md must call out explicitly, both hit in run 01:
+an item can patch a *different repo* than its issue lives in (claude-box#245's
+defect was in prx), and a fix-round agent may rename patch files off the
+`000N-` convention (site-32).
 
 ## 3. Trigger
 Scheduled task "Burndown — nightly Desk work run" (06:00 UTC, fresh cloud
-session). It clones bounded-systems/.github and fails closed if
-`burndown/` is absent there. Same prompt works as a `/burndown` skill.
+session). It clones bounded-systems/.github; if this kit is absent it does
+NOT improvise a queue — it fetches the board, reports the top workable
+unclaimed issues, notes that the kit is unapplied, and stops. Same prompt
+works as a `/burndown` skill.
 
 ## Hard limits learned (2026-09-03 run)
 - Every repo's `pr-claim` check fails closed on an unclaimed issue. Patches

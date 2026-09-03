@@ -1,0 +1,149 @@
+From 33603dbcf022bf30241967bdcf8438ee397e79b6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:13:38 +0000
+Subject: [PATCH 2/3] chore: re-pin the door daemons + wire agreements to
+ upstream HEAD
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Moves door-keeper, door-kit, keeper-wire, door-scout, scout-wire,
+door-concierge and concierge-wire forward together to their 2026-08/09
+heads. They have to move as a set: door-kit is the client side of all
+three wire checks, and its scout client already speaks the four methods
+(repos/project/orgOpenWork/orgMergedPrs) that door-scout + scout-wire
+added after the old pin — bumping only the keeper trio would turn
+scout-wire red. The post-pin fixes this picks up on the keeper edge are
+door-kit#32 (drop the redundant `kind` from import-and-push),
+door-keeper#32 (re-vendor the client; closes door-keeper#15) and
+keeper-wire#3 (the `pr` verb).
+
+Every flake check is green at these revs (deno run of each check
+script against the checked-out revs): keeper-wire, scout-wire,
+concierge-wire CONFORM; door-kit-mirror byte-identical;
+sanctioned-reader-seam, descriptor-honesty, lattice pass.
+
+Lock entries were computed without nix (rev = origin/main, lastModified
+= committer timestamp, narHash = NAR sha256 of the tree); the method was
+validated by reproducing all nine existing entries bit-for-bit. If a
+maintainer prefers, `nix flake lock --update-input <each>` regenerates
+the same entries.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ flake.lock | 42 +++++++++++++++++++++---------------------
+ 1 file changed, 21 insertions(+), 21 deletions(-)
+
+diff --git a/flake.lock b/flake.lock
+index d1df338..395d8b4 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -3,11 +3,11 @@
+     "concierge-wire": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1783200414,
+-        "narHash": "sha256-CoKsHJcU7KBdKiK26q7ZtxcXHfESdCe5TTQx3sne2Tk=",
++        "lastModified": 1788300491,
++        "narHash": "sha256-pm6j9ZsXgbCsRHoj4qWIeKOQjNsq/gFli4f1U0pWyjI=",
+         "owner": "bounded-systems",
+         "repo": "concierge-wire",
+-        "rev": "24ca9afd9051e217311428c20fa11435161dc8ed",
++        "rev": "2dd43acbdf2dbfbce599969e5549edc5552b6fc8",
+         "type": "github"
+       },
+       "original": {
+@@ -19,11 +19,11 @@
+     "door-concierge": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1782825327,
+-        "narHash": "sha256-K2/ULzkCIAWmDmYwtQP7fAzLWJqKBWL6MrwQdRvZztQ=",
++        "lastModified": 1788047663,
++        "narHash": "sha256-3x56G3tWsLLNayp9TkWCB8rKpUXyFImjRWeqAvqLX8I=",
+         "owner": "bounded-systems",
+         "repo": "door-concierge",
+-        "rev": "eebbcb9bddf5a5b4268d9888d930df9f2be68575",
++        "rev": "30baa930b0722e6edf6aaf75be8bc9ed6b9c9650",
+         "type": "github"
+       },
+       "original": {
+@@ -35,11 +35,11 @@
+     "door-keeper": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1783206080,
+-        "narHash": "sha256-Kl0tXt02Es40XEjtocvNtqMscIfnSOs9IHHvb1Tg9WE=",
++        "lastModified": 1788300406,
++        "narHash": "sha256-xazyqIgzD+jYZcPvtGzgzh+597CUrYJ/DoztW409cD8=",
+         "owner": "bounded-systems",
+         "repo": "door-keeper",
+-        "rev": "cd370daaaf753395751ea99d2df5947bf819f0bd",
++        "rev": "5984e37dd96abc530da96874fc1d0f1d0acd50b7",
+         "type": "github"
+       },
+       "original": {
+@@ -51,11 +51,11 @@
+     "door-kit": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1783203048,
+-        "narHash": "sha256-7k7ADJGR5XPB17u9XRK+m3sRva4gRV1JJzLLQDN733M=",
++        "lastModified": 1788300401,
++        "narHash": "sha256-0OWJpEZTogmIb+M0lxYLOSZzg2l/Qb3NllVjFRibZDo=",
+         "owner": "bounded-systems",
+         "repo": "door-kit",
+-        "rev": "4b72a33d4f03c7f5869c229adf8617802656a1b5",
++        "rev": "b817c0750ecbf72fc08eaa1d2b6a948424de440b",
+         "type": "github"
+       },
+       "original": {
+@@ -67,11 +67,11 @@
+     "door-scout": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1782825323,
+-        "narHash": "sha256-kXmaQv1u1PsWKY4ETPi5yEbXIUVBOtV+krApHncWtp8=",
++        "lastModified": 1788047658,
++        "narHash": "sha256-u+44rCM+hN0Zd5ahn12zjYqlCwHKR7AMqGxDizTfME4=",
+         "owner": "bounded-systems",
+         "repo": "door-scout",
+-        "rev": "2b047ecad768092e7f4de0c545f6b21be775c9f4",
++        "rev": "f4bb596a4d5b0d83e3dbb6997187b002dcb23f22",
+         "type": "github"
+       },
+       "original": {
+@@ -99,11 +99,11 @@
+     "keeper-wire": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1783205341,
+-        "narHash": "sha256-d+EQKN6gaWhh7p0Nj7KjV3II3oVna7v3scS/Sc6lGAg=",
++        "lastModified": 1788300485,
++        "narHash": "sha256-d88I0T9prGEM/xJFqqBOiyd5LBRQsaTrWEnZ0wBxgoU=",
+         "owner": "bounded-systems",
+         "repo": "keeper-wire",
+-        "rev": "bc594369d66e810a185a80bb78fcaf3c0d2aadcc",
++        "rev": "9d5bec6e2ac563b996b3a5441893ec8c2f54a7b2",
+         "type": "github"
+       },
+       "original": {
+@@ -145,11 +145,11 @@
+     "scout-wire": {
+       "flake": false,
+       "locked": {
+-        "lastModified": 1783200410,
+-        "narHash": "sha256-0IQ4NJ486cWA8BAVkefibUNjidsUxlK9YWNHAsYAuAo=",
++        "lastModified": 1788300486,
++        "narHash": "sha256-Go4/t28ESbnOY9Qq9ES9logVOMbUxGT4wXdvgXK9IrE=",
+         "owner": "bounded-systems",
+         "repo": "scout-wire",
+-        "rev": "79bedb301ab4b2d19ce97cdfbc5122c964dc9913",
++        "rev": "d54a43f75a3ce2d388d3ed79fa9879a621649b68",
+         "type": "github"
+       },
+       "original": {
+-- 
+2.43.0
+

@@ -1,0 +1,163 @@
+From f8500ac99e636fe92fd3cdfe9bc77a60367754e6 Mon Sep 17 00:00:00 2001
+From: Claude <oink_monocle_7d@icloud.com>
+Date: Thu, 3 Sep 2026 03:26:13 +0000
+Subject: [PATCH] fix(room): fully qualify the claude-room image
+ (bounded-systems/claude-box#245)
+
+`claudeRoom.image` was the bare `claude-box`, so `prx pod up --pod per-repo`
+rendered `image: "claude-box"` into the kube-play manifest and podman expanded
+it against Docker Hub on any host without a local image:
+
+    unable to copy from source docker://claude-box:latest
+
+The published image is `ghcr.io/bounded-systems/claude-box/claude-room:<release>`
+(claude-box's publish-ghcr workflow: nix attr `claude-image` -> GHCR `claude-room`).
+Pin that ref as an exported `CLAUDE_ROOM_IMAGE` constant, matching the
+sibling rooms (BEADSD_ROOM_IMAGE, KEEPERD_ROOM_IMAGE, CONCIERGED_ROOM_IMAGE),
+at the latest claude-box release tag (0.7.0). A digest pin + BOX_PINS entry
+can follow once the (currently private) GHCR package's digest is readable.
+
+Tests: assert the claude-room image is registry-qualified and not `:latest`,
+and that no perRepoPod room image can fall back to a docker.io short name;
+the kube-render test now checks the constant rather than the bare name.
+
+Refs: https://github.com/bounded-systems/claude-box/issues/245
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .changeset/claude-room-image-fully-qualified.md | 14 ++++++++++++++
+ packages/prx/src/room/claude-room.ts            | 17 ++++++++++++++++-
+ packages/prx/test/room/pod.test.ts              | 10 ++++++++++
+ packages/prx/test/room/podman.test.ts           |  3 ++-
+ packages/prx/test/room/spec.test.ts             | 13 ++++++++++++-
+ 5 files changed, 54 insertions(+), 3 deletions(-)
+ create mode 100644 .changeset/claude-room-image-fully-qualified.md
+
+diff --git a/.changeset/claude-room-image-fully-qualified.md b/.changeset/claude-room-image-fully-qualified.md
+new file mode 100644
+index 0000000..b847dea
+--- /dev/null
++++ b/.changeset/claude-room-image-fully-qualified.md
+@@ -0,0 +1,14 @@
++---
++"@bounded-systems/prx": patch
++---
++
++Fully qualify the claude-room image. `claudeRoom.image` was the bare
++`claude-box`, so `prx pod up --pod per-repo` rendered `image: "claude-box"`
++into the kube-play manifest and podman expanded it against Docker Hub
++(`docker.io/library/claude-box:latest` → 404) on any host without a local
++image (bounded-systems/claude-box#245). The room now pins the published
++`ghcr.io/bounded-systems/claude-box/claude-room:0.7.0`, exported as
++`CLAUDE_ROOM_IMAGE` alongside the sibling `*_ROOM_IMAGE` constants. The GHCR
++package is private today, so a fresh host still needs `podman login ghcr.io`
++(a token with `read:packages`) before the pull succeeds; a digest pin can
++replace the tag once the digest is readable.
+diff --git a/packages/prx/src/room/claude-room.ts b/packages/prx/src/room/claude-room.ts
+index 17e702d..6d39b9b 100644
+--- a/packages/prx/src/room/claude-room.ts
++++ b/packages/prx/src/room/claude-room.ts
+@@ -23,10 +23,25 @@ import type { RoomSpec } from "./spec.ts";
+ 
+ const DOORS = "/run/prx/doors";
+ 
++/**
++ * The claude-box runtime image that fills the room (prx-d4o), published by
++ * `bounded-systems/claude-box`'s publish-ghcr workflow as
++ * `ghcr.io/bounded-systems/claude-box/claude-room:<release>` (nix attr
++ * `claude-image` → GHCR name `claude-room`). Fully qualified on purpose: a bare
++ * `claude-box` made podman expand the kube-play default against Docker Hub
++ * (`docker.io/library/claude-box:latest` → 404) on any host without a local
++ * image (claude-box#245). Pinned to a release tag, not a digest — the GHCR
++ * package is private today, so `podman login ghcr.io` (a token with
++ * `read:packages`) is still required to pull; see claude-box's HOSTING.md.
++ * Bump when claude-box releases; switch to `@sha256:…` (and add it to
++ * `BOX_PINS` in repin.ts) once the digest is readable.
++ */
++export const CLAUDE_ROOM_IMAGE = "ghcr.io/bounded-systems/claude-box/claude-room:0.7.0";
++
+ export const claudeRoom: RoomSpec = {
+   name: "claude-room",
+   // The room is filled by the claude-box runtime image (prx-d4o).
+-  image: "claude-box",
++  image: CLAUDE_ROOM_IMAGE,
+   // A sandbox-tier room: the policy boundary is the container; the hardware
+   // boundary (the VM house) belongs to the Pod, not this room. No executor —
+   // inherited from the pod's house.
+diff --git a/packages/prx/test/room/pod.test.ts b/packages/prx/test/room/pod.test.ts
+index 29e0173..e14937e 100644
+--- a/packages/prx/test/room/pod.test.ts
++++ b/packages/prx/test/room/pod.test.ts
+@@ -192,6 +192,16 @@ describe("perRepoPod", () => {
+     expect(() => PodSpecSchema.parse(perRepoPod)).not.toThrow();
+   });
+ 
++  test("every room image is registry-qualified (no docker.io short-name fallback)", () => {
++    // podman resolves a bare `name[:tag]` against docker.io/library — the
++    // claude-box#245 dead end on a fresh host. Every pinned image must carry
++    // its registry host explicitly: the first path component is a hostname
++    // (contains a `.` or a `:port`) or the literal `localhost`.
++    for (const room of perRepoPod.rooms) {
++      expect(room.image, room.name).toMatch(/^(localhost|[^/]*[.:][^/]*)\//);
++    }
++  });
++
+   test("wires claude-room's beadsd + keeperd + forge-d consumes; control stays sealed", () => {
+     const { resolved, diagnostics } = resolvePodDoors(perRepoPod);
+     const caps = resolved
+diff --git a/packages/prx/test/room/podman.test.ts b/packages/prx/test/room/podman.test.ts
+index b012540..45fb6e7 100644
+--- a/packages/prx/test/room/podman.test.ts
++++ b/packages/prx/test/room/podman.test.ts
+@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
+ 
+ import { BEADSD_BRIDGE_PORT } from "../../src/room/beadsd-bridge-room.ts";
+ import { BEADSD_ROOM_IMAGE } from "../../src/room/beadsd-room.ts";
++import { CLAUDE_ROOM_IMAGE } from "../../src/room/claude-room.ts";
+ import { KEEPERD_ROOM_IMAGE } from "../../src/room/keeperd-room.ts";
+ import { perRepoPod } from "../../src/room/per-repo-pod.ts";
+ import {
+@@ -62,7 +63,7 @@ describe("renderPodmanKube", () => {
+   });
+ 
+   test("renders each non-secret room's -box image; not the secret room's", () => {
+-    expect(manifest).toContain(`image: "claude-box"`);
++    expect(manifest).toContain(`image: "${CLAUDE_ROOM_IMAGE}"`);
+     expect(manifest).toContain(`image: "${BEADSD_ROOM_IMAGE}"`);
+     // The keeperd image is delivered by `podman run`, not the kube manifest.
+     expect(manifest).not.toContain(`image: "${KEEPERD_ROOM_IMAGE}"`);
+diff --git a/packages/prx/test/room/spec.test.ts b/packages/prx/test/room/spec.test.ts
+index f0b9fb6..eb5f336 100644
+--- a/packages/prx/test/room/spec.test.ts
++++ b/packages/prx/test/room/spec.test.ts
+@@ -5,7 +5,7 @@
+ import { describe, expect, test } from "bun:test";
+ 
+ import { builderRoom } from "../../src/room/builder-room.ts";
+-import { claudeRoom } from "../../src/room/claude-room.ts";
++import { CLAUDE_ROOM_IMAGE, claudeRoom } from "../../src/room/claude-room.ts";
+ import {
+   RoomSpecSchema,
+   roomExposes,
+@@ -189,6 +189,17 @@ describe("claudeRoom", () => {
+     expect(() => RoomSpecSchema.parse(claudeRoom)).not.toThrow();
+   });
+ 
++  test("pins a registry-qualified claude-room image (claude-box#245)", () => {
++    expect(claudeRoom.image).toBe(CLAUDE_ROOM_IMAGE);
++    // A bare `claude-box` let podman expand the kube-play default against
++    // Docker Hub (docker.io/library/claude-box:latest → 404) on a fresh host.
++    // The published image is ghcr.io/bounded-systems/claude-box/claude-room.
++    expect(CLAUDE_ROOM_IMAGE).toMatch(
++      /^ghcr\.io\/bounded-systems\/claude-box\/claude-room[:@]/,
++    );
++    expect(CLAUDE_ROOM_IMAGE).not.toMatch(/:latest$/);
++  });
++
+   test("consumes the daemon doors → its grants are beads:read + git:write + github-app:token", () => {
+     expect(roomGrants(claudeRoom)).toEqual(["beads:read", "git:write", "github-app:token"]);
+   });
+-- 
+2.43.0
+

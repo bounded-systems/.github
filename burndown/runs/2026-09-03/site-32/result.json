@@ -1,0 +1,25 @@
+{
+  "id": "site-32",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/site-32/site-0001-readme-naming.patch",
+    "/home/claude/burndown/out/site-32/bounded.tools-0002-readme-not-the-website.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Both READMEs state which repo is which (site = website, bounded.tools = prx receiver Worker) with cross-links, site's Setup block clones site.git, rename proposed but not executed; verify greps pass against patched working-tree READMEs. Fix round: no must_fix items; dropped the contradictory '(no submodules to init)' comment, added claim/merge-order caveats to the comment and an owner checklist.",
+  "unresolved": [
+    "bounded.tools README change needs a separate PR in bounded-systems/bounded.tools (cross-repo; needs org context per CLAUDE.md)",
+    "claim-ticket.yml not dispatched \u2014 no GitHub credentials in sandbox; claim before pushing",
+    "site README still describes brand/ as a git submodule elsewhere (stale since #137) \u2014 left out of scope",
+    "upstream verify_command (raw.githubusercontent.com) unreachable from sandbox (403); run after merge",
+    "npm ci / bun install blocked by proxy (403), so gen-strings --check (fails identically on main) and bounded.tools typecheck/tests could not run"
+  ],
+  "fix_round": {
+    "must_fix": [],
+    "changed": [
+      "site commit amended: Setup comment no longer says '(no submodules to init)'",
+      "REPORT.md: comment wording, Before merging (owner) checklist, Fix round section",
+      "patches regenerated (site f259ab0, bounded.tools fe5b9e6)"
+    ]
+  }
+}

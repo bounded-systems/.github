@@ -1,0 +1,34 @@
+{
+  "id": "prx-270",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": true,
+  "confidence": "high",
+  "reason": "The patch itself is in scope and factually sound: it applies cleanly via `git am` on a fresh clone of main @ 9de9551, touches only the top-of-file JSDoc of packages/prx/src/intake/intake-source.ts (+16 comment lines, nothing else), every claim in the new comment checks out against the code (CLI wiring in pr-state/cli.ts, requireSigner('intake') hard refusal, ScoutSourceError-only rewrap, `pinned <ref>` output, return 0), the git-history facts in REPORT.md (ef696de/#241, 395b45f/#283, 92bfe92/#297, stale origin/GH-270 @ 7800b8e) are all real, the commit message is Conventional-Commits `docs(prx): ... (GH-270)` with `Refs #270`, and the longest header line is 83 cols under biome's 100. However it is NOT mergeable as-is: the repo's `.github/workflows/changeset-check.yml` fails any PR whose diff touches `packages/` without adding a `.changeset/*.md` (docs-only changes are explicitly told to add an EMPTY changeset via `bunx @changesets/cli@^2.27 add --empty`), and recent history shows every PR touching packages/prx/src does add one. The patch adds no changeset, REPORT.md never mentions the gate, and the proposed GitHub comment tells the applier to run only typecheck/check/test, so following it as written yields a red check that CONTRIBUTING says must be green before marking ready. Secondary: the issue asked for a 'one-paragraph' summary and no sibling intake-*.ts header carries a per-export list, so the 32-line header with an 'Exports (GH-270)' block is a mild style deviation a maintainer may push back on. No fabricated facts found in the proposed comment; it is accurate but incomplete.",
+  "evidence": [
+    "fresh clone /tmp/verify/prx-270-B: `git am 0001-*.patch` -> 'Applying: docs(prx): expand intake-source.ts module doc comment (GH-270)'; HEAD 1559f42 on 9de9551 (current origin/main)",
+    "git show --stat: packages/prx/src/intake/intake-source.ts | 16 +; all added lines are ` * ...` inside the existing JSDoc block (patch hunk @@ -13,6 +13,22 @@)",
+    ".github/workflows/changeset-check.yml:47-53: `if echo \"$changed\" | grep -qE '^packages/'; then if ... '^\\.changeset/.+\\.md$' ... else echo '::error::This PR changes packages/ but adds no changeset.' ... exit 1`",
+    ".github/workflows/changeset-check.yml:5-7 header: 'A no-release change (docs / CI / tests) satisfies the gate with an EMPTY changeset: bunx @changesets/cli@^2.27 add --empty'",
+    "`git diff 9de9551..HEAD --name-only` in fresh clone lists only packages/prx/src/intake/intake-source.ts — no .changeset/*.md",
+    "`git log --diff-filter=A -- '.changeset/*.md'`: df3fce7 (#1080), dffb52f (#1077), 96707fe (#981), 7b46886 (#1075) ... — every recent packages/ PR adds a changeset",
+    "CONTRIBUTING.md 'Pull request standards': 'CI must be green before a PR is marked ready for review'; PULL_REQUEST_TEMPLATE.md checklist 'CI is green'",
+    "REPORT.md 'Ready-to-paste GitHub comment' and 'Unresolved' sections: no mention of changeset; apply instructions = git am + typecheck/check/test only",
+    "WebFetch https://github.com/bounded-systems/prx/issues/270: open, no assignee, labels area::prx/priority::low/type::task, body asks for 'a one-paragraph module doc comment at the very top'; acceptance = comment present + `bun run typecheck` + tests pass",
+    "code check: packages/prx/src/pr-state/cli.ts:390-393 imports runIntakeSource; :5981-6007 parser for `prx intake source`; intake-source.ts:80 `deps.signer ?? realStatementSigner(requireSigner(\"intake\"))`; :92 `if (error instanceof ScoutSourceError) throw new IntakeSourceError(...)`; :110 `output.log(`pinned ${ref}`)`; :113 `return 0`",
+    "git log -1 for ef696de (2026-06-06 #241), 395b45f (#283), 92bfe92 (#297), 7800b8e (origin/GH-270 'docs(prx): note intake-source is runnable by human or agent (GH-270)') — all exist as REPORT.md states",
+    "`awk 'NR<=32' intake-source.ts | wc -L` -> 83 (biome.jsonc lineWidth 100)",
+    "sibling headers packages/prx/src/intake/intake-view.ts, intake-status.ts: prose-only module comments, no per-export list",
+    ".github/rulesets/main-protection.json:44-46: required_status_checks = ['ci'] only; changeset-check is a PR workflow, not a ruleset-required context (so it blocks by policy/convention and a red X, not by branch protection)",
+    "node_modules absent in fresh clone and registries blocked (403 host_not_allowed) — bun run typecheck/check/test not executable here either; comment-only nature verified by diff inspection instead"
+  ],
+  "must_fix": [
+    "Add an empty changeset file (`bunx @changesets/cli@^2.27 add --empty`, i.e. a `.changeset/<name>.md` with an empty frontmatter `---\\n---`) to the patch series, or amend the commit to include it; otherwise changeset-check fails on the PR.",
+    "Update REPORT.md's 'Ready-to-paste GitHub comment' and 'Unresolved' to state the changeset requirement so the applier does not open a red PR."
+  ],
+  "nits": [
+    "Issue #270 asks for a 'one-paragraph' summary; the header is now 32 lines with an 'Exports (GH-270)' list, a structure no sibling intake-*.ts header uses. Consider trimming to the human/agent + signing paragraph and a one-line export sentence, or be ready to justify the burndown 'describe every export' criterion in the PR body.",
+    "'the intake actor inside the pipeline' — no in-repo code calls runIntakeSource other than pr-state/cli.ts; agent use is via the CLI verb (cli/pilot-real.ts:397). The wording is defensible but slightly overstates a separate in-process caller.",
+    "Commit message body carries a `Claude-Session:` trailer; harmless, but the repo's history shows no such trailer convention.",
+    "Per CLAUDE.md the ticket must be claimed via claim-ticket.yml before work; REPORT.md correctly defers this to the applier."
+  ]
+}

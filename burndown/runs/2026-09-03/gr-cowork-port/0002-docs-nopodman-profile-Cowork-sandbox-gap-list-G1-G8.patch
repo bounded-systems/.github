@@ -1,0 +1,178 @@
+From c4cc40aba0eb5b04fce6dc9b0863320a5875a6cf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:12:40 +0000
+Subject: [PATCH 2/3] =?UTF-8?q?docs:=20nopodman=20profile=20+=20Cowork=20s?=
+ =?UTF-8?q?andbox=20gap=20list=20(G1=E2=80=93G8)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+docs/working-in-a-cowork-sandbox.md gains "The nopodman profile" and a gap
+table naming each thing a default Cowork sandbox cannot do and why (no
+walls, no egress chokepoint, reach/identity are platform dials, the
+injecting-parent rule not in the consumer daemon, no work.sh, uninformative
+peer creds, root-only bun, no transit grants). Two claims the page made
+about tooling that exists in neither repo (NETD_ALLOW_INJECTING_PARENT,
+./work.sh) are corrected to point at the profile and the gap list.
+
+trellis.json gains the nopodman claim; the README claims block is
+regenerated (guest-room.test.ts digest moved with the new steps).
+
+Refs: burndown gr-cowork-port (off-board; no tracking issue)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ README.md                           |  8 ++--
+ docs/working-in-a-cowork-sandbox.md | 67 +++++++++++++++++++++++++++--
+ trellis.json                        |  3 +-
+ 3 files changed, 71 insertions(+), 7 deletions(-)
+
+diff --git a/README.md b/README.md
+index 6764f10..781047d 100644
+--- a/README.md
++++ b/README.md
+@@ -184,13 +184,14 @@ iff the test content changes, so the table can't cite a missing test or a stale
+ | A room grants exactly its doors and denies the rest, by name | `features/rulebook.feature` → `deniedDoors` / `deniedDoorSection` in `mod.ts` | `c31986507bce` |
+ | Attenuation is append-only — authority never widens | `features/attenuation.feature` → `attenuate` / `attenuatesDoors` | `2efc95a11164` |
+ | A capability dies with its lease and never exceeds its ceiling | `features/confinement.feature` → `isConfined` / `resolveProvider` | `0318058ab3aa` |
+-| The engine names no guest, so it works for any agent | `guest-room.test.ts` ("names no guest") | `2b49bbedb9ce` |
++| The engine names no guest, so it works for any agent | `guest-room.test.ts` ("names no guest") | `02cdb5453e3b` |
+ | A door's authority is the same object across unix/vsock/tcp wires | `features/transport.feature` → `transportString` / `resolveDoor` in `mod.ts` | `42ad3cba4222` |
+ | The algebra holds for EVERY case, not just examples (bounded-exhaustive) | `algebra-proofs.test.ts` (bounded model checking by exhaustion) | `e1a7f987b10d` |
+ | A tcp/vsock door requires a per-launch token; unauthorized peers reach no handler | `protocol.test.ts` → `tokenAuthorizer` / `RequestAuthorizer` in `protocol.ts` | `a5b4d772cf72` |
+ | A per-request HMAC door rejects tampered, wrong-key, and replayed requests | `protocol.test.ts` → `hmacSigner` / `hmacAuthorizer` / `canonicalRequest` | `a5b4d772cf72` |
+ | A denied request is NEVER forwarded upstream — over real unix sockets and chains | `interpose.test.ts` → `enforceAndForward` / `transportToEndpoint` in `interpose.ts` | `fe33fc419c14` |
+ | A signed grant is honored only if its Ed25519 signature verifies against the issuer key | `signed-grant-authorizer.test.ts` → `signedGrantAuthorizer` (`protocol.ts`) / `verifyGrantWithKeys` (`mod.ts`) | `c2b4a6c4b825` |
++| A room opens without walls (no container runtime) and its rulebook says NO WALLS | `features/nopodman.feature` → `nopodmanRoom` in `profiles/nopodman.ts` | `6d30b24d5b6e` |
+ 
+ ```sh
+ bun test
+@@ -208,6 +209,7 @@ guest-room/
+ ├── gherkin.ts             # a tiny Gherkin-subset runner
+ ├── features/              # behavior specs, EXECUTED against mod.ts
+ ├── examples/quickstart.ts # the runnable allow + deny demo
++├── profiles/nopodman.ts   # a room with doors but no walls (no container runtime) + its allowlist door
+ ├── guest-room.test.ts     # wires the steps to the engine; each Scenario is a test
+ └── docs/
+ ```
+@@ -237,8 +239,8 @@ guest-room/
+   what it left behind.
+ - [`docs/working-in-a-cowork-sandbox.md`](docs/working-in-a-cowork-sandbox.md) —
+   operator guidance for running rooms inside a Cowork session: the two dials that
+-  set a session's authority, the `survey`/`land` split, and why the rooms are a
+-  safe default rather than enforcement.
++  set a session's authority, the `survey`/`land` split, the `nopodman` profile
++  and its gap list, and why the rooms are a safe default rather than enforcement.
+ 
+ In the object-capability tradition (POLA), with macaroon-style append-only caveat
+ attenuation and lease-bound confinement.
+diff --git a/docs/working-in-a-cowork-sandbox.md b/docs/working-in-a-cowork-sandbox.md
+index d7a12a7..6bf0e0b 100644
+--- a/docs/working-in-a-cowork-sandbox.md
++++ b/docs/working-in-a-cowork-sandbox.md
+@@ -24,9 +24,11 @@ api.github.com/user -> {"login":"…"}
+ ```
+ 
+ So an allowlist here is not a reach control. `--net github.com` does not mean
+-*may reach github*; it means **may act as me on github**. netd refuses to serve
+-behind an injecting parent unless the room says otherwise
+-(`NETD_ALLOW_INJECTING_PARENT=1`), and names the principal when it does.
++*may reach github*; it means **may act as me on github**. A room opened here must
++refuse to serve behind an injecting parent unless the room says otherwise, and
++name the gateway when it does. In this repo that rule is the `nopodman` profile's
++(`profiles/nopodman.ts`: `GUEST_ROOM_ALLOW_INJECTING_PARENT=1`, see below); the
++consumer's egress daemon does not yet carry it (gap **G4**).
+ 
+ **2. The repo attach set — which repositories that identity may touch.**
+ 
+@@ -63,6 +65,11 @@ netd warns at every launch. The warning is the feature.
+ ./work.sh land   git push origin HEAD
+ ```
+ 
++`work.sh` is the *intended* launcher shape; it does not exist yet in this repo or
++in the consumer (gap **G5**). What exists today is the `nopodman` profile below,
++which resolves a room for this substrate and renders the honest rulebook; a
++launcher wraps it in `env -i` + `setpriv`.
++
+ ## Protocol
+ 
+ **Before.** Decide the attach set first. Nothing attached by default; read when
+@@ -125,6 +132,60 @@ reach are separate dials here too, and nothing reconciles them. Add
+ read their own pages back. Note which direction is ungated by default — the one
+ that writes to the outside world permanently.
+ 
++## The `nopodman` profile — doors, no walls
++
++`profiles/nopodman.ts` (proven by `features/nopodman.feature` and
++`nopodman.test.ts`, which run here without any container runtime) opens a room
++on a host that has no `podman` at all: the guest shares a filesystem and a uid
++with its brokers. It does the part of a launch that survives losing the walls,
++and refuses the parts that would lie:
++
++- **Same-host doors.** Every door's guest side *is* its host side — a child
++  connects at the path the broker listens on. Paths go to `XDG_RUNTIME_DIR`,
++  else `$HOME/.guest-room/run` (0700), never `/tmp`; a world-writable socket dir
++  is refused. `childEnv` is exactly the `<NAME>_SOCK` map to hand a child under
++  `env -i`.
++- **Injecting parent refused unless acknowledged.** A set `HTTPS_PROXY` is the
++  only signal from inside, so it is treated as injecting (fail closed);
++  `GUEST_ROOM_ALLOW_INJECTING_PARENT=1` opts in, and the rulebook then names the
++  gateway and says a door cannot deny reach or strip identity.
++- **An honest rulebook.** The preamble says *NO WALLS* in as many words; the
++  denied section still names every absent door.
++- **An allowlist door** (`profiles/allowlist-door.ts`) — the egress door's
++  *decision* without its *chokepoint*: `connect {host}` is answered from the
++  grant's `host=` caveats via `checkCaveats` (fail closed) over a real unix
++  socket, every verdict logged, and a door with no `host=` caveat refuses to
++  serve at all. It is a decision oracle a child asks, not a proxy the bytes
++  pass through — see G2.
++
++```ts
++import { nopodmanRoom } from "@bounded-systems/guest-room/profiles/nopodman";
++const room = nopodmanRoom(rooms, catalog, "survey", process.env,
++  { caveats: { net: ["host=github.com"] } });
++// room.grants  — same-host DoorGrants;  room.childEnv — { NET_SOCK: "…/net.sock" }
++// room.rulebook — the preamble says NO WALLS; DENIED still names every absent door
++```
++
++### Gap list — what a Cowork sandbox cannot do, and why
++
++Each gap is named so the rulebook, the profile and this page agree on what is
++*not* enforced. "Here" means a default Cowork sandbox as measured above (uid 0,
++no `podman`, no user namespaces, egress only via the injecting gateway).
++
++| Gap | What is missing | Why it is not implemented here |
++|---|---|---|
++| **G1 — no walls** | `--network=none`, `--cap-drop`, rootless uid mapping, a mounted-only door view | Needs a container runtime or unprivileged user namespaces; neither exists here and a VM that is uid 0 cannot self-confine. Only `env -i` + `setpriv` remain — a seatbelt a careless launch skips, not a cage. Documented, not faked: the profile's rulebook says *NO WALLS*. |
++| **G2 — no egress chokepoint** | The consumer's egress daemon as a forward proxy the bytes pass through (`CONNECT` + allowlist, fail closed) | The reference runner needs `podman` + `docker.io/ubuntu/squid` + `socat`; the bun-native daemon needs no container but lives in the consumer repo and, here, would itself have to chain every `CONNECT` through the injecting gateway — which already decides reach and adds identity, so a second proxy cannot deny what the first allows. The profile ships the *decision* (`allowlist-door.ts`) and states it is not a proxy. |
++| **G3 — reach and identity are platform dials** | A door-level allowlist that means *may reach* | The gateway injects credentials past any door (measured above). Reach is `Network access → Allowed domains`; identity is the repo attach set. A door here can only narrow *intent*, so the profile names the gateway in the rulebook rather than claiming to police it. |
++| **G4 — injecting-parent rule not in the consumer's daemon** | The egress daemon refusing to serve behind `HTTPS_PROXY` unless told otherwise | The rule exists only in this profile (`GUEST_ROOM_ALLOW_INJECTING_PARENT`). The consumer vendors this repo as a subdirectory, so nothing landed here reaches it without a separate sync PR — cross-repo work this session cannot claim. |
++| **G5 — no `work.sh` launcher** | `./work.sh survey\|land <cmd>`: `env -i` + `setpriv` + the profile's `childEnv` around a command | The rooms are the consumer's catalog, not this repo's; a launcher that names `survey`/`land` belongs there (and would carry the G1 caveat verbatim). The profile is the piece a launcher calls. |
++| **G6 — peer credentials are uninformative** | `SO_PEERCRED` distinguishing the guest from the brokers | Everything in the VM runs as uid 0, so the kernel vouches for the same identity on both ends. A unix door here is gated by the private run dir only; `tokenAuthorizer` / `hmacAuthorizer` would add nothing a same-uid process cannot read. |
++| **G7 — bun is root-only** | An unprivileged child running a TypeScript broker or client | `bun` lives under `/root` (mode 0700) and `CURL_CA_BUNDLE` points into `/root/.ccr`. After `setpriv` a child can call a door only with stdlib tooling (e.g. Python) speaking the newline-JSON protocol; the brokers must run as root. Re-implementing the client in Python is out of scope for this repo. |
++| **G8 — no signed grants in transit** | The concierge (`keys`) a tcp/vsock egress door verifies grants against | Unix-only here (G6 makes tcp add nothing), and the concierge is the consumer's daemon. `signedGrantAuthorizer` is available if a tcp door is ever wanted across sandboxes. |
++
++Every row above is a statement about the substrate, not a defect in the engine:
++the engine's algebra (`bun test`) is green here without `podman`.
++
+ ## Known traps
+ 
+ - **The CA bundle is wired by env var into a root-only path.** Children inherit
+diff --git a/trellis.json b/trellis.json
+index f3add06..7ddedc7 100644
+--- a/trellis.json
++++ b/trellis.json
+@@ -24,7 +24,8 @@
+         { "claim": "A tcp/vsock door requires a per-launch token; unauthorized peers reach no handler", "provenBy": "protocol.test.ts", "via": "→ `tokenAuthorizer` / `RequestAuthorizer` in `protocol.ts`" },
+         { "claim": "A per-request HMAC door rejects tampered, wrong-key, and replayed requests", "provenBy": "protocol.test.ts", "via": "→ `hmacSigner` / `hmacAuthorizer` / `canonicalRequest`" },
+         { "claim": "A denied request is NEVER forwarded upstream — over real unix sockets and chains", "provenBy": "interpose.test.ts", "via": "→ `enforceAndForward` / `transportToEndpoint` in `interpose.ts`" },
+-        { "claim": "A signed grant is honored only if its Ed25519 signature verifies against the issuer key", "provenBy": "signed-grant-authorizer.test.ts", "via": "→ `signedGrantAuthorizer` (`protocol.ts`) / `verifyGrantWithKeys` (`mod.ts`)" }
++        { "claim": "A signed grant is honored only if its Ed25519 signature verifies against the issuer key", "provenBy": "signed-grant-authorizer.test.ts", "via": "→ `signedGrantAuthorizer` (`protocol.ts`) / `verifyGrantWithKeys` (`mod.ts`)" },
++        { "claim": "A room opens without walls (no container runtime) and its rulebook says NO WALLS", "provenBy": "features/nopodman.feature", "via": "→ `nopodmanRoom` in `profiles/nopodman.ts`" }
+       ]
+     },
+     "positioning": "capability allowlisting for agents via socket brokers",
+-- 
+2.43.0
+

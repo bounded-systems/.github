@@ -1,0 +1,31 @@
+{
+  "id": "synoptic-4",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh fetch of bounded-systems/synoptic main (be917d0) into /tmp/verify/synoptic-4; the patch file applied cleanly with `git am` (ca0c819). I did NOT reuse the worker's stand-in verbspec: I built an independent harness from the real @bounded-systems/verbspec 0.3.1 source tree (jsr.json, exports ./src/index.ts, found vendored at /tmp/work/vendor/verbspec) and the real zod 4.4.3 package (from a bun store), so the only deviation from CI is that deps resolve from disk instead of jsr.io/npm. With that harness: `deno check` passes on every file except gen-*.ts/validate.ts/resolve.test.ts (need npm:@webref / jsr:@std, network-blocked — same on main); all three check.ts gates (burnt-orange, deep-blue, webfont-demo) report drift ✓ / audit ✓ / cvd ✓ exit 0; the scout verify_command grep passes; mock-orange/mock-blue style.css are byte-identical to main (git diff --stat empty); baseline main also passes the gate under the same harness. Negative checks reproduced: audit rule 5 exits 1 on a hand-written `font-family: Arial`; `font: \"Helvetica\"` is rejected (\"font stack must end in a generic family\"); an https src is rejected; `\"Helvetica Neue\", Arial, sans-serif` serializes quoted correctly. The fixture data: URI decodes to a valid 5972-byte WOFF (12 tables, all zlib-decompress to their declared lengths, family name 'Poppins', copyright 2020 Poppins Project Authors). font.ts's new block matches the gen-font.ts template verbatim. deno lint shows the same 5 pre-existing findings on main and on the patch. The change satisfies the issue as written (FontFace token {family, src data: URI, weight-range, display: swap} emitted as @font-face in generated style.css, system stack kept as default/fallback), and the issue has no stricter acceptance criterion. The one factual error in the REPORT is the licensing claim: the subset font's name table has only nameIDs 0–6 (copyright + family/style/etc.) — no nameID 13/14 license entries — so the OFL text does NOT 'travel in the font's name table'; OFL 1.1 §2 requires the license to accompany copies, and no OFL.txt is added. That is a compliance nit on the fixture, not a correctness defect in the engine change.",
+  "evidence": [
+    "git am in /tmp/verify/synoptic-4: 'Applying: feat(tokens): embedded-webfont FontFace token, one --font-sans source (v0.55.0)' -> ca0c819 on top of be917d0",
+    "harness: /tmp/verify/harness/deno.json maps verbspec -> /tmp/verify/harness/verbspec/src/index.ts (real @bounded-systems/verbspec 0.3.1 source, jsr.json version 0.3.1) and zod -> real zod 4.4.3 package.json",
+    "deno check (23 non-network *.ts files, patched): no errors; same set clean on main",
+    "check.ts brands/burnt-orange -> examples/mock-orange: 'drift ✓ matches the derivation · audit ✓ · cvd ✓' exit=0 (same for deep-blue/mock-blue and webfont-demo/mock-webfont)",
+    "git diff HEAD~1 HEAD --stat -- examples/mock-orange/style.css examples/mock-blue/style.css: empty (byte-identical CSS for existing brands)",
+    "scout verify grep on mock-orange/mock-blue style.css: exit 0; only lines are '--font-sans: system-ui, sans-serif;' and 'font-family: var(--font-sans);'",
+    "examples/mock-webfont/style.css:2 '@font-face { font-family: Poppins; src: url(data:font/woff;base64,...) format(\"woff\"); ...', :84 '--font-sans: Poppins, system-ui, sans-serif;', :98 'font-family: var(--font-sans);'",
+    "audit.ts on style.css + 'p { font-family: Arial }': '✗ p { font-family: Arial } — font-family must come from the ONE token (--font-sans)', exit=1",
+    "to-css.ts with font:'Helvetica' -> 'font stack must end in a generic family'; with src https://... -> 'a base64 data: URI with a font/* MIME type'; with '\"Helvetica Neue\", Arial, sans-serif' -> '--font-sans: \"Helvetica Neue\", Arial, sans-serif;'",
+    "python WOFF parse of brands/webfont-demo/brand.json src: sig wOFF flavor 0x10000 len 5972 numTables 12, all tables decompress to origLength; name nid0='Copyright 2020 The Poppins Project Authors', nid1='Poppins'; nameIDs present = [0,1,2,3,4,5,6] (no 13/14 license entries)",
+    "gen-font.ts template block for FontFace/FontDisplay/FONT_FORMAT_BY_MIME matches tokens/font.ts verbatim (modulo escape decoding)",
+    "deno lint on 7 touched files: 'Found 5 problems' on both main and patched (no-explicit-any/ban-unused-ignore in serialize.ts:32,34; unused HAIRLINE_REM/Role in to-css.ts:13,14; unused spacing in to-tokens.ts:25 — all pre-existing)",
+    "issue #4 body (WebFetch): proposes FontFace {family, src data: URI, weight-range, display: swap} as @font-face in style.css, system stack stays; open, no comments, no explicit checklist"
+  ],
+  "must_fix": [
+    "REPORT claim 'the license text travels in the font's name table' is false — the subset WOFF has no nameID 13/14 (license) entries, only the copyright string. Add the SIL OFL 1.1 text (e.g. tokens/brands/webfont-demo/OFL.txt) or correct the claim so the repo does not ship a Poppins subset without its required license notice."
+  ],
+  "nits": [
+    "audit rule 5 double-reports a direct font-family (rule 5 + the generic DIRECT-value rule) — harmless, but noisy.",
+    "FontFace.src regex requires the base64 payload to match [A-Za-z0-9+/]+=*; base64url or whitespace-wrapped payloads are rejected with a message that does not say why.",
+    "Not verified locally (network): gen-*.ts, validate.ts, resolve.test.ts type-check, and the real jsr.io resolution of verbspec 0.3.1 — CI tokens-check.yml remains the final word, as the REPORT itself states.",
+    "Issue not claimed via claim-ticket.yml (sandbox has no credentials) — process, not correctness."
+  ]
+}

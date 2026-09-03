@@ -1,0 +1,17 @@
+{
+  "id": "synoptic-4",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/synoptic-4/0001-feat-tokens-embedded-webfont-FontFace-token-one-font.patch",
+    "/home/claude/burndown/out/synoptic-4/0002-chore-tokens-ship-the-SIL-OFL-1.1-notice-with-the-we.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Added an embedded-webfont FontFace token (data: URI @font-face, system stack as fallback tail) with --font-sans as the single font-family source; fix round added the SIL OFL 1.1 notice for the Poppins subset fixture and corrected the report's license claim. deno check + all three check.ts gates + audit pass locally with the real verbspec 0.3.1 / zod 4.4.3 resolved from disk (jsr/npm blocked).",
+  "unresolved": [
+    "PROCESS (owner): issue #4 must be claimed (claim-ticket.yml or assign+comment) before opening the PR — pr-claim.yml fails a PR whose 'Closes #4' names an unclaimed issue; sandbox has no GitHub credentials.",
+    "Local verification resolved verbspec/zod from disk because jsr.io/registry.npmjs.org are blocked; GitHub tokens-check.yml is the authoritative gate (also covers deno check of gen-*.ts / validate.ts / resolve.test.ts).",
+    "Fixture face is a WOFF (no brotli for woff2) subset of Poppins (OFL 1.1, notice in tokens/brands/webfont-demo/OFL.txt), not Space Grotesk.",
+    "build-site.mjs still hardcodes its own system-stack fallbacks (Node site builder, outside the token engine and this issue's scope).",
+    "Pre-existing on main: deriveRoles crashes for cool seeds without roles.*.field overrides — unrelated, not touched."
+  ]
+}

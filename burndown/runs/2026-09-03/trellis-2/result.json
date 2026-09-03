@@ -1,0 +1,19 @@
+{
+  "id": "trellis-2",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/trellis-2/0001-ci-make-contract-check-a-blocking-gate.patch",
+    "/home/claude/burndown/out/trellis-2/0002-chore-re-pin-the-door-daemons-wire-agreements-to-ups.patch",
+    "/home/claude/burndown/out/trellis-2/0003-chore-lock-the-drift-gate-guest-room-inputs.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Upstream drift confirmed fixed; dropped continue-on-error from contract-check (+stale-comment cleanup, README status table now lists all 7 verified types), optionally re-pinned all 7 door/wire inputs to HEAD and locked the 2 unlocked inputs; all 7 flake checks CONFORM via the repo's own deno scripts at old and new pins, deno lint/fmt green. Fix round: commit subjects cleaned, stale flake.nix comment fixed; the one must_fix (issue #2 unclaimed -> pr-claim would fail) is a process item recorded in REPORT.md 'Before merging (owner)'.",
+  "unresolved": [
+    "PROCESS (owner): issue #2 has no Front Desk claim/assignee; the required pr-claim check fails a PR closing an unclaimed issue \u2014 claim #2 before opening the PR (see REPORT.md 'Before merging (owner)')",
+    "nix flake check not executed: nix uninstallable in sandbox; checks reproduced with the repo's own check/*.ts under deno --no-remote instead; the PR's contract-check job is the authoritative proof",
+    "flake.lock entries in patches 0002/0003 were hand-computed (NAR hash + committer timestamp; independently reproduced 11/11 by both verifiers) \u2014 run `nix flake lock` to regenerate if preferred, or apply 0001 alone",
+    "status.json shows trellis-kit-lattice as failing due to a registry/flake check-name mismatch (unrelated to nix flake check) \u2014 separate issue",
+    "README still references removed specs/keeperd.ts + specs/keeper-wire.json + deno task gen (unrelated to #2, left alone)",
+    "Not pushed, no PR"
+  ]
+}

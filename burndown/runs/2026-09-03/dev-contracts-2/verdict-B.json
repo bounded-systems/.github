@@ -1,0 +1,34 @@
+{
+  "id": "dev-contracts-2",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": true,
+  "confidence": "high",
+  "reason": "The patch applies cleanly (git am on a fresh fetch of main@3f1d3e2) and is syntactically fine, but it is not mergeable as-is and largely falls outside the issue. Issue #2's three acceptance criteria are: dismiss the 2 GitHub secret-scanning alerts, evaluate a git filter-repo scrub (deferred), and fold remaining .trunk hygiene into *future* refactoring. The diff satisfies none of them and adds unrequested config. Worse, its centrepiece `.trunk/.gitignore` is a byte-identical resurrection of a file the maintainer deliberately deleted in fe6d335 ('ignore pattern is working'), the same commit that moved all ignore handling into contracts.toml `ignores = [\"git\"]` and the generated root .gitignore; REPORT.md presents it as 'the standard trunk init ignore file' and a 'second line of defence' without disclosing that it reverses a design decision, and the proposed GitHub comment repeats that framing. The `lint.ignore` block in trunk.yaml addresses a problem the issue never reports (the alerts came from GitHub push scanning of committed blobs, not from `trunk check`; `.trunk/plugins/` is already gitignored and Trunk honours .gitignore, and `.trunk/plugins/trunk` is a symlink per contracts.toml), so it is a no-op that could not be verified here either. Process-wise the repo's pr-claim gate requires an open, claimed issue named via `Closes #N` or `Claim-issue: owner/repo#N`; the issue is unclaimed and the commit carries only `Refs #2`, so the check would fail red. The `(#2)` suffix in the subject also imitates the squash-merge PR-number convention seen in history (`... (#22)`), which would produce a misleading `(#2) (#23)` on merge.",
+  "evidence": [
+    "git am of 0001-*.patch on fresh fetch of main@3f1d3e2 -> 'Applying: chore(trunk): ignore the plugin cache in lint and git (#2)', clean, no conflicts",
+    "Issue #2 acceptance criteria (WebFetch): '[ ] Dismiss the 2 secret-scanning alerts as Used in tests', '[ ] Evaluate history scrubbing via git filter-repo—deferred pending broader rework', '[ ] Integrate remaining .trunk hygiene into future refactoring efforts' — none touched by the diff; issue body also states 'current main is clean; .trunk/plugins/ is now in .gitignore'",
+    "git log --format='%h %s' -- .trunk/.gitignore -> 'fe6d335 ignore pattern is working' (deletes .trunk/.gitignore, 9 lines, and templates/trunk/.trunk/.gitignore; adds ignores = [\"git\"] entries to contracts.toml and 770 lines to scripts/generate-gitignore.ts)",
+    "diff <(git show afad86c:.trunk/.gitignore) .trunk/.gitignore -> IDENTICAL-TO-DELETED-FILE",
+    "/tmp/verify/dev-contracts-2/.gitignore:1-3 'THIS FILE IS GENERATED FROM contracts.toml ... Generated from contracts.structure with ignores = [\"git\"]' and lines 10,16 already ignore .trunk/plugins/ and templates/trunk/.trunk/plugins/",
+    "contracts.toml:143 '[structure.\".trunk/plugins/trunk\"] type = \"symlink\"' — plugin cache is a symlink into Trunk's user cache, not repo content trunk check would scan",
+    ".github/workflows/pr-claim.yml header: 'That this PR names an issue which is OPEN and still carries a claim — via Closes #N, or Claim-issue: owner/repo#N'; scout report: issue #2 'NOT listed on claims.bounded.tools', claimed=false; patch trailer is 'Refs #2' only",
+    "CLAUDE.md step 2: 'Claim before working: dispatch claim-ticket.yml ... confirm the claim comment ON THE ISSUE names your claimant' — REPORT.md Unresolved #5 admits not claimed",
+    "git log --format=%s -15: every subject is 'type: summary (#PRnum)' where (#N) is the squash-merge PR number; patch subject 'chore(trunk): ... (#2)' uses the issue number in that slot",
+    ".release/README.md: 'Each PR that should ship drops an intent file here' — no .release/ intent in the diff (acceptable for a non-shipping chore, noted as nit)",
+    "REPORT.md proposed comment: 'so the trufflehog/trivy/gitleaks test_data dummy keys never surface in trunk check' — no evidence anywhere (issue, scout, REPORT) that trunk check ever surfaced them; trunk was not runnable in the sandbox (REPORT Unresolved #4)",
+    "REPORT.md proposed comment: '.trunk/.gitignore: standard trunk init ignore file ... as a second guard' — omits that it is the file removed in fe6d335 by design",
+    "python3 yaml.safe_load(.trunk/trunk.yaml)['lint']['ignore'] -> [{'linters': ['ALL'], 'paths': [...]}] (valid YAML; yamllint not installable in sandbox, line lengths < 120 by inspection)"
+  ],
+  "must_fix": [
+    "Drop `.trunk/.gitignore` (and the matching contracts.toml entry) or justify on the PR why fe6d335's decision to centralise ignores in contracts.toml/generated .gitignore should be reversed; as submitted it silently reintroduces a file the maintainer removed",
+    "Either show that `trunk check` actually reports the fixture keys (it cannot: the paths are gitignored and the cache is a symlink) or drop the `lint.ignore` block; an unverifiable no-op is not mergeable under 'fold hygiene into the broader rework'",
+    "Claim issue #2 via claim-ticket.yml and put `Claim-issue: bounded-systems/dev-contracts#2` (not `Refs #2`) on its own line in the PR body/commit, otherwise the required pr-claim check fails; do not use `Closes #2` since the patch does not satisfy the acceptance criteria",
+    "Rewrite the proposed GitHub comment: remove the implication that the keys 'surface in trunk check', and state plainly that .trunk/.gitignore re-adds the file deleted in fe6d335"
+  ],
+  "nits": [
+    "Commit subject '(#2)' occupies the slot the org's squash-merge uses for the PR number; use 'chore(trunk): ...' without a parenthesised number and keep the issue reference in the body/trailer",
+    "contracts.toml purpose string embeds '(issue #2)'; other purpose strings are plain descriptions",
+    "No .release/ intent file; fine for a non-shipping chore but say so in the PR",
+    "The 10-line comment block in trunk.yaml is longer than any other comment in the repo's config files; a one-line 'see #2' would match house style"
+  ]
+}
