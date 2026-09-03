@@ -1,0 +1,52 @@
+# Does what the channel SERVES actually work on a bare host?
+#
+# Every other gate in this repo tests the boot.sh in the working tree. Nothing
+# tested the bytes a real session receives, and those are a different artifact
+# reached by a four-step chain — payload publish, boot-deploy, pin bump,
+# boot-manifest — any link of which can be incomplete while every PR is green.
+# It has been incomplete three separate times in one day, each time meaning
+# merged code that reached no session at all. "Merging .github is not shipping"
+# was written down on infra#584 and then had to be rediscovered on #354's lap.
+#
+# WHY THIS IS NOT A PR GATE. It reads the LIVE channel, so on a pull request it
+# would report on a surface that branch has not changed — green or red for
+# reasons unrelated to the diff, which is how a check stops being read. It runs
+# on main, on a schedule, and right after boot-manifest, where a red is about
+# the org's live state and is actionable by whoever is holding the chain.
+#
+# A RED DURING A MID-FLIGHT CHAIN IS CORRECT, not noise. Between a boot.sh fix
+# merging and the channel flipping, sessions receive the PREVIOUS payload — and
+# if the fix in flight is one these cases assert, that payload fails them. That
+# is the true statement about what sessions are getting, and it clears itself
+# when the chain completes. Channel LAG alone is reported, never asserted; only
+# behaviour is asserted.
+name: channel-smoke
+
+on:
+  schedule:
+    # Daily. Deliberately not hourly: this makes real requests to the live edge
+    # and the answer only changes when the chain moves, which boot-manifest
+    # already notifies below.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+  workflow_run:
+    # The moment the channel flips is the moment this question has a new answer.
+    workflows: [boot-manifest]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # The script needs `node` for the settings assertions AND for what boot.sh
+      # itself runs. setup-node puts it under /opt/hostedtoolcache, which is why
+      # the script binds node's directory out of the way before masking — see the
+      # header of channel-smoke.test.sh.
+      - run: bash .claude/channel-smoke.test.sh
