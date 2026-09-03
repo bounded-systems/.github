@@ -314,8 +314,12 @@ jobs:
             issue="$(mktemp)"
             if ! gh api "repos/${nwo}/issues/${num}" > "$issue" 2>/dev/null </dev/null; then
               echo "| \`${nwo}#${num}\` | ${via} | ❓ unreadable | — | — | — |" >> "$GITHUB_STEP_SUMMARY"
-              echo "::warning title=pr-claim: could not read ${nwo}#${num}::this token may not reach that repository. Counted as NOT claimed."
-              printf '%s#%s: unreadable from this repo\n' "$nwo" "$num" >> "$fails"
+              # Claiming is cross-repo (the Front Desk App token) but VERIFYING is
+              # not: this job runs under the PR repo's own GITHUB_TOKEN, which
+              # cannot read a private repo's issue whatever its claim state. So
+              # the cure is a local issue, not a wider token (.github#358).
+              echo "::warning title=pr-claim: could not read ${nwo}#${num}::this repo's token cannot read that repository (a private target is never readable from another repo). Counted as NOT claimed. Claim anchors must be readable from the PR's own repo: open an issue HERE, claim it, and name that one — docs/claim-trailers.md in .github-private, .github#358."
+              printf '%s#%s: unreadable from this repo — name an issue in the PR'"'"'s own repo instead (.github#358)\n' "$nwo" "$num" >> "$fails"
               continue
             fi
 
