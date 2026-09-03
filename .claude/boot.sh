@@ -242,7 +242,22 @@ CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"          # where the harness reads set
 mkdir -p "$CFG"
 SETTINGS=""
 if [ -f "$BOOT/session-start-dispatch.mjs" ] && [ -f "$BOOT/harness-settings.mjs" ]; then
+  # THE NARROW GRANT (#343, fix 1b). #337's posture matrix measured a checkout-less
+  # session with no channel out: no git, no MCP connector, and the auto-mode
+  # classifier refusing `curl` BEFORE it runs -- twice, deterministically. No
+  # change to the door can fix that; the gate is upstream of the network. This is
+  # the org's own mechanism for it, the same shape .claude/settings.json uses to
+  # pre-approve org-repair.sh, narrowed to one host and one path prefix.
+  #
+  # Deliberately NOT `Bash(curl:*)`: that is a blanket egress grant and a
+  # different security posture. The rule is prefix-matched against the command
+  # text, so the canonical invocation puts the URL FIRST; flag order after it does
+  # not matter, and pinning the host and /c/ and nothing else is what keeps the
+  # rule from failing for a reason the session cannot see (#342). Spelled out at
+  # the use site rather than hoisted: parseSteps reads a variable holding a
+  # command-shaped string as that command being run.
   SETTINGS="$(BOOT_HOOK_COMMAND="CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" \
+              BOOT_ALLOW="Bash(curl https://pathbase.bounded.tools/c/:*)" \
               node "$BOOT/harness-settings.mjs" "$CFG/settings.json")" || SETTINGS=""
 fi
 
@@ -273,7 +288,8 @@ else
       { "matcher": "", "hooks": [ { "type": "command",
         "command": "CLAUDE_SESSION_ROOT=$ROOT node $BOOT/session-start-dispatch.mjs" } ] }
     ]
-  }
+  },
+  "permissions": { "allow": [ "Bash(curl https://pathbase.bounded.tools/c/:*)" ] }
 }
 JSON
 fi
