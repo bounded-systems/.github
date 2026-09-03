@@ -7,6 +7,32 @@
 # Report-only (continue-on-error): the floor guarantees the scan RUNS on every PR and
 # surfaces findings; promote to a hard gate later by dropping continue-on-error.
 # Actions SHA-pinned (org policy); invocations match prx + repo-standard.
+#
+# ── Why `osv` and `dependency-review` skip on private repos (#362) ───────────
+# Both jobs are no-ops on the org's private repos: OSV-Scanner finds no supported
+# lockfile in `.github-private`, and dependency-review needs GitHub Advanced
+# Security, which the private repos do not have. Each fire still bills its
+# startup minute against the private quota. MEASURED, August 2026,
+# `.github-private`: 50 runs × 2 jobs = 100 billable minutes
+# (`actions-spend-census.sh`, `.github-private`#868); one run inspected,
+# 33701664258 — both jobs green with nothing evaluated. Forward ≈250/month once
+# `.github-private`'s PR rate is included — INFERRED from the August rate, not
+# measured.
+#
+# Whether "no private repo can satisfy GHAS" holds is a PLAN question, not a
+# settled fact: `.github-private`'s `registry/schema.ts:13` says Team,
+# `docs/merge-gate.md:779` says Free, and Code Security is purchasable on Team.
+# The skip is correct either way until GHAS is enabled on a private repo — at
+# that point REVISIT the `if:` on `dependency-review` (and on `osv`, if a private
+# repo grows a supported lockfile). Done-when: a private-repo PR shows both jobs
+# as `skipped`, not `success` with nothing evaluated.
+#
+# The condition is scoped to the two JOBS, not the workflow, on purpose: a
+# future `repository_dispatch` step here (`.github-private`#779) must not be
+# skipped by it. This is `on: pull_request`, not `workflow_call`, so the
+# calling repo is `github.event.repository` straight from the PR event payload,
+# where `.private` is a boolean; `!= true` (rather than `== false`) keeps the
+# jobs RUNNING if the field is ever absent — the floor fails toward scanning.
 name: required-baseline
 
 on:
@@ -17,6 +43,8 @@ permissions:
 
 jobs:
   osv:
+    # Private repos: measured no-op, see header (#362). Job-scoped on purpose.
+    if: github.event.repository.private != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,6 +72,8 @@ jobs:
           retention-days: 5
 
   dependency-review:
+    # Private repos: measured no-op, see header (#362). Job-scoped on purpose.
+    if: github.event.repository.private != true
     runs-on: ubuntu-latest
     permissions:
       contents: read
