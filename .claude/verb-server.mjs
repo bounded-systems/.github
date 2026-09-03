@@ -66,7 +66,9 @@ const PAGE_PROPS = {
     enum: ["transcript", "graph"],
     default: "transcript",
     description:
-      "transcript (default): readable, paginated role/text turns. graph: the raw toolpath Graph JSON (unpaginated — machine consumers want it intact; large sessions may be very big).",
+      "transcript (default): readable, paginated role/text turns. graph: the raw toolpath Graph JSON " +
+      "(whole-session and unpaginated — machine consumers want it intact; large sessions may be very big). " +
+      "graph REFUSES an explicit offset/limit rather than ignoring them (#371) — use transcript for a window.",
   },
 };
 
@@ -107,7 +109,10 @@ const READ_SESSION_TOOL = {
         description:
           "Session UUID. Omit for the current session ($CLAUDE_CODE_SESSION_ID). NOTE: inside an " +
           "in-process subagent that variable holds the PARENT's session, so omitting this reads the " +
-          "parent's transcript, not yours (.github#343). Pass it explicitly when you need your own.",
+          "parent's transcript, not yours (.github#343). A subagent CANNOT read its own transcript " +
+          "through this tool at all — agent ids are not session ids and do not resolve here. Read the " +
+          "file directly instead: ~/.claude/projects/<project-slug>/<parent-session-id>/subagents/" +
+          "agent-*.jsonl, yours identified by mtime and the sibling agent-<id>.meta.json `description`.",
       },
       project: {
         type: "string",
@@ -154,7 +159,10 @@ export function page(total, { limit = DEFAULT_LIMIT, offset = 0 } = {}) {
 export function renderTranscript(graph, opts = {}, label = "Shared chat") {
   const turns = turnsOf(graph);
   const { start, end, next } = page(turns.length, opts);
-  const lines = [`# ${label} — turns ${turns.length ? start + 1 : 0}–${end} of ${turns.length}\n`];
+  const lines = [
+    `# ${label} — turns ${turns.length ? start + 1 : 0}–${end} of ${turns.length}`,
+    `_A turn is one user or assistant message carrying text; tool calls, tool results and empty messages are not turns._\n`,
+  ];
   for (const t of turns.slice(start, end)) {
     const text =
       t.text.length > MAX_TURN_CHARS
@@ -188,7 +196,8 @@ function readChat(args) {
   if (res.status !== 0) {
     return err((res.stderr || res.stdout || "chat-fetch failed with no output").trim());
   }
-  return renderOrGraph(res.stdout, args, "Shared chat");
+  // read_chat does no defaulting, so the caller's args are also the render options.
+  return renderOrGraph(res.stdout, { rawArgs: args, label: "Shared chat" });
 }
 
 /** Resolve which local session to read: the argument, else this session. */
@@ -250,7 +259,9 @@ function readSession(args) {
       /* fall through to the error below */
     }
     if (!project) {
-      return err(`read_session: session ${sessionId} not found on this machine (${PATH_BIN} p list claude --json shows what is)`);
+      return err(
+        `read_session: session ${sessionId} not found on this machine. Sessions that are: ${PATH_BIN} p list claude --json`,
+      );
     }
   }
   const res = spawnSync(PATH_BIN, ["p", "derive", "claude", "-p", project, "-s", sessionId], {
@@ -261,21 +272,71 @@ function readSession(args) {
     return err(`read_session: ${PATH_BIN} p derive failed: ${(res.stderr || "").trim() || "no output"}`);
   }
   // Self-reads default to the MOST RECENT turns: "what have I just been doing"
-  // is the question this verb exists for.
-  const opts = { ...args };
+  // is the question this verb exists for. The default goes on a COPY that is
+  // stamped DEFAULTED_PAGE_OPTS: `args` stays exactly what the caller sent, so
+  // requestedWindow() below can still tell the two apart (#371).
+  const opts = { ...args, [DEFAULTED_PAGE_OPTS]: true };
   if (!Number.isInteger(opts.offset)) opts.offset = -(Number.isInteger(opts.limit) ? opts.limit : DEFAULT_LIMIT);
-  return renderOrGraph(res.stdout, opts, sessionLabel(sessionId, sessionSource(args)));
+  return renderOrGraph(res.stdout, { rawArgs: args, opts, label: sessionLabel(sessionId, sessionSource(args)) });
 }
 
-function renderOrGraph(stdout, args, label) {
-  if (args?.mode === "graph") return ok(stdout.trim());
+/** Stamped onto a page-options object that has had defaults filled in, so a
+ *  defaulted copy can never be mistaken for the caller's original arguments.
+ *  A Symbol, not a string key: it survives `{...opts}` but is invisible to
+ *  JSON, to the JSON-RPC wire, and to `additionalProperties: false`. */
+const DEFAULTED_PAGE_OPTS = Symbol("defaulted-page-opts");
+
+/** The refusal for a windowed graph read (#371). It names WHY (graph is
+ *  whole-session by design) and WHAT TO DO instead, because the failure this
+ *  replaces landed at the harness token ceiling, where the message was about
+ *  size rather than about the mode. */
+export const GRAPH_WINDOW_REFUSAL =
+  'mode: "graph" is whole-session by design and cannot be paginated, so it refuses offset/limit ' +
+  "rather than accepting them and silently returning everything (.github#371). " +
+  'Drop offset/limit for the whole Graph, or use mode: "transcript" (the default) to read a window of turns.';
+
+/** Did the CALLER actually ask for a page window?
+ *
+ *  THIS QUESTION CAN ONLY BE ASKED OF THE CALLER'S ORIGINAL ARGUMENTS — never
+ *  of the options the renderer receives. read_session fills `offset` in for a
+ *  self-read (see readSession above) BEFORE anything downstream looks at it, so
+ *  by then every session read carries a window and a refusal that consulted
+ *  those options would fire on the commonest call there is: an argument-less
+ *  `read_session mode=graph`. That is the bug the obvious one-line fix
+ *  introduces, so the two objects are kept separate by construction:
+ *
+ *    rawArgs — exactly what the caller sent. Never written to. Provenance.
+ *    opts    — the defaulted copy, stamped DEFAULTED_PAGE_OPTS. Rendering only.
+ *
+ *  Passing a defaulted copy in here throws instead of quietly answering "yes",
+ *  so a future refactor that collapses the two objects fails loudly in tests.
+ */
+export function requestedWindow(rawArgs) {
+  if (rawArgs && rawArgs[DEFAULTED_PAGE_OPTS]) {
+    throw new Error("requestedWindow: given defaulted page options; pass the caller's original arguments (.github#371)");
+  }
+  return rawArgs?.offset !== undefined || rawArgs?.limit !== undefined;
+}
+
+/** Hand back the raw Graph, or render a paginated transcript.
+ *
+ *  Named arguments on purpose: `rawArgs` and `opts` are different objects with
+ *  different jobs (see requestedWindow) and a positional signature makes them
+ *  trivially swappable. `opts` defaults to `rawArgs` for callers that do no
+ *  defaulting of their own.
+ */
+function renderOrGraph(stdout, { rawArgs, opts = rawArgs, label }) {
+  if (opts?.mode === "graph") {
+    if (requestedWindow(rawArgs)) return err(GRAPH_WINDOW_REFUSAL);
+    return ok(stdout.trim());
+  }
   let graph;
   try {
     graph = JSON.parse(stdout);
   } catch {
     return err('returned non-JSON; try mode: "graph"');
   }
-  return ok(renderTranscript(graph, args ?? {}, label));
+  return ok(renderTranscript(graph, opts ?? {}, label));
 }
 
 const TOOLS = { read_chat: readChat, read_session: readSession };
@@ -358,4 +419,4 @@ function serve() {
 // functions without the read loop attaching and hanging its process.
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) serve();
 
-export { READ_CHAT_TOOL, READ_SESSION_TOOL, readChat, readSession, handle, serve, DEFAULT_LIMIT };
+export { READ_CHAT_TOOL, READ_SESSION_TOOL, readChat, readSession, handle, serve, DEFAULT_LIMIT, DEFAULTED_PAGE_OPTS };

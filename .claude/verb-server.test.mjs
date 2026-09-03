@@ -26,6 +26,9 @@ import {
   READ_CHAT_TOOL,
   READ_SESSION_TOOL,
   DEFAULT_LIMIT,
+  requestedWindow,
+  GRAPH_WINDOW_REFUSAL,
+  DEFAULTED_PAGE_OPTS,
 } from "./verb-server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -367,4 +370,142 @@ test("the tool description warns before the call, not only after it", () => {
   const d = READ_SESSION_TOOL.inputSchema.properties.session_id.description;
   assert.match(d, /subagent/);
   assert.match(d, /PARENT/);
+  // It used to end "Pass it explicitly when you need your own." — measured: there
+  // is no such value. A subagent that found its own transcript on disk and passed
+  // that agent id got "not found on this machine"; agent ids are not session ids.
+  // The schema now says the remedy that exists, because it is text a model acts on.
+  assert.match(d, /CANNOT read its own transcript/);
+  assert.match(d, /do not resolve/);
+  assert.match(d, /subagents\/agent-\*\.jsonl/); // the file to read instead
+  assert.match(d, /meta\.json/); // and how to tell which one is yours
+  assert.doesNotMatch(d, /Pass it explicitly when you need your own/);
+});
+
+test("an unresolvable session names a command that actually enumerates sessions", async () => {
+  // The hint was "… --json shows what is" — neither runnable nor English.
+  const result = await callTool("read_session", { session_id: "no-such-session" }, { withPath: true });
+  assert.equal(result.isError, true);
+  const text = result.content[0].text;
+  assert.match(text, /not found on this machine/);
+  assert.match(text, /p list claude --json$/); // ends with the pasteable command
+  assert.doesNotMatch(text, /shows what is/);
+});
+
+test("the transcript header says what a turn IS, since the count is otherwise unitless", () => {
+  // Measured: 729 turns for a 7,475-line JSONL. Without the unit a reader has to
+  // reverse-engineer it from the number.
+  const text = renderTranscript(GRAPH, {});
+  assert.match(text, /turns 1–2 of 2/);
+  assert.match(text, /A turn is one user or assistant message carrying text/);
+  assert.match(text, /tool calls, tool results and empty messages are not turns/);
+});
+
+// ── graph mode refuses a window rather than ignoring it (#371) ───────────────
+// Measured before the fix: `read_chat mode=graph limit=2` returned 314,098
+// chars and `read_session mode=graph offset=-2 limit=2` returned 8,011,561 —
+// both windows were two turns, both returned everything. renderOrGraph returned
+// raw stdout before renderTranscript, the only caller of page(), so offset and
+// limit were validated, defaulted, threaded down and dropped.
+//
+// THE TRAP these tests exist to hold shut: read_session DEFAULTS offset before
+// rendering, so "did the caller ask for a window?" cannot be asked of the
+// options the renderer sees — every self-read has one by then. The last two
+// cases below are the ones that fail if that distinction is ever collapsed.
+
+/** A `path` CLI stub: `p list claude --json` → one session; anything else → a graph. */
+function pathStub(dir, graph = BIG) {
+  writeFileSync(
+    join(dir, "path"),
+    `#!/usr/bin/env bash
+if [ "$2" = "list" ]; then printf '%s' '${JSON.stringify({ sessions: [{ session_id: "sess-1", project_path: "/home/user" }] })}'; exit 0; fi
+printf '%s' '${JSON.stringify(graph)}'
+`,
+  );
+  chmodSync(join(dir, "path"), 0o755);
+  return join(dir, "path");
+}
+
+const SESSION_ENV = { CLAUDE_CODE_SESSION_ID: "sess-1" };
+
+/** One tools/call, with chat-fetch (and optionally `path`) stubbed. */
+async function callTool(name, args, { fail = false, withPath = false } = {}) {
+  const dir = stubDir({ fail });
+  try {
+    const env = withPath ? { PATH_CLI_BIN: pathStub(dir), ...SESSION_ENV } : {};
+    const res = await rpc(
+      [
+        { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } },
+      ],
+      { expect: 2, chatFetch: join(dir, "chat-fetch.sh"), env },
+    );
+    return res.find((m) => m.id === 2).result;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("requestedWindow answers from the caller's original arguments only", () => {
+  assert.equal(requestedWindow(undefined), false);
+  assert.equal(requestedWindow({}), false);
+  assert.equal(requestedWindow({ mode: "graph" }), false);
+  assert.equal(requestedWindow({ limit: 2 }), true);
+  assert.equal(requestedWindow({ offset: 0 }), true); // offset 0 is still a request
+  assert.equal(requestedWindow({ offset: -2, limit: 2 }), true);
+});
+
+test("requestedWindow throws on a defaulted copy rather than answering it", () => {
+  // The guard that makes the read_session default impossible to mistake for a
+  // caller-supplied window if the two objects are ever collapsed.
+  assert.throws(() => requestedWindow({ offset: -40, [DEFAULTED_PAGE_OPTS]: true }), /original arguments/);
+});
+
+test("read_chat graph mode refuses an explicit window and names the remedy", async () => {
+  const result = await callTool("read_chat", { share_url: "https://claude.ai/share/x", mode: "graph", limit: 2 });
+  assert.equal(result.isError, true);
+  const text = result.content[0].text;
+  assert.equal(text, GRAPH_WINDOW_REFUSAL);
+  assert.match(text, /whole-session by design/); // why
+  assert.match(text, /mode: "transcript"/); // what to do instead
+  assert.doesNotMatch(text, /path-claude-chat-abc/); // and no 8MB payload
+});
+
+test("read_session graph mode refuses the window the issue measured", async () => {
+  const result = await callTool("read_session", { mode: "graph", offset: -2, limit: 2 }, { withPath: true });
+  assert.equal(result.isError, true);
+  assert.equal(result.content[0].text, GRAPH_WINDOW_REFUSAL);
+});
+
+test("read_chat graph mode with no window still returns the whole Graph", async () => {
+  const result = await callTool("read_chat", { share_url: "https://claude.ai/share/x", mode: "graph" });
+  assert.ok(!result.isError, JSON.stringify(result));
+  assert.equal(JSON.parse(result.content[0].text).graph.id, "path-claude-chat-abc");
+});
+
+test("THE TRAP: an argument-less read_session graph self-read is NOT a windowed request", async () => {
+  // read_session fills offset in for this exact call. A refusal that asked the
+  // renderer's options instead of the caller's arguments would reject it — the
+  // commonest graph call there is, and one that passed no window at all.
+  const result = await callTool("read_session", { mode: "graph" }, { withPath: true });
+  assert.ok(!result.isError, JSON.stringify(result));
+  assert.equal(turnsOf(JSON.parse(result.content[0].text)).length, 100);
+});
+
+test("transcript mode is unaffected: windows are still honoured, both verbs", async () => {
+  const chat = await callTool("read_chat", { share_url: "https://claude.ai/share/x", limit: 1, offset: 0 });
+  assert.ok(!chat.isError);
+  assert.match(chat.content[0].text, /turns 1–1 of 2/);
+
+  const session = await callTool("read_session", { limit: 5, offset: 0 }, { withPath: true });
+  assert.ok(!session.isError, JSON.stringify(session));
+  assert.match(session.content[0].text, /turns 1–5 of 100/);
+
+  const bare = await callTool("read_session", {}, { withPath: true });
+  assert.ok(!bare.isError, JSON.stringify(bare));
+  assert.match(bare.content[0].text, /turns 61–100 of 100/); // still defaults to the newest turns
+});
+
+test("the mode schema warns that graph refuses a window, before the call", () => {
+  assert.match(READ_SESSION_TOOL.inputSchema.properties.mode.description, /REFUSES/);
+  assert.match(READ_CHAT_TOOL.inputSchema.properties.mode.description, /transcript for a window/);
 });
