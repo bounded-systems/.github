@@ -37,7 +37,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(bash .claude/org-repair.sh)"
+      "Bash(bash .claude/org-repair.sh)",
+      "Bash(curl https://pathbase.bounded.tools/c/:*)"
     ]
   }
 }
