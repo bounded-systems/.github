@@ -259,7 +259,12 @@ test("red, and for the RIGHT reason: an unreadable issue is not a pass", () => {
   });
   assert.equal(r.status, 1);
   assert.match(r.summary, /unreadable/);
-  assert.match(r.output, /may not reach that repository/);
+  // #358: the warning must say WHY (the PR repo's token, not the claim) and
+  // WHAT TO DO (a local issue), not merely that the token may not reach.
+  assert.match(r.output, /cannot read that repository/);
+  assert.match(r.output, /open an issue HERE/);
+  assert.match(r.output, /358/);
+  assert.match(r.output, /own repo/);
 });
 
 // ── The trailer form ────────────────────────────────────────────────────────
