@@ -55,6 +55,15 @@ jobs:
       # The pre-stage ordering as a check (payload-staged.yml). The decision is a
       # pure function so the red message -- which IS the remedy -- is pinned here.
       - run: node --test .claude/payload-staged.test.mjs
+      # DERIVED, not restated (#355). This gate fails when a *.test.mjs exists that
+      # no workflow runs, or a workflow names one that does not exist. The block
+      # below it is the thirteen files that had been in neither list -- passing
+      # locally, gating nothing -- when it was written.
+      - run: node --test .claude/test-coverage.test.mjs
+      - run: node --test .claude/chat-fetch.test.mjs .claude/verb-server.test.mjs .claude/discoverability.test.mjs
+      - run: node --test .claude/inject-org-context.test.mjs .claude/inject-org-context-drift.test.mjs .claude/toolpath-pin.test.mjs
+      - run: node --test .claude/claim-sweep-linked-pr.test.mjs .claude/claim-sweep-trigger.test.mjs .claude/pr-claim-contradiction.test.mjs
+      - run: node --test pr-claim.test.mjs budget-liveness.test.mjs dependabot-coverage.test.mjs enroll-digest.test.mjs
       # boot.sh's FETCH branch, run as a bare host actually meets it (#848).
       # That branch had only ever executed in a managed session, which runs as
       # ROOT — so `mkdir -p /opt/bounded-boot` succeeded there and nowhere else.
