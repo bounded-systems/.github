@@ -62,6 +62,7 @@ jobs:
       - run: node --test .claude/test-coverage.test.mjs
       - run: node --test .claude/chat-fetch.test.mjs .claude/verb-server.test.mjs .claude/discoverability.test.mjs
       - run: node --test .claude/inject-org-context.test.mjs .claude/inject-org-context-drift.test.mjs .claude/toolpath-pin.test.mjs
+      - run: node --test .claude/org-repair-parity.test.mjs
       - run: node --test .claude/claim-sweep-linked-pr.test.mjs .claude/claim-sweep-trigger.test.mjs .claude/pr-claim-contradiction.test.mjs
       - run: node --test pr-claim.test.mjs budget-liveness.test.mjs dependabot-coverage.test.mjs enroll-digest.test.mjs
       # boot.sh's FETCH branch, run as a bare host actually meets it (#848).
