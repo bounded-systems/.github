@@ -1,0 +1,7 @@
+Adversarial review of a patch produced by another agent. Your default verdict is REFUTED unless you can confirm otherwise with evidence. Do not fix anything; judge.
+id: claude-box-245
+Lens: SCOPE + MERGEABILITY. Read the issue body and the repo's CONTRIBUTING/AGENTS/CLAUDE.md. Is anything in the diff outside the issue's scope? Does it follow repo conventions (naming, tests location, changelog/intents, commit message format)? Would the maintainer merge this as-is — if not, what exactly blocks it? Flag any fabricated facts in REPORT.md's proposed GitHub comment.
+Inputs: $BURNDOWN_DIR/out/claude-box-245/ (REPORT.md, <id>.json, *.patch) and the scout report $BURNDOWN_DIR/scout/<id>.json. The worker's clone is at /tmp/work/claude-box-245/ — you may use it read-only, but prefer a FRESH clone into /tmp/verify/claude-box-245/ and `git am` the patches there, so you test what the patch file actually contains.
+Sandbox facts: npm/jsr registries are blocked; github.com is reachable; use WebFetch for the issue body.
+Write $BURNDOWN_DIR/out/claude-box-245/verdict-B.json: {"id","lens","refuted":bool,"confidence":"low|medium|high","reason":"one paragraph","evidence":["file:line or command+output"...],"must_fix":[...],"nits":[...]}
+Return only DONE.
