@@ -16,7 +16,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderTranscript, turnsOf, page, resolveSession, READ_CHAT_TOOL, READ_SESSION_TOOL, DEFAULT_LIMIT } from "./verb-server.mjs";
+import {
+  renderTranscript,
+  turnsOf,
+  page,
+  resolveSession,
+  sessionSource,
+  sessionLabel,
+  READ_CHAT_TOOL,
+  READ_SESSION_TOOL,
+  DEFAULT_LIMIT,
+} from "./verb-server.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, "verb-server.mjs");
@@ -319,4 +329,42 @@ test("read_session with no id and no env var names the remedy", async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── whose transcript is this? (.github#343, measured on #337 P5) ─────────────
+// A subagent inherits the PARENT's $CLAUDE_CODE_SESSION_ID, so an argument-less
+// read returns the parent's history with no error. It cannot be detected here,
+// so the header has to say where the id came from. P5: "a subagent that trusts
+// read_session will silently read its parent's history believing it is its own."
+
+test("sessionSource distinguishes a chosen session from an inherited one", () => {
+  assert.equal(sessionSource({ session_id: "abc" }), "argument");
+  assert.equal(sessionSource({}), "env");
+  assert.equal(sessionSource({ session_id: "" }), "env");
+  assert.equal(sessionSource(undefined), "env");
+});
+
+test("an inherited read warns about the subagent case; an explicit one does not", () => {
+  const explicit = sessionLabel("f5d05876-dea3-5ae8-af85-4b70ff1a358d", "argument");
+  assert.equal(explicit, "Session f5d05876");
+  assert.doesNotMatch(explicit, /PARENT/);
+
+  const inherited = sessionLabel("f5d05876-dea3-5ae8-af85-4b70ff1a358d", "env");
+  assert.match(inherited, /^Session f5d05876/); // still names it, as before
+  assert.match(inherited, /CLAUDE_CODE_SESSION_ID/); // says where it came from
+  assert.match(inherited, /PARENT/); // names the failure case
+  assert.match(inherited, /pass session_id/); // and the remedy
+});
+
+test("the warning survives into the rendered header, which is where a reader sees it", () => {
+  const graph = { paths: [{ steps: [{ change: { a: { structural: { role: "user", text: "hi" } } } }] }] };
+  const text = renderTranscript(graph, {}, sessionLabel("abcdef1234", "env"));
+  assert.match(text, /# Session abcdef12 \(from \$CLAUDE_CODE_SESSION_ID/);
+  assert.match(text, /PARENT/);
+});
+
+test("the tool description warns before the call, not only after it", () => {
+  const d = READ_SESSION_TOOL.inputSchema.properties.session_id.description;
+  assert.match(d, /subagent/);
+  assert.match(d, /PARENT/);
 });

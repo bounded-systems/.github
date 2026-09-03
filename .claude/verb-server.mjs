@@ -104,7 +104,10 @@ const READ_SESSION_TOOL = {
     properties: {
       session_id: {
         type: "string",
-        description: "Session UUID. Omit for the current session ($CLAUDE_CODE_SESSION_ID).",
+        description:
+          "Session UUID. Omit for the current session ($CLAUDE_CODE_SESSION_ID). NOTE: inside an " +
+          "in-process subagent that variable holds the PARENT's session, so omitting this reads the " +
+          "parent's transcript, not yours (.github#343). Pass it explicitly when you need your own.",
       },
       project: {
         type: "string",
@@ -194,6 +197,34 @@ export function resolveSession(args, env = process.env) {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 
+/** Was the session chosen by the caller, or inherited from the environment? */
+export function sessionSource(args) {
+  return typeof args?.session_id === "string" && args.session_id ? "argument" : "env";
+}
+
+/** The transcript header.
+ *
+ *  WHY IT SAYS WHERE THE ID CAME FROM (.github#343, measured on #337 P5):
+ *  inside an in-process SUBAGENT, $CLAUDE_CODE_SESSION_ID is the PARENT's, so
+ *  an argument-less read returns the parent's transcript. It is not an error
+ *  and cannot be detected from here — a subagent looks like any other process.
+ *  P5 only noticed because it happened to recognise the id:
+ *
+ *    "a subagent that trusts read_session will silently read its parent's
+ *     history believing it is its own."
+ *
+ *  Plausible wrong data with no signal is the worst failure this server can
+ *  have, so the header states the provenance and names the subagent case
+ *  explicitly. Naming the session was never enough: the reader has to already
+ *  know which id is theirs for a bare id to carry the warning.
+ */
+export function sessionLabel(sessionId, source) {
+  const short = sessionId.slice(0, 8);
+  return source === "argument"
+    ? `Session ${short}`
+    : `Session ${short} (from $CLAUDE_CODE_SESSION_ID — in a subagent that is the PARENT's session, not yours; pass session_id to be sure)`;
+}
+
 function readSession(args) {
   const sessionId = resolveSession(args);
   if (!sessionId) {
@@ -233,7 +264,7 @@ function readSession(args) {
   // is the question this verb exists for.
   const opts = { ...args };
   if (!Number.isInteger(opts.offset)) opts.offset = -(Number.isInteger(opts.limit) ? opts.limit : DEFAULT_LIMIT);
-  return renderOrGraph(res.stdout, opts, `Session ${sessionId.slice(0, 8)}`);
+  return renderOrGraph(res.stdout, opts, sessionLabel(sessionId, sessionSource(args)));
 }
 
 function renderOrGraph(stdout, args, label) {
