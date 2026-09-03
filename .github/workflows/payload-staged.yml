@@ -1,0 +1,36 @@
+# A PR that changes boot.sh may not merge until the bytes it produces are already
+# servable from the boot store. See the header of .claude/payload-staged.mjs for
+# why: merging first puts boot-manifest red on main and leaves every detached
+# session on the previous payload. It happened three times on 2026-09-03 and
+# "pre-stage first" was prose in two retrospectives. This is the check.
+#
+# Runs on EVERY pull request and no-ops when boot.sh is unchanged, so it can be a
+# required check without leaving unrelated PRs "expected" forever. Fails closed on
+# any store answer that is not 200 or 404.
+#
+# [settings] Making this REQUIRED is a ruleset change and is not done here — list
+# it as the manual toggle when adopting.
+name: payload-staged
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  staged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      # A depth-1 checkout cannot read boot.sh at the base; fetch just that commit.
+      - run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      - run: node .claude/payload-staged.mjs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
