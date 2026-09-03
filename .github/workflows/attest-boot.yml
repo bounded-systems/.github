@@ -49,6 +49,7 @@ on:
       - .claude/setup-toolpath.sh
       - .claude/chat-fetch.sh
       - .claude/verb-server.mjs
+      - .claude/harness-settings.mjs
       - .github/workflows/attest-boot.yml
   workflow_dispatch: {}
 
@@ -81,12 +82,13 @@ jobs:
             .claude/setup-toolpath.sh
             .claude/chat-fetch.sh
             .claude/verb-server.mjs
+            .claude/harness-settings.mjs
       - name: Name the attested digests in the run summary
         run: |
           {
             echo "### Attested subjects"
             echo
-            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh .claude/setup-toolpath.sh .claude/chat-fetch.sh .claude/verb-server.mjs; do
+            for f in .claude/boot.sh .claude/session-start-dispatch.mjs .claude/register-mcp.mjs .claude/stop-hook-git-check.sh .claude/setup-toolpath.sh .claude/chat-fetch.sh .claude/verb-server.mjs .claude/harness-settings.mjs; do
               echo "- \`$f\` — \`$(sha256sum "$f" | cut -d' ' -f1)\`"
             done
             echo

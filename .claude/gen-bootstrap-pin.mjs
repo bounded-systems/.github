@@ -273,22 +273,46 @@ export function renderBootstrap(source, { pin, digests }) {
   return out;
 }
 
-/** Read a fetched file as it exists at a commit. */
+/**
+ * Read a fetched file as it exists at a commit, or `null` if the commit is
+ * readable and simply does not contain that file.
+ *
+ * The two failures are not the same failure and must not be reported as one. A
+ * commit this checkout cannot see is a SHALLOW CLONE — every digest below becomes
+ * unknowable and the fix is `fetch-depth: 0`. A commit that exists and lacks the
+ * path is a NEW PAYLOAD FILE: the pin legitimately predates it, because the pin
+ * can only name a commit that has already merged. Conflating them made adding a
+ * fetched file impossible to land — the integrity gate threw on the PR that
+ * introduced the file and could only go green after a pin bump that could only
+ * happen after that PR merged (#343).
+ */
 export function fileAtCommit(commit, file, { cwd = HERE } = {}) {
   try {
     return execFileSync("git", ["show", `${commit}:.claude/${file}`], { cwd, maxBuffer: 8 * 1024 * 1024 });
   } catch (e) {
-    throw new Error(
-      `cannot read ${file} at ${String(commit).slice(0, 12)} — if this is CI, the checkout needs ` +
-        `fetch-depth: 0, since the pin is usually not the tip commit.\n${e.message}`,
-    );
+    try {
+      execFileSync("git", ["cat-file", "-e", `${commit}^{commit}`], { cwd, stdio: "ignore" });
+    } catch {
+      throw new Error(
+        `cannot read ${file} at ${String(commit).slice(0, 12)} — if this is CI, the checkout needs ` +
+          `fetch-depth: 0, since the pin is usually not the tip commit.\n${e.message}`,
+      );
+    }
+    return null;
   }
 }
 
-/** The digests a given commit's contents imply, keyed by SUM_ variable. */
+/**
+ * The digests a given commit's contents imply, keyed by SUM_ variable. A file the
+ * commit does not carry is `null` — an ABSENCE, which every comparison below
+ * treats as "different from whatever is here", never as a digest.
+ */
 export function digestsAt(commit, fetches, { read = fileAtCommit } = {}) {
   const out = {};
-  for (const { file, sumVar } of fetches) out[sumVar] = sha256(read(commit, file));
+  for (const { file, sumVar } of fetches) {
+    const bytes = read(commit, file);
+    out[sumVar] = bytes === null ? null : sha256(bytes);
+  }
   return out;
 }
 
@@ -316,7 +340,12 @@ export function inspect(source, { commit = "HEAD", read = fileAtCommit } = {}) {
   return {
     pin,
     fetches,
-    integrity: fetches.filter(({ sumVar }) => digests[sumVar] !== atPin[sumVar]).map((f) => f.file),
+    // A file ABSENT at the pin is not an integrity violation. Integrity asks
+    // whether the recorded digest describes the pinned bytes, and there are no
+    // pinned bytes to describe — the endpoint 404s, fetch_verified reports it, and
+    // nothing wrong is ever executed. It is a freshness fact, and it lands in
+    // `stale` below, where the PR path diagnoses and main asserts.
+    integrity: fetches.filter(({ sumVar }) => atPin[sumVar] !== null && digests[sumVar] !== atPin[sumVar]).map((f) => f.file),
     stale: fetches.filter(({ sumVar }) => atPin[sumVar] !== atHere[sumVar]).map((f) => f.file),
   };
 }

@@ -47,6 +47,11 @@ jobs:
       # state #85 shipped in, which nothing caught until it was read out of
       # /tmp/env-manager.log by hand.
       - run: node --test .claude/bootstrap-steps.test.mjs
+      # What keeps the settings write a MERGE (#343). The bug it pins was silent
+      # -- a clobber leaves a file that parses perfectly -- so these are mostly
+      # preservation tests: each puts something in the document the org did not
+      # write and asserts it is still there afterwards.
+      - run: node --test .claude/harness-settings.test.mjs
       # boot.sh's FETCH branch, run as a bare host actually meets it (#848).
       # That branch had only ever executed in a managed session, which runs as
       # ROOT — so `mkdir -p /opt/bounded-boot` succeeded there and nowhere else.

@@ -47,7 +47,8 @@ Add the line to the canonical text below, then give it one of two things in
   Forcing one comparison on both would reinstate a failure that has already
   happened here.
 - an **`IRREDUCIBLE` entry** with a reason, when nothing in the dispatcher can
-  re-do it. Both of today's — the `settings.json` write and the
+  re-do it. All three of today's — the `settings.json` write, the
+  `harness-settings.mjs` call that computes what it writes, and the
   `CLAUDE_SESSION_ROOT=` prefix — are the same irreducibility: they install the
   pointer that invokes the dispatcher, so a fallback would have to run before
   itself.
@@ -331,7 +332,17 @@ PR plus a dialog edit — the bump procedure above.
 Verification **fails closed**. A file that does not match is deleted rather than
 left at a path something might execute, and if the dispatcher fails to verify, no
 `settings.json` is written at all — a session with no hooks beats a session
-running unverified code. Verified by tampering with a digest:
+running unverified code.
+
+The settings write itself fails closed the same way, and did not used to (#343).
+It was a `cat >` clobber carrying a `hooks` block and nothing else, so every bare
+boot erased whatever else that file held — a user's `env`, their `permissions`, a
+second `SessionStart` hook — leaving a document that parses perfectly, which is
+why nothing ever reported it. `harness-settings.mjs` now computes the merged
+document and `boot.sh` still installs it; when the merger is absent or the
+existing file cannot be parsed, **nothing is written**, and the file is left as it
+was found rather than replaced. Refusing to merge is recoverable; a clobber is
+not. Verified by tampering with a digest:
 
 ```
 bootstrap: REFUSING session-start-dispatch.mjs — sha256 mismatch, not executing it
@@ -348,7 +359,7 @@ To confirm a pin and its digests agree with the repo, from a clone:
 
 ```sh
 PIN=<the pin>
-for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs; do
+for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs harness-settings.mjs; do
   a=$(git show "$PIN:.claude/$f" | sha256sum | cut -d' ' -f1)
   b=$(curl -fsSL "https://raw.githubusercontent.com/bounded-systems/.github/$PIN/.claude/$f" | sha256sum | cut -d' ' -f1)
   [ "$a" = "$b" ] && echo "$f OK $a" || echo "$f MISMATCH — endpoint disagrees with the git object"
