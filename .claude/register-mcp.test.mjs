@@ -28,6 +28,9 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT_SH = readFileSync(join(HERE, "boot.sh"), "utf8");
+// The reader's own source. Asserting boot.sh PASSES BOUNDED_BOOT_DIR is only
+// half a contract; the other half is that this file still consumes it (#352).
+const READ_SRC = readFileSync(join(HERE, "register-mcp.mjs"), "utf8");
 
 const dirent = (name) => ({ name, isDirectory: () => true });
 
@@ -290,6 +293,48 @@ test("the default boot dir is the directory boot.sh actually populates", () => {
     // The env override exists for tests; the shipped default is the contract.
     assert.equal(BOOT_DIR, "/opt/bounded-boot");
   }
+});
+
+test("boot.sh HANDS its resolved cache dir to register-mcp.mjs rather than letting it re-guess", () => {
+  // #352, and the reason the assertion above was not enough. That one pins the
+  // LITERAL `/opt/bounded-boot`, so it stayed green through #345 — which added a
+  // second cache location two lines below it and left this file's hardcoded
+  // default pointing at the first. On the fallback path register-mcp.mjs then
+  // discovered the .mcp.json beside it and wrote args/cwd into /opt anyway:
+  // registration reported success, and bounded-verbs failed silently at use.
+  //
+  // So assert the INVARIANT the older test was standing in for — whatever
+  // boot.sh resolved $BOOT to is what register-mcp.mjs is told — rather than the
+  // one path that happened to be correct when it was written.
+  assert.match(
+    BOOT_SH,
+    /BOUNDED_BOOT_DIR="\$BOOT"[^\n]*node "\$BOOT\/register-mcp\.mjs"/,
+    "boot.sh invokes register-mcp.mjs without passing BOUNDED_BOOT_DIR=$BOOT — on any host that took the " +
+      "user-cache fallback it will write /opt/bounded-boot paths into the MCP config (#352)",
+  );
+  // And the reader must still honour it, or passing it achieves nothing.
+  assert.match(
+    READ_SRC,
+    /process\.env\.BOUNDED_BOOT_DIR\s*\|\|/,
+    "register-mcp.mjs no longer reads BOUNDED_BOOT_DIR — boot.sh is passing a value nothing consumes",
+  );
+});
+
+test("every cache location boot.sh can resolve is one it could have been handed", () => {
+  // The generalisation of #352: count the assignments to BOOT inside the fetch
+  // branch. Each is a location the process may end up using, and all of them
+  // ride the single BOUNDED_BOOT_DIR="$BOOT" hand-off above — so this test is
+  // here to fail loudly if a THIRD location is ever added by someone who does
+  // not read that hand-off as load-bearing.
+  const locations = [...BOOT_SH.matchAll(/^\s*(?:BOOT|CACHE_USER)=(\S+)/gm)].map((m) => m[1]);
+  assert.ok(
+    locations.length >= 2,
+    `expected boot.sh to resolve at least the checkout and the cache; found ${locations.length}`,
+  );
+  assert.ok(
+    locations.includes("/opt/bounded-boot"),
+    "the shared cache location is gone from boot.sh but BOOT_DIR still defaults to it",
+  );
 });
 
 test("boot.sh writes its declaration INTO the cache, and only when the server landed", () => {

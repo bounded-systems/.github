@@ -55,19 +55,31 @@ BOOT="$ROOT/.github/.claude"                       # preferred: the attached che
 #   for f in session-start-dispatch.mjs register-mcp.mjs stop-hook-git-check.sh setup-toolpath.sh chat-fetch.sh verb-server.mjs; do
 #     curl -fsSL "https://boot.bounded.tools/artifact/$PIN/$f" | sha256sum
 #   done
-PIN=4f465d0bffbee609309468a541853095aefab6ad
+PIN=946dbfb292f59c71c0fc17e63ecdb8fa981ced70
 SUM_session_start_dispatch_mjs=f97ebc15b19a77bd21308229a355fbd5a0f767984063c13ded470dd3e0d40125
 SUM_register_mcp_mjs=40197da6e3dc5c771856a437b6a9e944ce530bb69f2b2724bd2513c281b84c1b
 SUM_stop_hook_git_check_sh=712c2a8041bbbec27b05e7c702a5654d0b882c4545288b065550276fc5c77562
 SUM_setup_toolpath_sh=dabcd89df0467f9361c0c51d72cd2989aa8b91dfa1762e7c0f6a170a72a9ffa2
 SUM_chat_fetch_sh=ef4a577aadb27bca3b76859024acc31184c33e1896b3c469a71b80ff5afc78d5
-SUM_verb_server_mjs=258baba3b156a5939c72c38e539d47d415d2e3014e2c16d7954b134d17cabcb1
+SUM_verb_server_mjs=593f675fd13e0045a4a23f3c7327b127bbb235cce9f83b531960a17cc23eae5f
 
 # Fetch one file and REFUSE it unless it hashes to the pinned digest. Downloads
 # to a temp name and only moves it into place after the check, so an unverified
 # file never sits at a path something might execute.
 fetch_verified() {
   local f="$1" want="$2" got
+  # CACHE HIT (#347). Before #347 this function always fetched, so the cache it
+  # filled was never read: a detached host re-downloaded all six artifacts every
+  # run, and could not bootstrap offline even holding the bytes.
+  #
+  # The hit is DIGEST-GATED, not existence-gated, which is what makes it safe to
+  # do here rather than with a directory-level "looks populated" test: the SUM_*
+  # constants move with PIN, so a cache left by an older PIN mismatches and
+  # re-fetches. Same property self-heals a truncated or corrupted file.
+  if [ -f "$BOOT/$f" ]; then
+    got="$(sha256sum "$BOOT/$f" | cut -d' ' -f1)"
+    if [ "$got" = "$want" ]; then return 0; fi
+  fi
   curl -fsSL --retry 2 \
     "https://boot.bounded.tools/artifact/$PIN/$f" \
     -o "$BOOT/$f.unverified" || { echo "bootstrap: WARN could not fetch $f"; return 1; }
@@ -119,9 +131,23 @@ if [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then
   # assign form out literally and thereby reassigned BOOT to its own prose. Do
   # not write that shape here, even inside a comment.
   BOOT=/opt/bounded-boot
+  CACHE_USER="${XDG_CACHE_HOME:-$HOME/.cache}/bounded-boot"
   mkdir -p "$BOOT" 2>/dev/null || true
-  if [ ! -w "$BOOT" ]; then BOOT="${XDG_CACHE_HOME:-$HOME/.cache}/bounded-boot"; mkdir -p "$BOOT" 2>/dev/null || true; fi
-  if [ ! -w "$BOOT" ]; then echo "bootstrap: REFUSED — no writable cache directory (tried /opt/bounded-boot and the user cache)"; exit 1; fi
+  # A POPULATED cache beats an empty writable one (#347). #345 chose purely by
+  # writability, which made the two locations it introduced unable to see each
+  # other: a root run fills /opt, a later unprivileged run finds /opt unwritable
+  # and falls to the user cache, and neither run can ever hit the other's copy.
+  # Preferring a location that already carries the dispatcher fixes that in both
+  # directions, and costs nothing when only one location exists.
+  #
+  # Existence is only the LOCATION preference; every actual reuse is still
+  # digest-checked in fetch_verified, so pointing at a stale-PIN cache here just
+  # means those files miss and are re-fetched.
+  if [ ! -f "$BOOT/session-start-dispatch.mjs" ] && [ -f "$CACHE_USER/session-start-dispatch.mjs" ]; then BOOT="$CACHE_USER"; fi
+  # An unwritable cache is still usable if it already holds what we need — a full
+  # hit performs no writes at all, which is the offline-bootstrap case.
+  if [ ! -w "$BOOT" ] && [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then BOOT="$CACHE_USER"; mkdir -p "$BOOT" 2>/dev/null || true; fi
+  if [ ! -w "$BOOT" ] && [ ! -f "$BOOT/session-start-dispatch.mjs" ]; then echo "bootstrap: REFUSED — no writable cache directory and no usable cached copy (tried /opt/bounded-boot and the user cache)"; exit 1; fi
   fetch_verified session-start-dispatch.mjs "$SUM_session_start_dispatch_mjs" || MISSING="$MISSING,session-start-dispatch.mjs"
   fetch_verified register-mcp.mjs           "$SUM_register_mcp_mjs" || MISSING="$MISSING,register-mcp.mjs"
   fetch_verified stop-hook-git-check.sh     "$SUM_stop_hook_git_check_sh" || MISSING="$MISSING,stop-hook-git-check.sh"
@@ -208,7 +234,13 @@ fi
 # Keep this call. The dispatcher re-runs register-mcp.mjs as a fallback (#84), but
 # only THIS one is ordered before Claude Code launches and reads the tool list.
 if [ -f "$BOOT/register-mcp.mjs" ]; then
-  CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
+  # BOUNDED_BOOT_DIR is not optional plumbing (#352). register-mcp.mjs defaults
+  # to a hardcoded /opt/bounded-boot, so on #345's fallback path it DISCOVERED
+  # the .mcp.json beside it and then wrote args/cwd pointing at /opt — the one
+  # directory that host had just proven it cannot write to. Registration reported
+  # success and bounded-verbs failed silently at first use. Passing the resolved
+  # location is the whole fix; the variable was already read, just never sent.
+  BOUNDED_BOOT_DIR="$BOOT" CLAUDE_SESSION_ROOT="$ROOT" node "$BOOT/register-mcp.mjs" || true
 else
   echo "bootstrap: WARN register-mcp.mjs missing — MCP tools will not be registered"
 fi

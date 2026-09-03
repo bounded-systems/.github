@@ -238,5 +238,58 @@ else
 fi
 echo
 
+# ── 6. THE CACHE IS READ, NOT JUST WRITTEN (#347) ───────────────────────────
+# Every case above is cold by construction, so all five passed against a boot.sh
+# whose cache was WRITE-ONLY: case 1's "n >= 6 artifacts present" is satisfied
+# identically by a re-fetch and by a reuse. That is why this file could ship with
+# #345 and prove nothing about the cache it had just given a second location.
+#
+# The discriminating move is to run TWICE and BREAK THE NETWORK on the second
+# run — the same sabotage case 3 uses. With no network, the only way run 2 can
+# reach `ready` is by reusing bytes already on disk. Against the pre-#347 boot.sh
+# this fails loudly: every fetch_verified fails, MISSING fills, and it prints
+# INCOMPLETE and exits 1.
+#
+# This works because bare()'s $home is a REAL directory under $WORK — only /opt
+# and /home/user are tmpfs — so the user cache survives between invocations.
+echo "6. second run with the network DEAD — must reuse the cache, not re-fetch"
+rc="$(bare reuse)"
+n="$(cached reuse)"
+if [ "$rc" -eq 0 ] && [ "$n" -ge 6 ]; then
+  ok "run 1 populated the cache ($n artifacts)"
+else
+  no "run 1 did not populate the cache (exit $rc, $n artifacts) — case 6 proves nothing"
+fi
+rc="$(bare reuse CURL_CA_BUNDLE=/nonexistent SSL_CERT_FILE=/nonexistent)"
+if [ "$rc" -eq 0 ] && said reuse "ready" && ! said reuse "INCOMPLETE"; then
+  ok "run 2 completed with no network — the cache was READ (exit $rc)"
+else
+  no "run 2 could not bootstrap offline from a populated cache (exit $rc) — the cache is write-only"
+fi
+echo
+
+# ── 7. the hit is DIGEST-gated, not existence-gated ─────────────────────────
+# A hit test that only checks `-f` would turn a corrupted or stale-PIN cache into
+# a permanently poisoned one, silently — strictly worse than re-fetching. Corrupt
+# one artifact, restore the network, and it must come back to its pinned digest.
+#
+# UNLIKE case 6, this one passes BEFORE the #347 fix as well as after, and that
+# is correct rather than a weakness: the pre-fix code re-fetched unconditionally,
+# so it could not reuse a corrupted file either. It guards the fix's future — a
+# later "optimisation" that drops the sha256 compare for a bare `-f` — not the
+# fix itself. Case 6 is the one that discriminates (measured: exit 1 before,
+# exit 0 after). Same shape as #535's cache-control guard.
+echo "7. a corrupted cached artifact must MISS and be re-fetched, not reused"
+printf 'garbage' >> "$WORK/reuse/home/.cache/bounded-boot/register-mcp.mjs" 2>/dev/null
+rc="$(bare reuse)"
+want="$(sed -n 's/^SUM_register_mcp_mjs=//p' "$SOURCE_BOOT")"
+got="$(sha256sum "$WORK/reuse/home/.cache/bounded-boot/register-mcp.mjs" 2>/dev/null | cut -d' ' -f1)"
+if [ "$rc" -eq 0 ] && [ -n "$want" ] && [ "$got" = "$want" ]; then
+  ok "corrupted artifact was re-fetched and hashes to its pin again"
+else
+  no "a corrupted cache was reused (exit $rc, got ${got:-none}, want ${want:-unknown})"
+fi
+echo
+
 echo "boot cold start: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
