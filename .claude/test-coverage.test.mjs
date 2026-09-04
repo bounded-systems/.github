@@ -49,7 +49,10 @@ export function gatedFiles(root = ROOT) {
   const out = new Map();
   for (const wf of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
     const text = readFileSync(join(dir, wf), "utf8");
-    for (const m of text.matchAll(/node\s+--test\s+([^\n#]+)/g)) {
+    // `bun test` counts as a gate for the same reason `node --test` does: a suite
+    // that needs Bun.YAML (scripts/repo-standard-conformance.test.mjs) runs
+    // under bun, and an ungated suite is the failure this file exists to catch.
+    for (const m of text.matchAll(/(?:node\s+--test|bun\s+test)\s+([^\n#]+)/g)) {
       for (const p of m[1].trim().split(/\s+/)) {
         if (!p.endsWith(".test.mjs")) continue;
         if (!out.has(p)) out.set(p, []);

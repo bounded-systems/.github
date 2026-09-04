@@ -65,6 +65,16 @@ jobs:
       - run: node --test .claude/org-repair-parity.test.mjs
       - run: node --test .claude/claim-sweep-linked-pr.test.mjs .claude/claim-sweep-trigger.test.mjs .claude/pr-claim-contradiction.test.mjs
       - run: node --test pr-claim.test.mjs budget-liveness.test.mjs dependabot-coverage.test.mjs enroll-digest.test.mjs
+      # The repo-standard conformance projection (#381): the classifier pinned
+      # against real callers, the sweep against a fake GitHub for its two
+      # refusals. Under bun, not node — the YAML parser is Bun.YAML — which is
+      # why .claude/test-coverage.test.mjs recognises a `bun test` line as a
+      # gate too. Its session reader runs under node over fixtures.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - run: bun test scripts/repo-standard-conformance.test.mjs
+      - run: node --test .claude/repo-standard-conformance.test.mjs
       # boot.sh's FETCH branch, run as a bare host actually meets it (#848).
       # That branch had only ever executed in a managed session, which runs as
       # ROOT — so `mkdir -p /opt/bounded-boot` succeeded there and nowhere else.
