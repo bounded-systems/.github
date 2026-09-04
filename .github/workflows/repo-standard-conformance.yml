@@ -1,0 +1,168 @@
+name: repo-standard-conformance
+
+# Which PUBLIC repos call repo-standard.yml, with what configuration, and did
+# that lane run green on their default branch — projected daily as one JSON
+# snapshot. `.github`#381; the tiers it answers are `.github-private`#912.
+#
+# THE LOGIC IS NOT HERE. Enumeration, classification and the summary live in
+# scripts/repo-standard-conformance.mjs under its test suite; this file owns the
+# schedule, the credential, the artifact, the publish and the verdict — the
+# split front-desk-projection.yml and budget-liveness.yml use.
+#
+# ── Why here, in the public repo ─────────────────────────────────────────────
+# The standard lives here, so its conformance projection sits beside it and
+# moves with it. Public-repo minutes draw the free allowance (the private estate
+# is over its own — `.github-private` → docs/actions-spend-decision.md), and the
+# snapshot must be anonymously fetchable for desk.bounded.tools to render it.
+# `.github`#228 moved the BOARD feed out of here into a one-purpose repo for the
+# narrowness of its cosign identity; this is derived data about this repo's own
+# artifact, committed through the API (GitHub-signed), which is the identity
+# desk actually relies on for the board feed too. If the owner wants it in
+# front-desk-feed or night-audit instead, the script moves unchanged.
+#
+# ── What it publishes, and what it refuses to ────────────────────────────────
+# Only public repos: the enumeration is `type=public`, verified EXACTLY against
+# /orgs/{org}.public_repos, so no private repository is read or named — in the
+# snapshot, the artifact, the summary or this log. A short enumeration is a
+# refusal (exit 2, no snapshot), as is a credential that reads nothing: a
+# partial fleet presented as the fleet is the failure this layer exists to
+# prevent (#368's lesson, applied to a public denominator where it can be exact
+# rather than a floor).
+#
+# ── Report-only on landing ───────────────────────────────────────────────────
+# The 2026-08-17 survey found ~half the org without a caller. A check that is
+# red from birth trains readers to ignore it (#139), so `strict` is a dispatch
+# input that reds the VERDICT step after the snapshot has published, and the
+# baseline-and-ratchet increment (drift-gate's shape) is the next change once
+# the first snapshot exists.
+#
+# ── The one unverified claim, dated ──────────────────────────────────────────
+# Whether GITHUB_TOKEN with `actions: read` may list another public repo's
+# workflow runs is NOT measured as of 2026-09-04 — the session that wrote this
+# could not reach api.github.com for any unattached repo (proxy 403). The row
+# records `standard_run: unreadable` on a 403 and the summary counts them; the
+# first scheduled run is the measurement. If it is a 403, the fallback is a
+# broker door carrying `actions: read`, which none does today.
+
+on:
+  schedule:
+    # Daily. Adoption moves in days, not hours; the reader's age gate is set at
+    # twice this. Offset from every other cron in this repo (:17, :29, :37,
+    # :13, :43) and from the hourly herd at :00.
+    - cron: "53 6 * * *"
+  workflow_dispatch:
+    inputs:
+      strict:
+        description: "Red the verdict when any public repo has a finding (no caller, unpinned ref, filtered pull_request, toolchain with no test lane, red run). Off by default — see the header."
+        type: boolean
+        default: false
+      publish:
+        description: "Publish the snapshot to the repo-standard-conformance branch. Off for a dry run that only uploads the artifact."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repo-standard-conformance
+  cancel-in-progress: false
+
+jobs:
+  project:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # The snapshot BRANCH, through the refs API and one createCommitOnBranch
+      # mutation — never main, which the ci-green ruleset protects, and never
+      # `git push`, which workflows.test.mjs forbids here (#129).
+      contents: write
+      # This repo's own selftest runs are readable with this. Other repos' runs
+      # are the unverified claim in the header.
+      actions: read
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      # Exit 2 here is "the lane could not measure" — no snapshot is written,
+      # so the publish below cannot push a partial one, and the previous
+      # snapshot ages out on the reader's side rather than being replaced by a
+      # smaller fleet. The summary is written by the script.
+      - name: Sweep the org's public repos
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STRICT: ${{ inputs.strict == true && '--strict' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086  # STRICT is empty or exactly one flag
+          bun scripts/repo-standard-conformance.mjs --out /tmp/repo-standard-conformance.json $STRICT
+          jq -r '"rows: \(.totals.rows)  findings: \(.totals.findings)  gaps: \(.totals.gaps)  generated_at: \(.generated_at)"' /tmp/repo-standard-conformance.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repo-standard-conformance
+          path: /tmp/repo-standard-conformance.json
+          retention-days: 14
+
+      # The branch is main plus ONE commit carrying the snapshot, re-based onto
+      # the current main every run: force the ref to this run's commit, then
+      # one API commit on top of it. Always exactly one commit ahead, so there
+      # is no growing history to pay for, and the commit is signed by GitHub as
+      # github-actions[bot] — the pin job's pattern (org-defaults.yml), which is
+      # the only way a workflow in this repo may write a branch.
+      #
+      # Fetch it at
+      #   https://raw.githubusercontent.com/bounded-systems/.github/repo-standard-conformance/repo-standard-conformance.json
+      - name: Publish the snapshot branch
+        if: ${{ github.event_name == 'schedule' || inputs.publish == true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          b=repo-standard-conformance
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/$b" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/heads/$b" -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          stamp="$(jq -r .generated_at /tmp/repo-standard-conformance.json)"
+          gh api graphql \
+            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) {
+              createCommitOnBranch(input: {
+                branch: { repositoryNameWithOwner: $repo, branchName: $b },
+                expectedHeadOid: $head,
+                message: { headline: $msg },
+                fileChanges: { additions: [ { path: "repo-standard-conformance.json", contents: $c } ] }
+              }) { commit { oid } } }' \
+            -f repo="$GITHUB_REPOSITORY" -f b="$b" -f head="$GITHUB_SHA" \
+            -f msg="repo-standard conformance $stamp" \
+            -f c="$(base64 -w0 /tmp/repo-standard-conformance.json)" \
+            --jq '"published " + .data.createCommitOnBranch.commit.oid'
+          {
+            echo ""
+            echo "Fetch: \`https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/$b/repo-standard-conformance.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # AFTER the publish, deliberately: a strict red must not withhold the
+      # snapshot that says why it is red.
+      - name: Verdict
+        if: ${{ inputs.strict == true }}
+        run: |
+          set -euo pipefail
+          n="$(jq '.totals.findings' /tmp/repo-standard-conformance.json)"
+          if [ "$n" -gt 0 ]; then
+            echo "::error title=repo-standard conformance: $n finding(s)::strict mode — see the summary table. Report-only runs carry the same snapshot without this red."
+            exit 1
+          fi
+          echo "strict: no findings across $(jq '.totals.rows' /tmp/repo-standard-conformance.json) public repos."
