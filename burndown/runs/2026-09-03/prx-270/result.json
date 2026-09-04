@@ -1,0 +1,12 @@
+{
+  "id": "prx-270",
+  "done": true,
+  "patch_files": ["/home/claude/burndown/out/prx-270/0001-docs-prx-expand-intake-source.ts-module-doc-comment-.patch"],
+  "verify_passed": false,
+  "summary": "Extended the existing top-of-file JSDoc on packages/prx/src/intake/intake-source.ts to state human/agent invocation + GH-292 signing and to describe all five exports, and (fix round) added an empty changeset so changeset-check passes for a docs-only change under packages/; two wording inaccuracies flagged by review were corrected. Comment-only for the package (transpiled output identical to main); header grep and changeset-gate simulation pass, but bun typecheck/check/test could not run because the sandbox blocks package registries.",
+  "unresolved": [
+    "bun run typecheck / bun run check / bun test not executed: egress proxy blocks registry.npmjs.org and npm.jsr.io, so bun install cannot populate node_modules. Change is comment-only plus an empty changeset; run in CI after applying.",
+    "CLAUDE.md bootstrap (.claude/org-repair.sh) and claim-ticket.yml claim not performed: no GitHub credentials in sandbox (owner checklist in REPORT.md).",
+    "Stale unmerged origin/GH-270 branch (7800b8e) is superseded by this patch; delete it when merging."
+  ]
+}

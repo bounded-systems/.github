@@ -1,0 +1,29 @@
+{
+  "id": "conformance-25",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/conformance main (293dd55) into /tmp/final/conformance-25; the regenerated patch applies cleanly with `git am` (9 files, +1047/-2). Both prior must_fix items (all from verdict-B; verdict-A had none) are resolved or correctly deferred. (1) Admin token on pull_request: release-tags-audit.yml now has two jobs — `pr` (`if: github.event_name == 'pull_request'`) runs `deno task test:audit` + the audit with `GH_TOKEN: ${{ github.token }}` and contains no create-github-app-token step; `org` (`if: github.event_name != 'pull_request'`, i.e. schedule/workflow_dispatch from the default branch) is the only job that mints the App token with the same vars.ORG_ADMIN_APP_ID/secrets.ORG_ADMIN_APP_PRIVATE_KEY as open-prs.yml (which itself only triggers on schedule + workflow_dispatch). Verified by reading the file; the incorrect 'fork PRs fall back' header claim is gone. (2) Claim + trailer: the commit body now ends with a `Closes #25` trailer (patch-level half done); the claim itself requires dispatching claim-ticket.yml / org-repair.sh with org credentials the sandbox lacks, which is explicitly and correctly listed as an owner action, and result.json is honestly marked partial:true. Issue #25 re-checked via WebFetch: still open, unassigned, unlabeled, no linked PRs, so pr-claim stays red until the owner claims it — exactly as the report says. All prior verifier checks reproduce: deno fmt --check / lint / check clean; 13 tests pass, 0 failed, no ignore/only; the runner under fake-gh.py prints the SKIP/UNKNOWN/PASS/FAIL table exit 0; scout verify grep exit 0; --strict --release-actor=github-actions → 1 violation exit 1; --strict --fail-unknown → 2 violations exit 1; --repo=guest-room --strict → exit 0; --release-actor=team:5 flips drift-gate to FAIL. Nits also verified fixed: no `binaries.yml` reference remains (only prose 'binaries' meaning release binaries); TAG_TRIGGER regexes now require a literal `v*` — a direct test shows `tags: [v1.2.3]` and list-form `- v1.0.0` no longer classify as mint-released while `[\"v*\"]`, list `'v*'`, and a commented example behave correctly; classifyMintReleased on a real fresh mint clone → mintReleased true with .release/ + release.yml evidence; generic `test` task renamed `test:audit`; `shell: bash` + `set -o pipefail` before both tee pipelines. The ready-to-paste comment was checked line by line: one commit, table columns/verdicts, --release-actor options (any/github-actions=Integration#15368/org-admin/integration|team|role|deploy-key:<id>) match parseReleaseActor, 13 tests, two-job workflow description, token-scope caveat, `deno task test:audit` apply line with the nodeModulesDir:auto network caveat, and the 'not run live' disclosure — no false statement found. Remaining open items are all genuinely credential- or process-bound (live org run, issue claim, cspell in CI, --strict promotion after baseline) and are disclosed rather than claimed.",
+  "resolved": [
+    "verdict-B must_fix 1: org-admin App token no longer minted in a pull_request-triggered job; workflow split into `pr` (github.token only, no app-token step) and `org` (schedule/workflow_dispatch only, mirrors open-prs.yml).",
+    "verdict-B must_fix 2 (patch-level half): commit message carries a `Closes #25` trailer so pr-claim can pass once the issue is claimed.",
+    "verdict-B nit: `binaries.yml` fabricated filename removed from README.md, release-tags.ts and release-tags-lib.ts headers.",
+    "verdict-B nit: incorrect 'fork PRs fall back to github.token' header claim removed (moot after the split).",
+    "verdict-B nit: `test` task renamed `test:audit` in deno.json, README and workflow.",
+    "verdict-B nit: ready-to-paste comment now says `deno task test:audit` and discloses the nodeModulesDir:auto network caveat.",
+    "verdict-A nit: TAG_TRIGGER_INLINE/LIST tightened to a literal `v*`; concrete tags like `[v1.2.3]` no longer match (verified by direct test), 13 tests still pass.",
+    "verdict-A nit: `set -o pipefail` explicit with `shell: bash` before both `deno task ... | tee` steps.",
+    "Reproduced in fresh clone: git am clean; fmt/lint/check clean; 13/13 tests; runner table, scout grep, --strict / --fail-unknown / --repo / --release-actor behaviours; real-mint classifyMintReleased sanity check."
+  ],
+  "still_open": [
+    "Check remains report-only (workflow runs `audit:release-tags`, not `:strict`); the issue's 'caught by the gate' wording is only met once promoted. Both prior verifiers accepted the actions-audit promotion precedent; disclosed in REPORT/comment.",
+    "Live org table never produced (no credentials / api.github.com blocked); FAIL/UNKNOWN classification against the real enterprise refs/tags/* ruleset is untested until the owner runs it.",
+    "cspell not executed offline; new prose words hand-checked only."
+  ],
+  "owner_actions": [
+    "Run `bash .claude/org-repair.sh` and claim issue #25 via claim-ticket.yml in bounded-systems/.github (issue is still open, unassigned, unlabeled as of this check); pr-claim stays red until then.",
+    "Open the PR with `Closes #25` in the body (commit already has the trailer) and push branch claude/burndown-conformance-25.",
+    "Run `GH_TOKEN=<org-admin App token> deno task audit:release-tags` (or dispatch release-tags-audit.yml → `org` job) and paste the live per-repo table into the PR and trellis#34; expect enterprise-level rows to read UNKNOWN unless the token is an enterprise owner.",
+    "Let CI run cspell on the PR.",
+    "After the live baseline is clean, switch the `org` (and/or `pr`) job to `audit:release-tags:strict` so the check blocks as the issue asks."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "synoptic-1",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/synoptic-1/0001-feat-axe-gate-real-a11y-in-a-real-browser-wired-into.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Added tokens/axe.ts (tezcatl + embedded axe-core 4.12.1 with a runtime sha256 check, zero violations under WCAG 2.x A/AA tags), an `axe` verb, wired it into check.ts and a macos-14 tokens-check job; both mocks pass, injected violations and a tampered engine fail closed (verified with axe on a tezcatl-compatible Chromium shim, not WebKit). Partial: the gate narrows the issue's 'zero violations' to A/AA tags (no best-practice rules, no AAA — the issue's stated purpose) pending maintainer sign-off, and the macOS job has never run.",
+  "unresolved": [
+    "Not executed on real tezcatl/WebKit (macOS-only): the macos-14 CI job is copied from site-ci.yml's browser job but has never run; the patch is NOT CI-green until the first PR run. Local proof used a tezcatl-CLI-compatible headless-Chromium shim.",
+    "Scope narrowing needs maintainer confirmation: zero violations is asserted under runOnly WCAG 2.x A/AA tags — axe best-practice rules (region, landmark-one-main, heading-order) are not run and AAA is not asserted (color-contrast-enhanced flags a/button/small at ~5.3:1, matching ROLE_CONTRACT's AA tier for link/muted/on-accent), while issue #1's stated purpose is 'proves the derived AAA is real'.",
+    "Vendored axe.min.js (4.12.1) came from pamelafox/axe-playwright-python@88c601d because npm/CDNs were unreachable; the runtime digest check proves it is unchanged since vendoring, not that it equals upstream — maintainer must compare AXE_SHA256 against `npm pack axe-core@4.12.1` (it does not match the deprecated sri-history.json entry; inconclusive).",
+    "Org process (org-repair.sh bootstrap, claim-ticket.yml claim of #1, push/PR with `Closes #1`) not possible from the sandbox — see the 'Before merging (owner)' checklist in REPORT.md.",
+    "Cost/policy: the macos-14 axe job runs on every tokens/** change (CORE.md previously said the browser job was off until cheap); tezcatl-flake reference is unpinned."
+  ],
+  "partial": true
+}

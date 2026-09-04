@@ -1,0 +1,43 @@
+From fe5b9e69ed36825d153f4fb718eccd5bd2905fa6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:07:57 +0000
+Subject: [PATCH] docs(readme): this is the prx receiver, not the bounded.tools
+ website
+
+Checkouts of bounded-systems/site commonly live in a directory named
+bounded.tools/ (its old README said to clone that URL), so this repo gets
+mistaken for the website and vice versa. State up front which repo this
+is, cite bounded-systems/site by URL, and point at the issue that tracks
+the naming.
+
+Refs bounded-systems/site#32
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ README.md | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/README.md b/README.md
+index e586891..5d8a8d3 100644
+--- a/README.md
++++ b/README.md
+@@ -6,6 +6,15 @@ GitHub App [`bounded-systems-prx`](https://github.com/organizations/bounded-syst
+ [app definition](https://github.com/bounded-systems/prx/blob/main/docs/github-app.md)
+ (`.github/prx-app.manifest.json`), this repo owns the runtime.
+ 
++> **Not the website.** This repo is `bounded-systems/bounded.tools`, the
++> receiver Worker at `hooks.bounded.tools`. The website at <https://bounded.tools>
++> is a separate repo, [`bounded-systems/site`](https://github.com/bounded-systems/site)
++> (deployed as `bounded-tools-site`). Its old README said to clone
++> `bounded.tools.git`, so a local directory named `bounded.tools/` is often a
++> checkout of `site` — check `git remote get-url origin` before trusting the
++> directory name. Background and the rename proposal (not executed):
++> [bounded-systems/site#32](https://github.com/bounded-systems/site/issues/32).
++
+ > **Status: DEPLOYED, not yet ingesting.** First light 2026-08-15 (run
+ > 31889379320): `GET https://hooks.bounded.tools/health` returns `ok` and
+ > `/ci.json` serves a valid snapshot. The receiver still **rejects every
+-- 
+2.43.0
+

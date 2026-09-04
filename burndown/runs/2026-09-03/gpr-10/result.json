@@ -1,0 +1,14 @@
+{
+  "id": "gpr-10",
+  "done": true,
+  "partial": true,
+  "patch_files": ["/home/claude/burndown/out/gpr-10/0001-feat-budget-wire-window-burn-metering-consumedPoints.patch"],
+  "verify_passed": true,
+  "summary": "Added pure window-meter.ts (consumedPoints per rolling/calendar window) and wired it into budget-check.ts via --ledger + pure evaluate(); tests assert accumulate-per-window and reset-at-boundary; 34/34 network-free tests pass, fmt/lint/check clean on touched files. Fix round: commit reworded (no '#75', no 'Closes', explicit does-not-close-#10 paragraph, Claim-issue trailer), --allow-read scoped to the ledger file, REPORT comment corrected. PARTIAL: lands the meter + --ledger seam only; #10 stays open until a telemetry/OTLP emitter writes the ledger.",
+  "unresolved": [
+    "Does not close #10: the telemetry/OTLP metering source the issue depends on is not filed in this repo and no front-desk-budget.yml caller supplies a ledger, so production behaviour is unchanged (unmetered, fail-open) until an emitter exists.",
+    "Full `deno task check`/`deno task test`/repo-wide `deno lint` could not run: jsr.io and registry.npmjs.org are blocked by the sandbox egress policy (only @std/assert-dependent tests ran, via a local vendored import map); CI jsr-check.yml should confirm.",
+    "Calendar windows are epoch-anchored by default (168h weekly flips Thursday 00:00 UTC); `anchor` is injectable in code but not exposed as a CLI flag.",
+    "Owner process items (see REPORT 'Before merging (owner)'): claim #10 via claim-ticket.yml, push, open PR with `Claim-issue: bounded-systems/gh-project-room#10` and no `Closes #10`."
+  ]
+}

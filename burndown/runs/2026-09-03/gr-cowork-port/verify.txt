@@ -1,0 +1,39 @@
+# fix round (3 patches on a fresh clone, no podman, uid 0)
+$ bun test 2>&1 | tail -4
+ 131 pass
+ 0 fail
+ 40229 expect() calls
+Ran 131 tests across 12 files. [383.00ms]
+$ grep -c 'G[0-9]' docs/working-in-a-cowork-sandbox.md → 11
+$ bun <descriptor-kit>/src/cli.ts check . → descriptor: ✓ no drift
+$ DENO_NO_PACKAGE_JSON=1 deno publish --dry-run --allow-dirty → Success Dry run complete
+
+# original worker run (2 patches)
+$ ! command -v podman >/dev/null && bun test 2>&1 | tail -4 && grep -c "G[0-9]" docs/working-in-a-cowork-sandbox.md
+ 130 pass
+ 0 fail
+ 40224 expect() calls
+Ran 130 tests across 12 files. [224.00ms]
+11
+exit=0
+
+$ bun test nopodman.test.ts guest-room.test.ts (new tests, names via --reporter=junit)
+  nopodman.test.ts
+    pass  the guest side is the host side, in a private run dir, and the child env points at it
+    pass  a running broker's own env var wins over the default path
+    pass  a world-writable socket dir is refused
+    pass  an injecting parent is refused unless the room says otherwise — and is then named
+    pass  an egress door without a host= caveat refuses to serve
+    pass  allowed host answers, off-list host is DENIED and never logged ALLOW; narrowing narrows
+  features/nopodman.feature (guest-room.test.ts)
+    pass  same-host doors — the guest connects where the broker listens
+    pass  what is not granted is still denied by name
+    pass  an injecting parent is refused unless the room says otherwise
+  guest-room.test.ts "names no guest" x4 (mod/gherkin/protocol/daemon): pass — engine files untouched
+
+$ deno publish --dry-run --allow-dirty (the publish.yml PR gate)
+[0m[32mSuccess[0m Dry run complete
+
+$ deno check profiles/*.ts
+[0m[32mCheck[0m profiles/nopodman.ts
+[0m[32mCheck[0m profiles/allowlist-door.ts

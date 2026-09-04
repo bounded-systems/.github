@@ -1,0 +1,27 @@
+{
+  "id": "dev-contracts-2",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": true,
+  "confidence": "high",
+  "reason": "The patch itself is sound and fully reproducible: it applies cleanly with `git am` onto a fresh clone of main (3f1d3e2 -> 9d3ca67), trunk.yaml and contracts.toml parse, the yamllint constraints (<=120 cols, no trailing spaces) hold, and with the cd4c69b fixture blobs restored `git check-ignore` matches all three dummy-key files against the new .trunk/.gitignore exactly as REPORT.md says. HEAD contains no key material. However the worker's result.json claims done:true / verify_passed:true, and neither claim survives the issue body. Issue #2's acceptance criteria are (1) dismiss the 2 secret-scanning alerts as 'Used in tests', (2) decide on history scrubbing, (3) fold .trunk hygiene into the broader rework. The patch closes none of them: (1) needs security_events credentials and was not done, (2) is only a recommendation in the report, not a recorded decision, and (3) is untouched (mise.toml still references non-existent tools/, templates/, runtimes/ trees). The scout itself marked the issue infeasible for exactly these reasons. The 'verify_passed' also rests on stand-ins: `trunk check` (the only tool that could show the lint.ignore has any effect) could not run because get.trunk.io and static.trunk.io are blocked, so the ignore block was validated only by glob matching; and the .trunk/.gitignore is redundant, since main's generated root .gitignore already ignores .trunk/plugins/ (confirmed via git check-ignore on main). Repo CI (deno check/test) fails identically on main and the branch for network reasons (npm registry blocked), which is an honest environmental non-result rather than a pass. Net: correct but optional hardening that does not satisfy the acceptance criterion; 'done' is overclaimed.",
+  "evidence": [
+    "git clone https://github.com/bounded-systems/dev-contracts /tmp/verify/dev-contracts-2 && git am 0001-*.patch -> 'Applying: chore(trunk): ignore the plugin cache in lint and git (#2)'; HEAD 9d3ca67 on top of 3f1d3e2; git status clean",
+    "git grep -l 'PRIVATE KEY' HEAD -> no output (rc=1); git ls-files .trunk -> .trunk/.gitignore, configs/*, trunk.yaml only",
+    "git show cd4c69b:.trunk/plugins/trunk/linters/{gitleaks,trivy,trufflehog}/test_data/*.py restored; grep -c 'PRIVATE KEY' -> 2 each; git check-ignore -v -> '.trunk/.gitignore:6:plugins' for all three",
+    "On main (3f1d3e2, before patch): git check-ignore -v .trunk/plugins/x/a.py -> '.gitignore:10:.trunk/plugins/' (root .gitignore already ignores the cache; new .trunk/.gitignore is redundant)",
+    "python3 yaml.safe_load(.trunk/trunk.yaml)['lint']['ignore'] -> [{'linters': ['ALL'], 'paths': ['.trunk/plugins/**', 'templates/trunk/.trunk/plugins/**']}]; tomllib.load(contracts.toml) ok; no lines >80 cols, no trailing spaces in changed files",
+    "curl https://static.trunk.io/pub/trunk-yaml-schema.json -> CONNECT tunnel failed 403; curl https://get.trunk.io -> 000: trunk CLI and its schema unobtainable, so `trunk check` (issue's 'runs clean' criterion) never executed",
+    "deno check mod.ts spec/mod.ts / deno test spec/ -> 'unsuccessful tunnel' at spec/mod.test.ts:1 (npm registry blocked); no TS changed by patch",
+    "Issue #2 body (WebFetch): acceptance criteria = dismiss 2 alerts as 'Used in tests'; decide on history scrub; integrate .trunk hygiene into broader rework. result.json: done:true, verify_passed:true; REPORT.md Unresolved items 1-5 admit none of the three criteria are closed",
+    "scout/dev-contracts-2.json: feasible:false, verify_command:'' — the worker's verify_passed has no scout verify command behind it"
+  ],
+  "must_fix": [
+    "result.json should report done:false (or 'partial'): the patch satisfies zero of the three acceptance-criteria checkboxes in issue #2; the required action (dismiss alerts as 'Used in tests') needs a maintainer with security_events scope.",
+    "verify_passed should be false or qualified: the only meaningful check (`trunk check --all` showing fixtures are ignored) was not run; git check-ignore + glob matching are stand-ins."
+  ],
+  "nits": [
+    ".trunk/.gitignore is redundant with the generated root .gitignore (which already ignores .trunk/plugins/ and the out/logs/actions/tools dirs); it adds only user*.yaml and tmp. Harmless, but the commit message's 'can never be committed again' was already true on main.",
+    "The lint.ignore block's effect is unverified; Trunk does not normally lint its own .trunk/plugins cache, so this may be a no-op. A maintainer should confirm with `trunk check --all` after applying.",
+    "Adding [structure.'.trunk/.gitignore'] to contracts.toml follows repo convention, but the structure validator (tools/dev-contracts-spec/src/validate_structure.ts) referenced by mise.toml does not exist in the repo, so the entry is unenforced."
+  ]
+}

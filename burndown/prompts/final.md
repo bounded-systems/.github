@@ -1,0 +1,5 @@
+Final adversarial re-verification after a fix round. Default verdict REFUTED unless confirmed.
+id: claude-box-245
+Read $BURNDOWN_DIR/out/claude-box-245/: REPORT.md (esp. the 'Fix round' section), <id>.json, current *.patch files, and the PRIOR verdicts verdict-A.json / verdict-B.json. For every must_fix in the prior verdicts, confirm it is either resolved in the new patches/report or explicitly and correctly deferred as an owner/process item. Fresh clone into /tmp/final/claude-box-245/, `git am` the current patches, re-run the checks the prior verifiers ran. Check the ready-to-paste comment for any remaining false statement.
+Write $BURNDOWN_DIR/out/claude-box-245/<id>.json: {"id","refuted":bool,"confidence","reason","resolved":[...],"still_open":[...],"owner_actions":[...]}
+Sandbox: npm/jsr blocked, github.com ok, WebFetch for issues. Return only DONE.

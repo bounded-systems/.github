@@ -1,0 +1,1064 @@
+From 94004db83b6f15cfc7d29405e1ea0263e9e393c9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:14:06 +0000
+Subject: [PATCH 1/2] feat(tokens): embedded-webfont FontFace token, one
+ --font-sans source (v0.55.0)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Closes #4. A brand may now embed a webfont instead of relying on the
+system stack: `fontFaces: [{ family, src: data:font/…;base64, weight,
+style, display }]` in brand.json. Each face is emitted as a self-contained
+`@font-face` rule (data: URI src + format() hint, font-display: swap by
+default) in the generated style.css — no CDN, no cross-origin fetch,
+CSP-clean — and its family leads the stack; the brand's `font` string
+(the zero-load system stack by default) stays the fallback tail.
+
+font-family now has exactly ONE source: the typed FontFamily token
+(font.ts) derived by deriveFontFamily() in derive.ts, which both emitters
+consume — to-css.ts as the `--font-sans` :root token (a base CSSStyleValue
+reified via its cssText, replacing the CSSKeywordValue misuse) and
+to-tokens.ts as `fontFamily.sans` (DTCG, face metadata under
+$extensions) / `font.family.sans` (Style Dictionary). audit.ts strips
+@font-face blocks (they DEFINE a face) and now fails any `font-family`
+that is not `var(--font-sans)`. Existing brands derive byte-identical CSS;
+their token JSON gains the fontFamily entry.
+
+- font.ts / gen-font.ts: FontFace, FontDisplay, FONT_FORMAT_BY_MIME,
+  fontFormatOf (font.ts regenerated from the generator template)
+- config.ts: `font` must end in a generic family; new `fontFaces`
+- brands/webfont-demo + examples/mock-webfont: a fixture with a
+  basic-Latin subset of Poppins Regular (SIL OFL 1.1) as a WOFF data URI,
+  gated in tokens-check.yml alongside burnt-orange and deep-blue
+- GROUNDING.md: CSS Fonts 4 §font-face-rule / §src-desc / §font-display
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .github/workflows/tokens-check.yml            |   3 +
+ package.json                                  |   2 +-
+ tokens/GROUNDING.md                           |   4 +
+ tokens/audit.ts                               |   7 +-
+ tokens/brands/webfont-demo/brand.json         |  15 ++
+ tokens/config.ts                              |  14 +-
+ tokens/derive.ts                              |  13 +-
+ tokens/examples/mock-blue/tokens.dtcg.json    |  10 +
+ tokens/examples/mock-blue/tokens.sd.json      |   5 +
+ tokens/examples/mock-orange/tokens.dtcg.json  |  10 +
+ tokens/examples/mock-orange/tokens.sd.json    |   5 +
+ tokens/examples/mock-webfont/index.html       |  20 ++
+ tokens/examples/mock-webfont/style.css        | 176 +++++++++++++++++
+ tokens/examples/mock-webfont/tokens.dtcg.json | 186 ++++++++++++++++++
+ tokens/examples/mock-webfont/tokens.sd.json   | 167 ++++++++++++++++
+ tokens/font.ts                                |  25 +++
+ tokens/gen-font.ts                            |   1 +
+ tokens/serialize.ts                           |  22 ++-
+ tokens/to-css.ts                              |  14 +-
+ tokens/to-tokens.ts                           |  12 +-
+ 20 files changed, 697 insertions(+), 14 deletions(-)
+ create mode 100644 tokens/brands/webfont-demo/brand.json
+ create mode 100644 tokens/examples/mock-webfont/index.html
+ create mode 100644 tokens/examples/mock-webfont/style.css
+ create mode 100644 tokens/examples/mock-webfont/tokens.dtcg.json
+ create mode 100644 tokens/examples/mock-webfont/tokens.sd.json
+
+diff --git a/.github/workflows/tokens-check.yml b/.github/workflows/tokens-check.yml
+index b19d325..7c6dae6 100644
+--- a/.github/workflows/tokens-check.yml
++++ b/.github/workflows/tokens-check.yml
+@@ -26,3 +26,6 @@ jobs:
+         run: deno run --allow-read --allow-write --allow-run check.ts brands/burnt-orange/brand.json examples/mock-orange
+       - name: gate — deep-blue
+         run: deno run --allow-read --allow-write --allow-run check.ts brands/deep-blue/brand.json examples/mock-blue
++      # webfont-demo carries an embedded @font-face (data: URI) — proves the face path derives + audits
++      - name: gate — webfont-demo
++        run: deno run --allow-read --allow-write --allow-run check.ts brands/webfont-demo/brand.json examples/mock-webfont
+diff --git a/package.json b/package.json
+index 302ef5f..0d27588 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "@bounded-systems/synoptic",
+-  "version": "0.54.0",
++  "version": "0.55.0",
+   "description": "Site-build engine: the layered validation pipeline (tokens → json-ld → markdown → website) both bounded.tools and personal sites consume. Checks live here, not in each site.",
+   "type": "module",
+   "bin": {
+diff --git a/tokens/GROUNDING.md b/tokens/GROUNDING.md
+index bd960e5..1b92cf9 100644
+--- a/tokens/GROUNDING.md
++++ b/tokens/GROUNDING.md
+@@ -15,6 +15,10 @@ The value schemas in `typed-om.ts` are **generated from the CSS Typed OM WebIDL*
+ - Every property + which accept `<color>` (resolved transitively) + `appliesTo` + `concerns`: **`@webref/css`** (the machine-readable CSS definitions). `CssProperty` (815), `ColorProperty` (42), in `properties.ts`.
+ - Runtime enumeration + cross-check: **`StylePropertyMapReadOnly.keys()`** (Typed OM 1).
+ 
++## Fonts — CSS Fonts 4
++- Generic families + the system stacks: <https://drafts.csswg.org/css-fonts-4/#generic-font-families> (`font.ts`, generated from `@webref/css`). `font-family` reifies to a generic `CSSStyleValue` — the ONE `--font-sans` token.
++- Embedded webfonts: **`@font-face`** (<https://drafts.csswg.org/css-fonts-4/#font-face-rule>), `src: url(data:…) format()` (§src-desc; RFC 2397 data: URI, RFC 8081 `font/*` MIME), `font-display` (§font-display-desc, `swap` default). A `FontFace` token embeds the face in `style.css` — self-contained, no CDN, CSP-clean; the system stack stays the fallback tail.
++
+ ## Color model — CSS Color 4
+ - OKLCh: <https://www.w3.org/TR/css-color-4/#ok-lab> (Ottosson, 2020).
+ 
+diff --git a/tokens/audit.ts b/tokens/audit.ts
+index a75d3f3..a209648 100644
+--- a/tokens/audit.ts
++++ b/tokens/audit.ts
+@@ -3,12 +3,14 @@
+ //   2. no px lengths (rem/relative only — 1.4.4/1.4.10)
+ //   3. colors are oklch (no hex/rgb/hsl)
+ //   4. properties are valid CssProperty (from webref)
+-// :root token definitions (--x: …) and @property blocks DEFINE tokens, so they may hold literals.
++// :root token definitions (--x: …) and @property blocks DEFINE tokens, so they may hold literals;
++// @font-face blocks DEFINE an embedded face (src/weight/display are descriptors, not properties).
++//   5. font-family is named in exactly ONE token (--font-sans) — every use is var(--font-sans)
+ // Exits non-zero on any violation. Run: deno run --allow-read audit.ts <style.css>
+ import { CssProperty } from "./properties.ts";
+ 
+ const css = Deno.readTextFileSync(Deno.args[0]);
+-const body = css.replace(/@property[^}]*\}/g, ""); // strip token registrations
++const body = css.replace(/@property[^}]*\}/g, "").replace(/@font-face[^}]*\}/g, ""); // strip token registrations + face definitions
+ const v: string[] = [];
+ let real = 0;
+ for (const rule of body.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+@@ -20,6 +22,7 @@ for (const rule of body.matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+       if (/#[0-9a-f]{3,8}\b|\brgb\(|\bhsl\(/i.test(val)) v.push(`${sel} { ${prop} } non-oklch color token: ${val}`);
+       continue;
+     }
++    if (prop === "font-family" && val !== "var(--font-sans)") v.push(`${sel} { ${prop}: ${val} } — font-family must come from the ONE token (--font-sans)`);
+     real++;
+     if (!CssProperty.safeParse(prop).success) v.push(`${sel} { ${prop} } — not a valid CssProperty`);
+     if (!/^var\(/.test(val)) v.push(`${sel} { ${prop}: ${val} } — DIRECT value; a real property must reference a var()`);
+diff --git a/tokens/brands/webfont-demo/brand.json b/tokens/brands/webfont-demo/brand.json
+new file mode 100644
+index 0000000..65edac9
+--- /dev/null
++++ b/tokens/brands/webfont-demo/brand.json
+@@ -0,0 +1,15 @@
++{
++  "name": "webfont-demo",
++  "seed": "#B91C1C",
++  "brandBias": 0.85,
++  "font": "system-ui, sans-serif",
++  "fontFaces": [
++    {
++      "family": "Poppins",
++      "src": "data:font/woff;base64,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",
++      "weight": 400,
++      "style": "normal",
++      "display": "swap"
++    }
++  ]
++}
+diff --git a/tokens/config.ts b/tokens/config.ts
+index f7b86aa..ce84485 100644
+--- a/tokens/config.ts
++++ b/tokens/config.ts
+@@ -3,6 +3,7 @@
+ // Validated by Zod so a malformed brand fails at the door.
+ import { z } from "zod";
+ import { RolePref } from "./roles.ts";
++import { FontFace, GenericFontFamily } from "./font.ts";
+ 
+ export const BrandConfig = z.object({
+   name: z.string(),
+@@ -16,8 +17,12 @@ export const BrandConfig = z.object({
+   typeScale: z.object({ floorRem: z.number(), ceilingRem: z.number(), roles: z.number().int() }).default({ floorRem: 0.75, ceilingRem: 3, roles: 6 }),
+   /** font-weight roles */
+   weights: z.object({ body: z.number(), heading: z.number() }).default({ body: 400, heading: 600 }),
+-  /** font stack (reifies to a generic CSSStyleValue) */
+-  font: z.string().default("system-ui, sans-serif"),
++  /** the FALLBACK font stack — a CSS font-family list ending in a generic (reifies to a generic
++   * CSSStyleValue). The zero-load default; embedded faces (below) are prepended to it. */
++  font: z.string().refine((s) => GenericFontFamily.safeParse(parseFontStack(s).at(-1)).success, "font stack must end in a generic family").default("system-ui, sans-serif"),
++  /** EMBEDDED webfonts — @font-face tokens (data: URI src, self-contained, CSP-clean). Each family
++   * goes FIRST in the stack; `font` stays the fallback tail. Bytes + license are the brand's call. */
++  fontFaces: z.array(FontFace).default([]),
+   /** measure ceiling in ch (≤80, WCAG 1.4.8) */
+   measure: z.number().max(80).default(66),
+   /** the PREFERENCE layer, pushed to the config: per-role decisions (targetL / chroma / field / …)
+@@ -26,6 +31,11 @@ export const BrandConfig = z.object({
+ });
+ export type BrandConfig = z.infer<typeof BrandConfig>;
+ 
++/** Split a CSS font-family list into its family names (quotes stripped, whitespace trimmed). */
++export function parseFontStack(stack: string): string[] {
++  return stack.split(",").map((f) => f.trim().replace(/^(["'])(.*)\1$/, "$2")).filter((f) => f.length > 0);
++}
++
+ /** Parse + validate a brand config file. */
+ export function loadBrand(path: string): BrandConfig {
+   return BrandConfig.parse(JSON.parse(Deno.readTextFileSync(path)));
+diff --git a/tokens/derive.ts b/tokens/derive.ts
+index 30238a4..412f2d6 100644
+--- a/tokens/derive.ts
++++ b/tokens/derive.ts
+@@ -7,7 +7,8 @@ import { derivePrimitives, deriveSeedPalette } from "./verbs.ts";
+ import { hueField } from "./hue.ts";
+ import { DEFAULT_ROLE_PREFS, ROLE_CONTRACT, ROLE_ORDER, type Role } from "./roles.ts";
+ import { CHROMA_REF, CHROMATIC_THRESHOLD } from "./constants.ts";
+-import type { BrandConfig } from "./config.ts";
++import { type BrandConfig, parseFontStack } from "./config.ts";
++import { type FontFamily, type GenericFontFamily } from "./font.ts";
+ 
+ export interface Atom { cas: string; value: { $type: "CSSOKLCH"; l: number; c: number; h: number; alpha: number }; l: number; c: number; h: number; Y: number }
+ 
+@@ -41,3 +42,13 @@ export function deriveRoles(atoms: Atom[], brand: BrandConfig): Record<Role, Ato
+   }
+   return roles;
+ }
++
++/** The brand's font-family token — THE single source for `font-family`: the embedded faces first,
++ * then the brand's fallback stack (the zero-load system stack by default). A typed FontFamily
++ * (font.ts) that both emitters serialize; nothing else may name a typeface. */
++export function deriveFontFamily(brand: BrandConfig): FontFamily {
++  const tail = parseFontStack(brand.font);
++  const stack = [...new Set([...brand.fontFaces.map((f) => f.family), ...tail])];
++  const faces = brand.fontFaces.length ? ` Embedded: ${brand.fontFaces.map((f) => f.family).join(", ")} (@font-face, data: URI); the rest is the fallback tail.` : " No embedded face — the zero-load system stack.";
++  return { $type: "font-family", $value: stack, $generic: tail.at(-1) as GenericFontFamily, $reifiesTo: "CSSStyleValue", $description: `Font stack: ${stack.join(", ")}.${faces}` };
++}
+diff --git a/tokens/examples/mock-blue/tokens.dtcg.json b/tokens/examples/mock-blue/tokens.dtcg.json
+index d75ac0e..34592c8 100644
+--- a/tokens/examples/mock-blue/tokens.dtcg.json
++++ b/tokens/examples/mock-blue/tokens.dtcg.json
+@@ -128,6 +128,16 @@
+       "$value": "66ch"
+     }
+   },
++  "fontFamily": {
++    "$type": "fontFamily",
++    "sans": {
++      "$value": [
++        "system-ui",
++        "sans-serif"
++      ],
++      "$description": "Font stack: system-ui, sans-serif. No embedded face — the zero-load system stack."
++    }
++  },
+   "fontWeight": {
+     "$type": "fontWeight",
+     "w-300": {
+diff --git a/tokens/examples/mock-blue/tokens.sd.json b/tokens/examples/mock-blue/tokens.sd.json
+index 2b938cb..cc4889f 100644
+--- a/tokens/examples/mock-blue/tokens.sd.json
++++ b/tokens/examples/mock-blue/tokens.sd.json
+@@ -126,6 +126,11 @@
+     }
+   },
+   "font": {
++    "family": {
++      "sans": {
++        "value": "system-ui, sans-serif"
++      }
++    },
+     "weight": {
+       "w-300": {
+         "value": 300
+diff --git a/tokens/examples/mock-orange/tokens.dtcg.json b/tokens/examples/mock-orange/tokens.dtcg.json
+index ab4cdb6..2e68d12 100644
+--- a/tokens/examples/mock-orange/tokens.dtcg.json
++++ b/tokens/examples/mock-orange/tokens.dtcg.json
+@@ -128,6 +128,16 @@
+       "$value": "66ch"
+     }
+   },
++  "fontFamily": {
++    "$type": "fontFamily",
++    "sans": {
++      "$value": [
++        "system-ui",
++        "sans-serif"
++      ],
++      "$description": "Font stack: system-ui, sans-serif. No embedded face — the zero-load system stack."
++    }
++  },
+   "fontWeight": {
+     "$type": "fontWeight",
+     "w-300": {
+diff --git a/tokens/examples/mock-orange/tokens.sd.json b/tokens/examples/mock-orange/tokens.sd.json
+index 44b3b93..c7e06e7 100644
+--- a/tokens/examples/mock-orange/tokens.sd.json
++++ b/tokens/examples/mock-orange/tokens.sd.json
+@@ -126,6 +126,11 @@
+     }
+   },
+   "font": {
++    "family": {
++      "sans": {
++        "value": "system-ui, sans-serif"
++      }
++    },
+     "weight": {
+       "w-300": {
+         "value": 300
+diff --git a/tokens/examples/mock-webfont/index.html b/tokens/examples/mock-webfont/index.html
+new file mode 100644
+index 0000000..9242e22
+--- /dev/null
++++ b/tokens/examples/mock-webfont/index.html
+@@ -0,0 +1,20 @@
++<!doctype html>
++<html lang="en">
++<head>
++  <meta charset="utf-8">
++  <title>Mock site — an embedded webfont, styled only by the token engine</title>
++  <!-- NO CSS on the page. The engine generates style.css from the derived tokens. -->
++  <link rel="stylesheet" href="style.css">
++</head>
++<body>
++  <h1>Colors Are Coordinates</h1>
++  <p>Body copy on the surface, with a <a href="#">link</a> that clears AAA. The measure caps the line length near sixty-six characters so it stays readable.</p>
++  <h2>A dark surface</h2>
++  <article class="card">
++    <h3>Card title</h3>
++    <p>Light text on a dark surface, a border at two pixels, everything in rem.</p>
++    <button type="button">Action</button>
++  </article>
++  <small>Fine print at the readability floor.</small>
++</body>
++</html>
+diff --git a/tokens/examples/mock-webfont/style.css b/tokens/examples/mock-webfont/style.css
+new file mode 100644
+index 0000000..5395db0
+--- /dev/null
++++ b/tokens/examples/mock-webfont/style.css
+@@ -0,0 +1,176 @@
++/* GENERATED by to-css.ts from brand "webfont-demo" — FULL INDIRECTION: every element value is a var() to a :root token. */
++@font-face { font-family: Poppins; src: url(data:font/woff;base64,d09GRgABAAAAABdUAAwAAAAAICAABAEGAAAAAAAAAAAAAAAAAAAAAAAAAABHUE9TAAAXBAAAACAAAAAgRHZMdUdTVUIAABckAAAALgAAADAfSCdrT1MvMgAAFagAAABJAAAAYFlyXWljbWFwAAAV9AAAACwAAAA0AAwA0WdseWYAAAEcAAASGAAAGe4xSD0qaGVhZAAAFBgAAAA2AAAANhrJJGFoaGVhAAAViAAAACAAAAAkDHUCX2htdHgAABRQAAABNQAAAYTTzBUXbG9jYQAAE1QAAADEAAAAxDanPZZtYXhwAAATNAAAAB0AAAAgAHcBDm5hbWUAABYgAAAA0AAAAZojJDkzcG9zdAAAFvAAAAATAAAAIP+4ADJ4nH1YCXhTZbo+/5+2KWubhjRQ1vS0SenenJyka5o2+9KmaZJuJ13pQluWLmBvWcoqV0FFfa6CwyCgDlblujI+lsHxKtzrzMjMRUdEFJ3RAXwcHR3RR4clJ/f7T5K2oNc+/U+Sc/7l/b/v/d7v+w+FqYbQdeodPEGJqASKkopoUZKS1WgZdbJsXhx9apZr1sK0tJQFNL0AT/Cz0XfBirSUlDTSKEzR2I8o0SIYK4axYlrFQBudVT77I2iiRW/CH/RSUJRIgi9RC6mlFIXEjIwW0zqhsYzQGLHQZDQtZvB65e4DWfVZ70A7+KzywLHI9z3fvqN8B505XvM7+KuJfsDKpaGncIJoHpVGZVFqikqLixPLaFapVDHJyXI2F8NmdCwjgx803JQtwTIK7sfFyZK0rAZu4IT85gotN4TaY3RqY23xYIvWvzK+PVaTVekt4ncXF2r0H5eV6vbWF8d4PPFd1Zn6+OuSNJfB0xfn9YpbXXTRjO8ktKsCyTSSz2KLGN5cmVvAJn5JUbFUZug7fAb/NzULbLuQUlEMRSVFTZuqZNMRjWLiZPOSGTXBQk9/pp12P7PWYKglDdv4/ib0EL9dpUpNzchI/Qfc9HjgwVr4QW7gdR6PyezxmHcHLfhETl5ubn5BTm4eXwm3TLUec3Nebk5eHtyhwC/pgO5D/CaVQRVQlEIVR9YlvtcJV4IlWUxrlXQqgSKX68BHcWJ5mlanErDhTo5ZZ7etLfN6li3K8em0NRmYQ/nKjAKF6mySqaNWIj/Ir6tX/XGr3xRgGU2bwb52mdKgzLZmZDpzl+fl0EsKl7+9aOi+JYqDlZnZfyroK6mmEOEUtVHglMCojbPL5xAmwZNVIQv6lego4WkyuDVJx8jisGxeklxGn+8f7G0dGOzvaQ2g1PFjKKt9Ri9/4dAB/krfDBipgJFN4ZFyVpvEarCKZZKTZPOwOL+nf3CgtXewv+3EjD6UcuAQUvXOaOfPHRvnP24BulJlaCUaxx9TEvghF8vFKjmtE6t0Kp0c2I52pO25Rzma6EwYVe3Zk74p0SXBj1YUFxkb9u1rNBUXGhv374c56qm12I9XAw8oRAM7gfRASQb7z/nffdd/Dlnff7/qwgV4GOJDg9Qz1BjZvU5ES58ZKLOP8d+iOVQoRBUjG/o9egg81/YVQZYNkXuUuoPMmjwtZmsi8Ro3GajQlw3VoSOiZ8m8CFiHjvBfNSGJ6Nkb4zENhAt6uLCwy1nA01s4mqYkBCAOJ2zUsvqBe/YMDOy5ZwAdlFuNJqtcbjUZrXK8+PXXjz33xhvP1Y86HKP1TRscjg1NsK6SoqhP8Z8hFigpy0hoifJkAG/1BnPwVnjKUPF4Hv4rNZ+i9JgwPTUOGBdZPU6skCnYF+9fUW4xOUUNMVu7ekZXjHWgBn7pczv2miucfuvAhqFO78ERt6uC7LEgdAMn4k9AB8I7IJOIZcIH2QoRhEhAgf212uh6xq3dphWMtajCpVlp77srvkHss1jsnV3y+YEWs0HvEjfi0ZUFPlbfNCc2scVVxGnWdpe67MXOShcq0bMGgxbslwH2a8BnqJnUHPAcixgJyBl4WooUGah1dWdnUwxx4xEzusKnuY8cQWf4HQSzPcTjIvwutQx+KGTaKOzb8BKYEgWexR+RN2m8K3O0a2t7t89tnOMzuGtqqll3Uh16Ce+8tGy5eXWZbahyVVORobW62s9ko/2Ajayhx5+CldPBGzCZfNLEQsQnKtQgjnPxlOCg3ww3NiB5f2XPRrbf1bMuF1EdAzN9L7nyGmot3poq/PDdBzUlWwdNqwyBx0bQ2j7PQ7SVcbXWO6obya5A8dEN/DYVF2abglWgG/zfAyiFH0Mf4HuC6/COakrQ7i9xKbAuqo2TukM8lzyFEDQpLaJDBGHcNG3cXartd7n6dXqt3m5Y73ING2x6lFBjMdd4K43ev7ZwVVVNASe6z1eqrWeYem1xvUzaaqxoZ9n2CmNb0vuVlfpCk7nwlNlsqK42GK2CvUJYAzxKIezVkoWmtHHKbqpJChEwr9r1XjeWdZQae0s3Dd0zmNPf3D0U7ztb53NZvLXVd+u3/yKH0fU5+3e8fHzsibo1/ge9VmegwWZvIJEtRDJOpVKJQkEuhSs6BvfloAanMQ3WSaDmo/8EbHMWEPv6qLvQK9hLoipdBbIsR+Zvvhm+evWuK5cvX4FeXdRFvBpT4byMIIpioeHVwX/heGhUVdX5qioyTwvMcyo8j5SRQ0ZugUmGr2Lv5StXwhniOrqI36DkFA24BEkgST5KShlN3IWnaQ/q2LB9rcgds3jFgK1Mb63TrqhojJYPbwy09Ha1PlrqLbUYi0s5dbBwWiVhCxWJjuFtVCFlIStNGlm4hlkh1zEisLWgQpqwKMWBc3TyqG8AytQjkqCef6JBs6JSrY1Z2sq66ssHrK2KWW61iM0oWXJw78hrq9Dh+1pssxv7+x9v3P7Z/WZXdpEm354B02zz7VvhfqBJnZWlbnY7t7ttev4v0sRS13DhjvuHfze6c2+qPt2zr/Pez3cFX2M5raaiqFnNEgklzMfb8K/B7jPBNwoxLWWktEokQp/zZwvbbvbeaKsdGztwAP866LyM2vjDxEfgCuDbBGSYlLCdw7tXSKKRkB6VraTwh4xBZ8vTtT0W/uZ1a6faqOP5RwwWS+W+y64a46NHULvakcn6C/BEXo1a70lKL2XZ0uBHhqJi4/fE61mh6/gP4NXFRCeJ50hlNE3kdUyE7lmBQ+1DT6tWL17tsq+rrFxnd8FX1dND7YcC6NTjgTVd5SbTZp93s8lY3rmae6wb9k/2sh/2MpOSTu2EljAR5BIG7X+ysfHJoQsX/v2+vbvGxvCE/9H+/oNePBF8cO+27Q8GLxKEhJyn8QmS2aQyIqSQCSQK2TjPo0X83WgEr/3c+U8nPuGM9D0PK84QmE56Q5ZB5/m3v/+ewxOOLxz8/8DT8K7/gl8XtOnW7YI8yebiSRKBPXDz4jV2+3qjcb29e+cs/u9oJD7wcKD9cHPz4fa1z6jQ12VG4+ba2k3GDSsdlrq9Xth79+Pcms4IdtwNK5JcD0gU0Bi44m6OP8hxaAXs1IpK+dNQTv8JqSMjqHGhAqek0HucI10EzMtD19Ax+Eb0QBLOx5GkIEHH+uob+jjEMIwa+gfreno5xlCWh0URDHrBC5QCCQAQgxB6k/8EECwb5k+jcqTn3wAIryIj/zj/RMSOv4QxoAVQWAH5xr/jX+AcDrgVfipKxMep2eFdwTGBTIuQKJG7YviM60DQBx8PunBM8CaODd6A76dxadQeg+BL8I+CFsAgCYMHOf5BwLKGw1nBc/hE8D2cCezJCl3Dn4GPEshJIUY5PR3E0UKFMOU4lCG4o+NwIHC4g/hqncOxjnhMzD1OvME91tPzGOc2jXl9mwWajpki/FwqWCYJrE6oSZMwk8UBPwk98dKRDbu4T+7Y+Cvbf+zahR4e5j/CE0NNWyrLtoUoAeEmfBUQSkmkxqriprFGCFU5FamTolDxpj0M2x6F2lD1fPBhwDiJd+eeuZNwOw/nPofuGzNNQo7gXQ5454IGUwpRBK6wlBRFZQGdPLqG+8S9Wuv1Psdv2eVw2J270GL+b3hCGyixrUniL6Jue5neBN4oAgsnQexnk5pxWomhVAknpWlqQIwsh9MSMf3l1XrUHms1VTizKwvN3pLiXlPH5vjOWEdZkS2rvMgMybXPJi6oLyowVjAZ6pSEpLSqiqKG/A5PRlkJq8xfkChNr6pkmgoBQSqQ4jrsSMhMZD80i67/lnsNYjX4AF7rIJxxAsoG6CMlERFO9cDhaDUgOcp5ajjOMuJwjJiBw9bmpqZmNMHb6keKi0fq0SswQzLY7V6YIVKBMFIpvpe/1stfa//ww3B4BZ/EQq0iD4VEE9CTMBtoLRKLoDP8iyb+0P3YeNep9v3j3YcfEcYUBP8XAVdfwO7gS7gKxubAKhWRWJfCWFoqDEZ97/U8eajr3Hvd44e7UYB/AiXy/0QB1Mx/jcgxguwLqu0JKp6sScKJ4GP/xl3qOgbhzlfz15AYvcgfQu2kdy5cvgornI6UxKSekv0C+XgDquVfRCfcbhtOddug551wzimCc07EtkQLUVFr63HRUedNnSumjcy2I1SHk8MngViiCif5N5tQ0dMxDTfG4ekamCE1PEMsTQp2lkGpx2GKEy7R751kfDr1FPZAhgPL6oTsJtrR8oX/y9aXn8Kzg9+hX5I+vaFdeHPoA2ENUnlsDn6p9PnIEwnY7YporqB1MhV75Rx+wDTkDkfWD7ge50Bcpk7mJQFAxOu3H0SyTCN2W19KILCw32q/w4TOqv0M41OrfQzjV6OVWyz6vM7gxe78ctt2b1mgID+gL28uKGgWsnQVrDWKL0XXml50E7NJYm5b6/Qqs+MOEyxo7V8IqrUOliKr+dVkqa/1li0+73abPr8LX+I/WBXIL2gu05O1ysPZ9gfMwL4W3pZtwyXsVK41jVZ37ZB1zPWUVre1VZfWJHQk71xRPWoiW+moVxf3d6xYVajxdVm21k1a69It1pL8vLUchjWLwVp9VvvIT1irJB+lBhf1FPzIXOG1KmAH88kphRIrbi0SouKXi8kxRYErRLwjtstW4k6EDXRUb7SYNtZU/1tFS64739wuRk1ozmIPp8t1r7Bs8/u3mk0jTqtT1UBO/qBwKBvfFE7aYWFgSGUpA1tBxZM9zFmtrb2lBcPoAq9CF5yqgN+Vp1UJ3OGvCtxZSuWRqoPw5tYzFDsNbPJtpkF39KcEDCPuVffPaUpoqXS2hk0E3j4z3Ug4hxDqrHN9ZXeDuqzFP5xvAFP5tlguTrdWON8Vgmfmhesf2Ee4VhbSMCyPDnQWNdVabX6OW9hagnPZPhdkYW1tfVMd/zYQ6Gpmbvg8Tr2Crwlvjqjpb+TkME9HpKTO5vDmaA3dGLyI4aSPQ5f5m9RvhJHyW0dKoYFJBS3tpOmUFGg5DiurVC6dNk9wtt1UtSQNPxKtw27AXkgdEY4MHakjtpznuD9vgWJMdPUqIK76lv+a/8dUJXNpWiVzKbgIfofrh9/i3Gh9O90qU+YJn3/J6VS0rLO4yWO2+oQLWIrTmftS5H0V0+zF1fHvRD9xmjsrV19abKAmPZAbrkB/vAI6uSlq/2boNjo0zfxp1YL1CeP9wCehDkn++Trk681W+1h19ZjdubW6oI7V+ArUXnVBbcEM4Ldvm9m81e/fZqnJDVRWBnJyApXGQI6gQPxNUKCcn1IgAeftCnSqP8JJS/+iHynQV+VhBSrP4/eJMrpW36JAJDpu/qSySn5GK6z9CwKBlFU2208pa3lu5833UW+u4XatCDOmEWw/S9iVjE4Nm/2/Gg3zHwHc1zUtR/n3cJqQefNCP0DlnkPe19xSi/x/pYicGOhsZ7GoJcZcqCk1GMuqdOpACTcQw4nK2YJims0rcbBIzZXMyKpSL9fk0mm0JFFRwWZalgdqsjSZqQtp2ZzEpXp1jm05rJ8CIJz42ckqg8CF6iLyck52MjXTWOtyWa3cXlCcVzMUVZYaZHTu3k1OHbbQv0DV00iUoynVJUVKuFrBDJfSXGjoLgGq2X04LXjRk5kH1EUV/Fse4BrKIRaAmgOnwSyQS9OlDFQfDFrwdPv5vvMdPnRWCGihj0gF36L1CR2tT1TPtOzc2XKseeyu5js3kRXQS3wVTuM16AzPoD+S+efABWKDeEOhEpPqhByipah/++bWF17o2b6p9fkXzpxBiWjeW2/x3/BfCJh4HqfDGLFQOQkFDU7nX25Z9VHXsadx2s0PUDxewpvQSXI+gT6PQt9bKpMH0Bx+D5rJ/wsNOp1OtNfhECoCM9oNdQXosxR8rBJ0iRhceLc89aZOHD66h12h0ZGuvd0zZ3pMxctVyng0k9Xp2JkoXqlaXmzyzJzZjR6R1ikDHdk2l5vOWOxPaMtmrbPxbBub3ZbgX5xBu1227I6Ask4KGDpDD1OviRYSdZIDKV/juD7RnXDfBNi6wtgo2TwBTEQogYvCyydWKYCJvjtUC0Chq4wK/Ry28tuh2QCa9UfQrEJV9QP6FO0WNJsQP5pjiSAowy8Ay4cXZi2cv1SSkh5jWrA+JWPx/CXSFGWMEe2WJiXMpZc8mJSUkEAvIT50IRv6ED0kvO0lbvmQH0QPVVX9H3JoTWx4nGNgZGBgSGSYysDDUMbAxgDiIQAzAxMAJFcBhgAAAAAAAAAAAAAeADEAYACuAP0BSAFVAXIBkAGyAccB1QHdAfMCAwIvAj4CZQKjAr8C8QMqAz4DiQPCA84D2gPqA/4EDgRDBKcEwQT5BScFSgVgBXQFqAXBBc4F6gYEBhMGMAZGBncGlwbPBvcHOAdKB2sHgAeeB7oH0QfmB/gIBwgYCCoINwhECHoIsAjbCREJRQliCagJywnoCg4KJgozCmkKigq7CvELJws9C30Lmwu+C9AL7gwIDB4MMwx1DIEMwwzqDPcAAQAAAAQBBo/eHsRfDzz1AAMD6AAAAADYpKm+AAAAANsWNsz97f3ECgcEKQAAAAcAAgAAAAAAAHicJY47L4NxGMXPc94GqRqUkBBDW1Xt65KmDISSMLSpd5PU4jLoIKlOymBpIr6ALyBBYrAY7AZJbSLERgzCJ3DppI52OPn9n/M/z8U+AWuXElixQUScDEIsYYY/SPANURwjYlUUpZB9YJYXyKNa/2UM03jAiD1jkjtI2zyGOIcUPSRZxrC8LPelsObtad4usnhSvg29dLHMRxTYjzUGEHW+kOGJcgV4jg8ub+DR4FlNtV/1FTx8ywsizrz8S/mrqq/FoP4XxG5xQ14OUxxAmKfI8Qw9zr32bWOUGXTJH7NzHPIIB2JJd0b5gi0zdCrrSh7XG3RZhGtZ9f6/K439adTq73Sat/halK001OxTzsqiH+NWRJ/8DJMIOBMI2Cs6mBJvEbc77YtgU1xkq/bHsPQHFn5HhgAAAHicY2BkYGCR+reIIYXz7d+3P/O42BmAIiggEQCj1AbeeJxjYGEOZpzAwMrAwNTFFMHAwOANoRnjGIwYPYB8kBQMMDIgAc8QN3+GAwwKDHUsUv8WMaSw5DMVw9QwqTDtAlIKDCwA34EKiQAAAHicY2BgYGJgYGAGYhEgyQimWRgUgDQLEIL4df//A0mF////PwTzGQBWIAbaeJyFjrsOAVEURdcYj1CoVSIqCo+IQtCIRKIiotJ5DuKVYQq/4wt8gQ9T2XNNIiMSubm5++y79jkHSDDBxoomgZvuW1ukVb11RPoeaJs2j0BHyfIMdIyUlQl0nKyVp8uRE1dcNjisuZCjRtXcHGM5S71DQ53EHDib2pWz1d/cJDp4etfyXPNfMJ0uSpxpUtFxlPUJjxllpY7s5freStpT34WyV3nhWcWveqSZjvgdU/F9bdhjQOvHjmHSJ+qaXNWpa4fGH/7DhrlSmHsBe+A+dnicY2BmAIP/WxmMGLAAACzCAeoAAAEAAAAKABwAHgABREZMVAAIAAQAAAAA//8AAAAAAAB4nGNgZGBg4GLQYdBjYHZx8wlhEElJLTNikAOSiQxyDCxAWYb//xngAAClPAb2AAA=) format("woff"); font-weight: 400; font-style: normal; font-display: swap; }
++@property --oklch-97_08-0_0143-28_01-1 { syntax: "<color>"; inherits: true; initial-value: oklch(97.08% 0.0143 28.01); }
++@property --oklch-92_03-0_0156-27_29-1 { syntax: "<color>"; inherits: true; initial-value: oklch(92.03% 0.0156 27.29); }
++@property --oklch-84_11-0_0174-31_09-1 { syntax: "<color>"; inherits: true; initial-value: oklch(84.11% 0.0174 31.09); }
++@property --oklch-69_95-0_0192-26_17-1 { syntax: "<color>"; inherits: true; initial-value: oklch(69.95% 0.0192 26.17); }
++@property --oklch-54_92-0_0205-26_26-1 { syntax: "<color>"; inherits: true; initial-value: oklch(54.92% 0.0205 26.26); }
++@property --oklch-39_9-0_0224-26_46-1 { syntax: "<color>"; inherits: true; initial-value: oklch(39.9% 0.0224 26.46); }
++@property --oklch-27_9-0_0249-26_85-1 { syntax: "<color>"; inherits: true; initial-value: oklch(27.9% 0.0249 26.85); }
++@property --oklch-18_04-0_0265-28_15-1 { syntax: "<color>"; inherits: true; initial-value: oklch(18.04% 0.0265 28.15); }
++@property --oklch-12_06-0_0265-31_11-1 { syntax: "<color>"; inherits: true; initial-value: oklch(12.06% 0.0265 31.11); }
++@property --oklch-63_96-0_1907-27_52-1 { syntax: "<color>"; inherits: true; initial-value: oklch(63.96% 0.1907 27.52); }
++@property --oklch-51_97-0_1904-27_5-1 { syntax: "<color>"; inherits: true; initial-value: oklch(51.97% 0.1904 27.5); }
++@property --oklch-44_16-0_1804-27_82-1 { syntax: "<color>"; inherits: true; initial-value: oklch(44.16% 0.1804 27.82); }
++@property --rem-0_132 { syntax: "<length>"; inherits: true; initial-value: 0.132rem; }
++@property --rem-0_296 { syntax: "<length>"; inherits: true; initial-value: 0.296rem; }
++@property --rem-0_444 { syntax: "<length>"; inherits: true; initial-value: 0.444rem; }
++@property --rem-0_667 { syntax: "<length>"; inherits: true; initial-value: 0.667rem; }
++@property --rem-1 { syntax: "<length>"; inherits: true; initial-value: 1rem; }
++@property --rem-1_5 { syntax: "<length>"; inherits: true; initial-value: 1.5rem; }
++@property --rem-2_25 { syntax: "<length>"; inherits: true; initial-value: 2.25rem; }
++@property --rem-3_375 { syntax: "<length>"; inherits: true; initial-value: 3.375rem; }
++@property --rem-0_758 { syntax: "<length>"; inherits: true; initial-value: 0.758rem; }
++@property --rem-1_32 { syntax: "<length>"; inherits: true; initial-value: 1.32rem; }
++@property --rem-1_741 { syntax: "<length>"; inherits: true; initial-value: 1.741rem; }
++@property --rem-2_297 { syntax: "<length>"; inherits: true; initial-value: 2.297rem; }
++@property --rem-3_031 { syntax: "<length>"; inherits: true; initial-value: 3.031rem; }
++@property --w-300 { syntax: "<number>"; inherits: true; initial-value: 300; }
++@property --w-400 { syntax: "<number>"; inherits: true; initial-value: 400; }
++@property --w-500 { syntax: "<number>"; inherits: true; initial-value: 500; }
++@property --w-600 { syntax: "<number>"; inherits: true; initial-value: 600; }
++@property --w-700 { syntax: "<number>"; inherits: true; initial-value: 700; }
++@property --w-800 { syntax: "<number>"; inherits: true; initial-value: 800; }
++@property --w-900 { syntax: "<number>"; inherits: true; initial-value: 900; }
++
++:root {
++  --oklch-97_08-0_0143-28_01-1: oklch(97.08% 0.0143 28.01);
++  --oklch-92_03-0_0156-27_29-1: oklch(92.03% 0.0156 27.29);
++  --oklch-84_11-0_0174-31_09-1: oklch(84.11% 0.0174 31.09);
++  --oklch-69_95-0_0192-26_17-1: oklch(69.95% 0.0192 26.17);
++  --oklch-54_92-0_0205-26_26-1: oklch(54.92% 0.0205 26.26);
++  --oklch-39_9-0_0224-26_46-1: oklch(39.9% 0.0224 26.46);
++  --oklch-27_9-0_0249-26_85-1: oklch(27.9% 0.0249 26.85);
++  --oklch-18_04-0_0265-28_15-1: oklch(18.04% 0.0265 28.15);
++  --oklch-12_06-0_0265-31_11-1: oklch(12.06% 0.0265 31.11);
++  --oklch-63_96-0_1907-27_52-1: oklch(63.96% 0.1907 27.52);
++  --oklch-51_97-0_1904-27_5-1: oklch(51.97% 0.1904 27.5);
++  --oklch-44_16-0_1804-27_82-1: oklch(44.16% 0.1804 27.82);
++  --rem-0_132: 0.132rem;
++  --rem-0_296: 0.296rem;
++  --rem-0_444: 0.444rem;
++  --rem-0_667: 0.667rem;
++  --rem-1: 1rem;
++  --rem-1_5: 1.5rem;
++  --rem-2_25: 2.25rem;
++  --rem-3_375: 3.375rem;
++  --rem-0_758: 0.758rem;
++  --rem-1_32: 1.32rem;
++  --rem-1_741: 1.741rem;
++  --rem-2_297: 2.297rem;
++  --rem-3_031: 3.031rem;
++  --w-300: 300;
++  --w-400: 400;
++  --w-500: 500;
++  --w-600: 600;
++  --w-700: 700;
++  --w-800: 800;
++  --w-900: 900;
++  --surface: var(--oklch-97_08-0_0143-28_01-1);
++  --surface-dark: var(--oklch-27_9-0_0249-26_85-1);
++  --text: var(--oklch-27_9-0_0249-26_85-1);
++  --on-dark: var(--oklch-92_03-0_0156-27_29-1);
++  --heading: var(--oklch-18_04-0_0265-28_15-1);
++  --accent: var(--oklch-63_96-0_1907-27_52-1);
++  --on-accent: var(--oklch-18_04-0_0265-28_15-1);
++  --link: var(--oklch-44_16-0_1804-27_82-1);
++  --muted: var(--oklch-51_97-0_1904-27_5-1);
++  --border: var(--oklch-63_96-0_1907-27_52-1);
++  --zero: 0rem;
++  --root-font: clamp(1rem, calc(0.5rem + 0.5vw), 1.25rem);
++  --measure: 66ch;
++  --lh-body: 1.5;
++  --lh-tight: 1.2;
++  --font-sans: Poppins, system-ui, sans-serif;
++  --kw-solid: solid;
++  --kw-underline: underline;
++  --kw-auto: auto;
++  --kw-block: block;
++  --target-min: 2.75rem;
++  font-size: var(--root-font);
++}
++
++body {
++  background-color: var(--surface);
++  color: var(--text);
++  max-inline-size: var(--measure);
++  line-height: var(--lh-body);
++  font-family: var(--font-sans);
++  font-weight: var(--w-400);
++  margin-block: var(--rem-2_25);
++  margin-inline: var(--kw-auto);
++  padding-inline: var(--rem-1);
++}
++
++h1 {
++  font-size: var(--rem-3_031);
++  color: var(--heading);
++  font-weight: var(--w-600);
++  line-height: var(--lh-tight);
++  margin-block-start: var(--zero);
++  margin-block-end: var(--rem-1);
++}
++
++h2 {
++  font-size: var(--rem-2_297);
++  color: var(--heading);
++  font-weight: var(--w-600);
++  line-height: var(--lh-tight);
++  margin-block-start: var(--rem-2_25);
++  margin-block-end: var(--rem-0_758);
++}
++
++h3 {
++  font-size: var(--rem-1_741);
++  font-weight: var(--w-600);
++  margin-block-start: var(--zero);
++  margin-block-end: var(--rem-0_758);
++}
++
++p {
++  margin-block-start: var(--zero);
++  margin-block-end: var(--rem-1);
++}
++
++a {
++  color: var(--link);
++  text-decoration-line: var(--kw-underline);
++  text-decoration-color: var(--link);
++  text-underline-offset: var(--rem-0_132);
++}
++
++.card {
++  background-color: var(--surface-dark);
++  color: var(--on-dark);
++  border-width: var(--rem-0_132);
++  border-style: var(--kw-solid);
++  border-color: var(--border);
++  border-radius: var(--rem-0_444);
++  padding: var(--rem-1_5);
++  margin-block: var(--rem-3_031);
++}
++
++.card > :last-child {
++  margin-block-end: var(--zero);
++}
++
++.card h3, .card a {
++  color: var(--on-dark);
++}
++
++small {
++  font-size: var(--rem-0_758);
++  color: var(--muted);
++  display: var(--kw-block);
++  margin-block-start: var(--rem-1_5);
++}
++
++button {
++  background-color: var(--accent);
++  color: var(--on-accent);
++  min-block-size: var(--target-min);
++  padding-block: var(--rem-0_758);
++  padding-inline: var(--rem-1_5);
++  border-radius: var(--rem-0_296);
++  margin-block-start: var(--rem-1_5);
++}
+diff --git a/tokens/examples/mock-webfont/tokens.dtcg.json b/tokens/examples/mock-webfont/tokens.dtcg.json
+new file mode 100644
+index 0000000..edd08dc
+--- /dev/null
++++ b/tokens/examples/mock-webfont/tokens.dtcg.json
+@@ -0,0 +1,186 @@
++{
++  "$description": "Design tokens for brand \"webfont-demo\", derived from seed #B91C1C. W3C DTCG format.",
++  "color": {
++    "$type": "color",
++    "primitive": {
++      "oklch-97_08-0_0143-28_01-1": {
++        "$value": "oklch(97.08% 0.0143 28.01)"
++      },
++      "oklch-92_03-0_0156-27_29-1": {
++        "$value": "oklch(92.03% 0.0156 27.29)"
++      },
++      "oklch-84_11-0_0174-31_09-1": {
++        "$value": "oklch(84.11% 0.0174 31.09)"
++      },
++      "oklch-69_95-0_0192-26_17-1": {
++        "$value": "oklch(69.95% 0.0192 26.17)"
++      },
++      "oklch-54_92-0_0205-26_26-1": {
++        "$value": "oklch(54.92% 0.0205 26.26)"
++      },
++      "oklch-39_9-0_0224-26_46-1": {
++        "$value": "oklch(39.9% 0.0224 26.46)"
++      },
++      "oklch-27_9-0_0249-26_85-1": {
++        "$value": "oklch(27.9% 0.0249 26.85)"
++      },
++      "oklch-18_04-0_0265-28_15-1": {
++        "$value": "oklch(18.04% 0.0265 28.15)"
++      },
++      "oklch-12_06-0_0265-31_11-1": {
++        "$value": "oklch(12.06% 0.0265 31.11)"
++      },
++      "oklch-63_96-0_1907-27_52-1": {
++        "$value": "oklch(63.96% 0.1907 27.52)"
++      },
++      "oklch-51_97-0_1904-27_5-1": {
++        "$value": "oklch(51.97% 0.1904 27.5)"
++      },
++      "oklch-44_16-0_1804-27_82-1": {
++        "$value": "oklch(44.16% 0.1804 27.82)"
++      }
++    },
++    "role": {
++      "surface": {
++        "$value": "{color.primitive.oklch-97_08-0_0143-28_01-1}"
++      },
++      "surface-dark": {
++        "$value": "{color.primitive.oklch-27_9-0_0249-26_85-1}"
++      },
++      "text": {
++        "$value": "{color.primitive.oklch-27_9-0_0249-26_85-1}"
++      },
++      "on-dark": {
++        "$value": "{color.primitive.oklch-92_03-0_0156-27_29-1}"
++      },
++      "heading": {
++        "$value": "{color.primitive.oklch-18_04-0_0265-28_15-1}"
++      },
++      "accent": {
++        "$value": "{color.primitive.oklch-63_96-0_1907-27_52-1}"
++      },
++      "on-accent": {
++        "$value": "{color.primitive.oklch-18_04-0_0265-28_15-1}"
++      },
++      "link": {
++        "$value": "{color.primitive.oklch-44_16-0_1804-27_82-1}"
++      },
++      "muted": {
++        "$value": "{color.primitive.oklch-51_97-0_1904-27_5-1}"
++      },
++      "border": {
++        "$value": "{color.primitive.oklch-63_96-0_1907-27_52-1}"
++      }
++    }
++  },
++  "dimension": {
++    "$type": "dimension",
++    "space": {
++      "none": {
++        "$value": "0rem"
++      },
++      "hair": {
++        "$value": "0.125rem"
++      },
++      "xs": {
++        "$value": "0.25rem"
++      },
++      "sm": {
++        "$value": "0.5rem"
++      },
++      "snug": {
++        "$value": "0.75rem"
++      },
++      "base": {
++        "$value": "1rem"
++      },
++      "md": {
++        "$value": "1.5rem"
++      },
++      "lg": {
++        "$value": "2rem"
++      },
++      "xl": {
++        "$value": "3rem"
++      }
++    },
++    "size": {
++      "small": {
++        "$value": "0.758rem"
++      },
++      "body": {
++        "$value": "1rem"
++      },
++      "h4": {
++        "$value": "1.32rem"
++      },
++      "h3": {
++        "$value": "1.741rem"
++      },
++      "h2": {
++        "$value": "2.297rem"
++      },
++      "h1": {
++        "$value": "3.031rem"
++      }
++    },
++    "measure": {
++      "$value": "66ch"
++    }
++  },
++  "fontFamily": {
++    "$type": "fontFamily",
++    "sans": {
++      "$value": [
++        "Poppins",
++        "system-ui",
++        "sans-serif"
++      ],
++      "$description": "Font stack: Poppins, system-ui, sans-serif. Embedded: Poppins (@font-face, data: URI); the rest is the fallback tail.",
++      "$extensions": {
++        "systems.bounded.fontFace": [
++          {
++            "family": "Poppins",
++            "weight": 400,
++            "style": "normal",
++            "display": "swap",
++            "format": "woff"
++          }
++        ]
++      }
++    }
++  },
++  "fontWeight": {
++    "$type": "fontWeight",
++    "w-300": {
++      "$value": 300
++    },
++    "w-400": {
++      "$value": 400
++    },
++    "w-500": {
++      "$value": 500
++    },
++    "w-600": {
++      "$value": 600
++    },
++    "w-700": {
++      "$value": 700
++    },
++    "w-800": {
++      "$value": 800
++    },
++    "w-900": {
++      "$value": 900
++    }
++  },
++  "number": {
++    "$type": "number",
++    "line-height-body": {
++      "$value": 1.5
++    },
++    "line-height-heading": {
++      "$value": 1.2
++    }
++  }
++}
+diff --git a/tokens/examples/mock-webfont/tokens.sd.json b/tokens/examples/mock-webfont/tokens.sd.json
+new file mode 100644
+index 0000000..b13d06e
+--- /dev/null
++++ b/tokens/examples/mock-webfont/tokens.sd.json
+@@ -0,0 +1,167 @@
++{
++  "color": {
++    "primitive": {
++      "oklch-97_08-0_0143-28_01-1": {
++        "value": "oklch(97.08% 0.0143 28.01)"
++      },
++      "oklch-92_03-0_0156-27_29-1": {
++        "value": "oklch(92.03% 0.0156 27.29)"
++      },
++      "oklch-84_11-0_0174-31_09-1": {
++        "value": "oklch(84.11% 0.0174 31.09)"
++      },
++      "oklch-69_95-0_0192-26_17-1": {
++        "value": "oklch(69.95% 0.0192 26.17)"
++      },
++      "oklch-54_92-0_0205-26_26-1": {
++        "value": "oklch(54.92% 0.0205 26.26)"
++      },
++      "oklch-39_9-0_0224-26_46-1": {
++        "value": "oklch(39.9% 0.0224 26.46)"
++      },
++      "oklch-27_9-0_0249-26_85-1": {
++        "value": "oklch(27.9% 0.0249 26.85)"
++      },
++      "oklch-18_04-0_0265-28_15-1": {
++        "value": "oklch(18.04% 0.0265 28.15)"
++      },
++      "oklch-12_06-0_0265-31_11-1": {
++        "value": "oklch(12.06% 0.0265 31.11)"
++      },
++      "oklch-63_96-0_1907-27_52-1": {
++        "value": "oklch(63.96% 0.1907 27.52)"
++      },
++      "oklch-51_97-0_1904-27_5-1": {
++        "value": "oklch(51.97% 0.1904 27.5)"
++      },
++      "oklch-44_16-0_1804-27_82-1": {
++        "value": "oklch(44.16% 0.1804 27.82)"
++      }
++    },
++    "role": {
++      "surface": {
++        "value": "{color.primitive.oklch-97_08-0_0143-28_01-1.value}"
++      },
++      "surface-dark": {
++        "value": "{color.primitive.oklch-27_9-0_0249-26_85-1.value}"
++      },
++      "text": {
++        "value": "{color.primitive.oklch-27_9-0_0249-26_85-1.value}"
++      },
++      "on-dark": {
++        "value": "{color.primitive.oklch-92_03-0_0156-27_29-1.value}"
++      },
++      "heading": {
++        "value": "{color.primitive.oklch-18_04-0_0265-28_15-1.value}"
++      },
++      "accent": {
++        "value": "{color.primitive.oklch-63_96-0_1907-27_52-1.value}"
++      },
++      "on-accent": {
++        "value": "{color.primitive.oklch-18_04-0_0265-28_15-1.value}"
++      },
++      "link": {
++        "value": "{color.primitive.oklch-44_16-0_1804-27_82-1.value}"
++      },
++      "muted": {
++        "value": "{color.primitive.oklch-51_97-0_1904-27_5-1.value}"
++      },
++      "border": {
++        "value": "{color.primitive.oklch-63_96-0_1907-27_52-1.value}"
++      }
++    }
++  },
++  "size": {
++    "space": {
++      "none": {
++        "value": "0rem"
++      },
++      "hair": {
++        "value": "0.125rem"
++      },
++      "xs": {
++        "value": "0.25rem"
++      },
++      "sm": {
++        "value": "0.5rem"
++      },
++      "snug": {
++        "value": "0.75rem"
++      },
++      "base": {
++        "value": "1rem"
++      },
++      "md": {
++        "value": "1.5rem"
++      },
++      "lg": {
++        "value": "2rem"
++      },
++      "xl": {
++        "value": "3rem"
++      }
++    },
++    "font": {
++      "small": {
++        "value": "0.758rem"
++      },
++      "body": {
++        "value": "1rem"
++      },
++      "h4": {
++        "value": "1.32rem"
++      },
++      "h3": {
++        "value": "1.741rem"
++      },
++      "h2": {
++        "value": "2.297rem"
++      },
++      "h1": {
++        "value": "3.031rem"
++      }
++    },
++    "measure": {
++      "value": "66ch"
++    }
++  },
++  "font": {
++    "family": {
++      "sans": {
++        "value": "Poppins, system-ui, sans-serif",
++        "faces": [
++          {
++            "family": "Poppins",
++            "weight": 400,
++            "style": "normal",
++            "display": "swap",
++            "format": "woff"
++          }
++        ]
++      }
++    },
++    "weight": {
++      "w-300": {
++        "value": 300
++      },
++      "w-400": {
++        "value": 400
++      },
++      "w-500": {
++        "value": 500
++      },
++      "w-600": {
++        "value": 600
++      },
++      "w-700": {
++        "value": 700
++      },
++      "w-800": {
++        "value": 800
++      },
++      "w-900": {
++        "value": 900
++      }
++    }
++  }
++}
+diff --git a/tokens/font.ts b/tokens/font.ts
+index 6bea22d..8fa3275 100644
+--- a/tokens/font.ts
++++ b/tokens/font.ts
+@@ -47,6 +47,31 @@ export const FontFamily = z.object({
+ });
+ export type FontFamily = z.infer<typeof FontFamily>;
+ 
++/** Embedded-webfont source formats (CSS Fonts 4 §src-desc format()) keyed by the data: URI MIME type
++ * (RFC 8081 font/*), so a face declares its src once and the format() hint derives from it. */
++export const FONT_FORMAT_BY_MIME = { "font/woff2": "woff2", "font/woff": "woff", "font/ttf": "truetype", "font/otf": "opentype" } as const;
++export type FontFormat = (typeof FONT_FORMAT_BY_MIME)[keyof typeof FONT_FORMAT_BY_MIME];
++
++/** font-display (CSS Fonts 4 §font-display-desc) — `swap` is the default: text renders in the
++ * fallback stack at once and swaps when the embedded face has decoded (no invisible text). */
++export const FontDisplay = z.enum(["auto", "block", "swap", "fallback", "optional"]);
++export type FontDisplay = z.infer<typeof FontDisplay>;
++
++/** An EMBEDDED webfont — one @font-face (CSS Fonts 4 §font-face-rule). The src is a base64 data:
++ * URI (RFC 2397) so the generated stylesheet stays self-contained: no CDN, no cross-origin fetch,
++ * CSP-clean. The engine's default is the zero-load system stack; embedding trades bytes (and a
++ * license the brand must hold) for the typeface, and the system stack stays the fallback tail. */
++export const FontFace = z.object({
++  family: z.string().min(1),
++  src: z.string().regex(/^data:font\/(woff2|woff|ttf|otf);base64,[A-Za-z0-9+/]+=*$/, "a base64 data: URI with a font/* MIME type"),
++  weight: z.union([z.number().int().min(1).max(1000), z.tuple([z.number().int().min(1).max(1000), z.number().int().min(1).max(1000)])]).default(400),
++  style: z.enum(["normal", "italic", "oblique"]).default("normal"),
++  display: FontDisplay.default("swap"),
++});
++export type FontFace = z.infer<typeof FontFace>;
++/** The format() hint for a face — read off its data: URI MIME type. */
++export const fontFormatOf = (face: { src: string }): FontFormat => FONT_FORMAT_BY_MIME[face.src.slice(5, face.src.indexOf(";")) as keyof typeof FONT_FORMAT_BY_MIME];
++
+ /** font-palette reification (CSS Fonts 4 §font-palette, via CSS Typed OM reify). For both specified
+  * and computed values: `normal | light | dark` reify to an IDENTIFIER (CSSKeywordValue); any other
+  * value (a `<palette-identifier>` like `--brand`) reifies to a generic CSSStyleValue. */
+diff --git a/tokens/gen-font.ts b/tokens/gen-font.ts
+index ffb2eb5..c294773 100644
+--- a/tokens/gen-font.ts
++++ b/tokens/gen-font.ts
+@@ -25,6 +25,7 @@ const out = `// GENERATED from @webref/css by gen-font.ts — do not edit by han
+   `/** CSS generic font families (incl. the OS-native ui-* + system-ui). */\nexport const GenericFontFamily = z.enum(${JSON.stringify(generics)} as [string, ...string[]]);\nexport type GenericFontFamily = z.infer<typeof GenericFontFamily>;\n\n` +
+   `/** The OS "default" system-font stacks on the web — system-ui surfaces SF/Segoe UI/Roboto. */\nexport const SYSTEM_FONT_STACKS = ${JSON.stringify(SYSTEM_FONT_STACKS, null, 2)} as const;\n\n` +
+   `/** A font-family token — a stack ending in a generic. Reifies to a generic CSSStyleValue. */\nexport const FontFamily = z.object({\n  $type: z.literal("font-family"),\n  $value: z.array(z.string()).min(1),\n  $generic: GenericFontFamily,\n  $reifiesTo: z.literal("CSSStyleValue"),\n  $description: z.string(),\n});\nexport type FontFamily = z.infer<typeof FontFamily>;\n\n` +
++  `/** Embedded-webfont source formats (CSS Fonts 4 §src-desc format()) keyed by the data: URI MIME type\n * (RFC 8081 font/*), so a face declares its src once and the format() hint derives from it. */\nexport const FONT_FORMAT_BY_MIME = { "font/woff2": "woff2", "font/woff": "woff", "font/ttf": "truetype", "font/otf": "opentype" } as const;\nexport type FontFormat = (typeof FONT_FORMAT_BY_MIME)[keyof typeof FONT_FORMAT_BY_MIME];\n\n/** font-display (CSS Fonts 4 §font-display-desc) — \`swap\` is the default: text renders in the\n * fallback stack at once and swaps when the embedded face has decoded (no invisible text). */\nexport const FontDisplay = z.enum(["auto", "block", "swap", "fallback", "optional"]);\nexport type FontDisplay = z.infer<typeof FontDisplay>;\n\n/** An EMBEDDED webfont — one @font-face (CSS Fonts 4 §font-face-rule). The src is a base64 data:\n * URI (RFC 2397) so the generated stylesheet stays self-contained: no CDN, no cross-origin fetch,\n * CSP-clean. The engine's default is the zero-load system stack; embedding trades bytes (and a\n * license the brand must hold) for the typeface, and the system stack stays the fallback tail. */\nexport const FontFace = z.object({\n  family: z.string().min(1),\n  src: z.string().regex(/^data:font\\/(woff2|woff|ttf|otf);base64,[A-Za-z0-9+/]+=*$/, "a base64 data: URI with a font/* MIME type"),\n  weight: z.union([z.number().int().min(1).max(1000), z.tuple([z.number().int().min(1).max(1000), z.number().int().min(1).max(1000)])]).default(400),\n  style: z.enum(["normal", "italic", "oblique"]).default("normal"),\n  display: FontDisplay.default("swap"),\n});\nexport type FontFace = z.infer<typeof FontFace>;\n/** The format() hint for a face — read off its data: URI MIME type. */\nexport const fontFormatOf = (face: { src: string }): FontFormat => FONT_FORMAT_BY_MIME[face.src.slice(5, face.src.indexOf(";")) as keyof typeof FONT_FORMAT_BY_MIME];\n\n` +
+   `/** font-palette reification (CSS Fonts 4 §font-palette via Typed OM reify): normal|light|dark reify\n * to an IDENTIFIER (CSSKeywordValue); any other value (a <palette-identifier> like --brand) reifies to\n * a generic CSSStyleValue. */\nexport const FontPaletteKeyword = z.enum(["normal", "light", "dark"]);\nexport type FontPaletteKeyword = z.infer<typeof FontPaletteKeyword>;\nexport const FontPalette = z.object({\n  $type: z.literal("font-palette"),\n  $value: z.union([FontPaletteKeyword, z.string().regex(/^--/, "a <palette-identifier>")]),\n  $reifiesTo: z.union([z.literal("CSSKeywordValue"), z.literal("CSSStyleValue")]),\n  $description: z.string(),\n});\nexport type FontPalette = z.infer<typeof FontPalette>;\nexport const reifyFontPalette = (value: string): "CSSKeywordValue" | "CSSStyleValue" =>\n  FontPaletteKeyword.safeParse(value).success ? "CSSKeywordValue" : "CSSStyleValue";\n`;
+ Deno.writeTextFileSync(new URL("font.ts", import.meta.url), out);
+ console.log(`generated font.ts — GenericFontFamily (${generics.length}: ${generics.join(", ")}); system stacks: sans/serif/mono.`);
+diff --git a/tokens/serialize.ts b/tokens/serialize.ts
+index 2ba63f0..65f023e 100644
+--- a/tokens/serialize.ts
++++ b/tokens/serialize.ts
+@@ -5,11 +5,30 @@
+ import { z } from "zod";
+ import { CssProperty } from "./properties.ts";
+ import { CSSKeywordValue, CSSMathClamp, CSSMathProduct, CSSMathSum, CSSOKLab, CSSOKLCH, CSSUnitValue, CSSVariableReferenceValue } from "./typed-om.ts";
++import { type FontFace, fontFormatOf, GenericFontFamily } from "./font.ts";
++
++/** The base `CSSStyleValue` (Typed OM 1 §cssstylevalue) — what font-family reifies to: a value with
++ * no typed structure, only its stringifier (cssText). Built by fontFamilyValue(), never by hand. */
++export const CSSStyleValueBase = z.object({ $type: z.literal("CSSStyleValue"), cssText: z.string() });
++export type CSSStyleValueBase = z.infer<typeof CSSStyleValueBase>;
+ 
+ /** Any typed value a declaration can hold. */
+-export const StyleValue = z.union([CSSOKLCH, CSSOKLab, CSSUnitValue, CSSKeywordValue, CSSMathSum, CSSMathProduct, CSSMathClamp, CSSVariableReferenceValue]);
++export const StyleValue = z.union([CSSOKLCH, CSSOKLab, CSSUnitValue, CSSKeywordValue, CSSMathSum, CSSMathProduct, CSSMathClamp, CSSVariableReferenceValue, CSSStyleValueBase]);
+ export type StyleValue = z.infer<typeof StyleValue>;
+ 
++/** A <family-name> as CSS text (CSS Fonts 4 §family-name-syntax): generics + single idents bare,
++ * anything else (spaces, digits first, punctuation) as a quoted string. */
++const familyName = (f: string) => (GenericFontFamily.safeParse(f).success || /^-?[A-Za-z_][\w-]*$/.test(f)) ? f : `"${f.replace(/["\\]/g, "\\$&")}"`;
++/** Reify a font stack as the generic CSSStyleValue font-family resolves to (its cssText). */
++export const fontFamilyValue = (stack: readonly string[]): CSSStyleValueBase => ({ $type: "CSSStyleValue", cssText: stack.map(familyName).join(", ") });
++
++/** Serialize an embedded face as one @font-face rule (CSS Fonts 4 §font-face-rule): src is the data:
++ * URI with its format() hint, weight a single value or a range, display per the token. */
++export function serializeFontFace(face: FontFace): string {
++  const weight = Array.isArray(face.weight) ? face.weight.join(" ") : String(face.weight);
++  return `@font-face { font-family: ${familyName(face.family)}; src: url(${face.src}) format("${fontFormatOf(face)}"); font-weight: ${weight}; font-style: ${face.style}; font-display: ${face.display}; }`;
++}
++
+ // deno-lint-ignore no-explicit-any
+ /** A typed var() reference — the CSS-native indirection to a token. */
+ export const varRef = (name: string, fallback: any = null) => ({ $type: "CSSVariableReferenceValue" as const, variable: name, fallback });
+@@ -27,6 +46,7 @@ export function serialize(v: V): string {
+     case "CSSOKLab": return `oklab(${v.l}% ${v.a} ${v.b}${v.alpha === 1 ? "" : ` / ${v.alpha}`})`;
+     case "CSSUnitValue": return v.unit === "number" ? String(v.value) : v.unit === "percent" ? `${v.value}%` : `${v.value}${v.unit}`;
+     case "CSSKeywordValue": return String(v.value);
++    case "CSSStyleValue": return String(v.cssText);
+     case "CSSMathSum": return `calc(${v.values.map(serialize).join(" + ")})`;
+     case "CSSMathProduct": return `calc(${v.values.map(serialize).join(" * ")})`;
+     case "CSSMathClamp": return `clamp(${serialize(v.lower)}, ${serialize(v.value)}, ${serialize(v.upper)})`;
+diff --git a/tokens/to-css.ts b/tokens/to-css.ts
+index e45198d..4c44745 100644
+--- a/tokens/to-css.ts
++++ b/tokens/to-css.ts
+@@ -2,15 +2,17 @@
+ // FULL INDIRECTION: element rules hold no direct values (every value a var() to a :root token, incl.
+ // --zero); roles come from the typed ROLE_SPEC (with per-brand overrides); selectors + properties
+ // are real named items (SEL, CssProperty). Colors @property-registered → reified as typed CSSOKLCH.
++// The font is ONE token (--font-sans, from the typed FontFamily): embedded faces are emitted as
++// self-contained @font-face rules (data: URI src) and lead the stack; the system stack is the tail.
+ // Run: deno run -RW to-css.ts <brand.json> <outDir>
+ import { z } from "zod";
+-import { serialize, syntaxOf, varRef } from "./serialize.ts";
++import { fontFamilyValue, serialize, serializeFontFace, syntaxOf, varRef } from "./serialize.ts";
+ import { deriveDimensions, deriveMeasure, generateScale } from "./verbs.ts";
+ import { deriveWeights } from "./extras.ts";
+ import { CssProperty, PROP } from "./properties.ts";
+ import { ROLE_ORDER, type Role, SEL, type Selector } from "./roles.ts";
+ import { HAIRLINE_REM, LINE_HEIGHT_BODY, LINE_HEIGHT_HEADING, ROOT_FONT, SPACE, SPACING_RATIO, SPACING_STOPS, TARGET_MIN_REM } from "./constants.ts";
+-import { deriveAtoms, deriveRoles } from "./derive.ts";
++import { deriveAtoms, deriveFontFamily, deriveRoles } from "./derive.ts";
+ import { loadBrand } from "./config.ts";
+ 
+ const brand = loadBrand(Deno.args[0]);
+@@ -18,6 +20,7 @@ const outDir = Deno.args[1] ?? ".";
+ // ── THE DERIVATION (shared with to-tokens.ts) ──
+ const atoms = deriveAtoms(brand);
+ const roles = deriveRoles(atoms, brand);
++const fontFamily = deriveFontFamily(brand);
+ const fail = (m: string): never => { console.error(`✗ ${m}`); Deno.exit(1); };
+ 
+ // ── dimension + weight tokens (type scale from the brand config) ───────────────
+@@ -50,7 +53,7 @@ const d = (rmv: number) => (rmv === 0 ? zero : varRef(`--${dimList.reduce((a, b)
+ const rootFont = tok("root-font", { $type: "CSSMathClamp" as const, lower: rem(ROOT_FONT.floorRem), value: { $type: "CSSMathSum" as const, values: [rem(ROOT_FONT.baseRem), vw(ROOT_FONT.slopeVw)] }, upper: rem(ROOT_FONT.ceilRem) });
+ const measure = tok("measure", deriveMeasure(brand.measure).$value);
+ const lhBody = tok("lh-body", num(LINE_HEIGHT_BODY)), lhTight = tok("lh-tight", num(LINE_HEIGHT_HEADING));
+-const font = tok("font-sans", kw(brand.font));
++const font = tok("font-sans", fontFamilyValue(fontFamily.$value)); // the ONE font-family source
+ const wBody = varRef(`--w-${brand.weights.body}`), wHead = varRef(`--w-${brand.weights.heading}`);
+ const kSolid = tok("kw-solid", kw("solid")), kUnderline = tok("kw-underline", kw("underline")), kAuto = tok("kw-auto", kw("auto")), kBlock = tok("kw-block", kw("block"));
+ const targetMin = tok("target-min", rem(TARGET_MIN_REM));
+@@ -115,6 +118,7 @@ const elems: Decl[] = [
+ const decls = [...root, ...elems];
+ for (const de of decls) if (!de.property.startsWith("--") && !CssProperty.safeParse(de.property).success) fail(`unknown property "${de.property}"`);
+ 
++const faces = brand.fontFaces.map(serializeFontFace).map((r) => r + "\n").join(""); // embedded faces DEFINE a font; empty when none
+ const reg = atoms.map((a) => `@property --${a.cas} { syntax: "${syntaxOf(a.value)}"; inherits: true; initial-value: ${serialize(a.value)}; }`)
+   .concat(Object.entries(dimTokens).map(([cas, dm]) => `@property --${cas} { syntax: "<length>"; inherits: true; initial-value: ${serialize(dm.$value)}; }`))
+   .concat(Object.entries(weights).map(([w, wt]) => `@property --${w} { syntax: "<number>"; inherits: true; initial-value: ${serialize(wt.$value)}; }`)).join("\n");
+@@ -122,6 +126,6 @@ const bySelector = new Map<string, Decl[]>();
+ for (const de of decls) (bySelector.get(de.selector) ?? bySelector.set(de.selector, []).get(de.selector)!).push(de);
+ const rules = [...bySelector].map(([sel, ds]) => `${sel} {\n${ds.map((de) => `  ${de.property}: ${serialize(de.value)};`).join("\n")}\n}`).join("\n\n");
+ 
+-const css = `/* GENERATED by to-css.ts from brand "${brand.name}" — FULL INDIRECTION: every element value is a var() to a :root token. */\n${reg}\n\n${rules}\n`;
++const css = `/* GENERATED by to-css.ts from brand "${brand.name}" — FULL INDIRECTION: every element value is a var() to a :root token. */\n${faces}${reg}\n\n${rules}\n`;
+ Deno.writeTextFileSync(`${outDir}/style.css`, css);
+-console.log(`generated ${outDir}/style.css — brand "${brand.name}" (bias ${brand.brandBias}): ${atoms.length} color + ${dimList.length} dim + ${Object.keys(weights).length} weight + ${seen.size} value tokens; surface ${roles.surface.cas}, text ${roles.text.cas}, link ${roles.link.cas}.`);
++console.log(`generated ${outDir}/style.css — brand "${brand.name}" (bias ${brand.brandBias}): ${atoms.length} color + ${dimList.length} dim + ${Object.keys(weights).length} weight + ${seen.size} value tokens; ${brand.fontFaces.length} embedded face(s); surface ${roles.surface.cas}, text ${roles.text.cas}, link ${roles.link.cas}.`);
+diff --git a/tokens/to-tokens.ts b/tokens/to-tokens.ts
+index e848ad8..f0551da 100644
+--- a/tokens/to-tokens.ts
++++ b/tokens/to-tokens.ts
+@@ -8,7 +8,8 @@
+ import { serialize } from "./serialize.ts";
+ import { deriveDimensions, deriveMeasure, generateScale } from "./verbs.ts";
+ import { deriveWeights } from "./extras.ts";
+-import { deriveAtoms, deriveRoles } from "./derive.ts";
++import { deriveAtoms, deriveFontFamily, deriveRoles } from "./derive.ts";
++import { fontFormatOf } from "./font.ts";
+ import { ROLE_ORDER } from "./roles.ts";
+ import { LINE_HEIGHT_BODY, LINE_HEIGHT_HEADING, SPACE, SPACING_RATIO, SPACING_STOPS } from "./constants.ts";
+ import { loadBrand } from "./config.ts";
+@@ -17,6 +18,9 @@ const brand = loadBrand(Deno.args[0]);
+ const outDir = Deno.args[1] ?? ".";
+ const atoms = deriveAtoms(brand);
+ const roles = deriveRoles(atoms, brand);
++const fontFamily = deriveFontFamily(brand);
++// embedded faces, metadata only (family/weight/style/display/format) — the bytes live in style.css
++const faces = brand.fontFaces.map((f) => ({ family: f.family, weight: f.weight, style: f.style, display: f.display, format: fontFormatOf(f) }));
+ const typeScale = generateScale(brand.typeScale.floorRem, brand.typeScale.ceilingRem, brand.typeScale.roles);
+ const spacing = deriveDimensions([...SPACING_STOPS], SPACING_RATIO);
+ const weights = deriveWeights();
+@@ -38,6 +42,7 @@ const dtcg = {
+     size: Object.fromEntries(Object.entries(typeScale).map(([cas, dm]) => [sizeRole(cas), { $value: remOf(dm) }])),
+     measure: { $value: `${measureCh}ch` },
+   },
++  fontFamily: { $type: "fontFamily", sans: { $value: fontFamily.$value, $description: fontFamily.$description, ...(faces.length ? { $extensions: { "systems.bounded.fontFace": faces } } : {}) } },
+   fontWeight: { $type: "fontWeight", ...Object.fromEntries(Object.entries(weights).map(([w, wt]) => [w, { $value: (wt.$value as { value: number }).value }])) },
+   number: { $type: "number", "line-height-body": { $value: LINE_HEIGHT_BODY }, "line-height-heading": { $value: LINE_HEIGHT_HEADING } },
+ };
+@@ -53,7 +58,10 @@ const sd = {
+     font: Object.fromEntries(Object.entries(typeScale).map(([cas, dm]) => [sizeRole(cas), { value: remOf(dm) }])),
+     measure: { value: `${measureCh}ch` },
+   },
+-  font: { weight: Object.fromEntries(Object.entries(weights).map(([w, wt]) => [w, { value: (wt.$value as { value: number }).value }])) },
++  font: {
++    family: { sans: { value: fontFamily.$value.join(", "), ...(faces.length ? { faces } : {}) } },
++    weight: Object.fromEntries(Object.entries(weights).map(([w, wt]) => [w, { value: (wt.$value as { value: number }).value }])),
++  },
+ };
+ 
+ Deno.writeTextFileSync(`${outDir}/tokens.dtcg.json`, JSON.stringify(dtcg, null, 2) + "\n");
+-- 
+2.43.0
+

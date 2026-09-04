@@ -1,0 +1,27 @@
+{
+  "id": "fds-1",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/front-desk-scheduler at main (19437d5) accepts the patch via `git am` with no conflicts, touching only scripts/sync-delta.ts, src/mirror.ts and the new test/sync-delta.test.ts. Every claim in REPORT.md reproduced: `node --test test/sync-delta.test.ts` 5/5 pass; `test/closed-at-freshness.test.ts` 6/6 pass (its source-grep assertions survive the refactor); `npm test` goes 355->360 tests with the identical 7 pre-existing ERR_MODULE_NOT_FOUND('zod') failures on both pristine main and the patched tree (registry.npmjs.org is blocked so `deno install --frozen` cannot run, as the report states); `deno check` on the touched files reports only the pre-existing src/dolt-server.ts:221 TS2488 that is also present on main. The tests are not hollow: they drive the real syncPullDelta body through an injected DeltaIo and assert the --updated bound, fetched count, and the exact UPDATE statement; mutating the cursor to a constant fails 5/5 and disabling the UPDATE fails 2/5. The live default (liveDeltaIo = dsql / pexecFile gh / fetchGraphqlLimit) is behaviour-identical to the removed inline calls, and the `rows` helper mirrors dsqlRows exactly; the only caller (scripts/sync-delta.ts) passes no io. Against the issue body (delta via `updated` since the last sync_log cursor, full pull kept as drift backstop, routine syncs down to tens of points): that was already shipped on main (syncPullDelta + mirror-sync-delta.yml hourly/repository_dispatch; full pull on mirror-sync.yml), and the scout's stated remaining gap was a behavioural test, which this patch supplies. Two factual slips in the prose only: REPORT/pasted comment call mirror-sync.yml a 'weekly' backstop, but its cron is `17 */6 * * *` (every 6h) -- the 'weekly' wording is inherited from stale in-repo comments; and closing #1 needs the GitHub side (no PR/close in the patch), which is expected for a patch deliverable.",
+  "evidence": [
+    "git clone + git am: 'Applying: #1: prove the delta sync fetches only the delta' -> a885755 on top of 19437d5, clean, 3 files changed",
+    "node --test test/sync-delta.test.ts: # tests 5 / # pass 5 / # fail 0",
+    "node --test test/closed-at-freshness.test.ts: # tests 6 / # pass 6 / # fail 0",
+    "npm test @19437d5 (main): # tests 355 / pass 348 / fail 7 (capability, claim-named, claim-ticket-summary, graph, held, list, next: ERR_MODULE_NOT_FOUND 'zod')",
+    "npm test @patched: # tests 360 / pass 353 / fail 7 (same 7 files)",
+    "deno install --frozen: 'Host not in allowlist: registry.npmjs.org' exit 1 (sandbox egress, as reported)",
+    "deno check src/mirror.ts test/sync-delta.test.ts scripts/sync-delta.ts test/closed-at-freshness.test.ts: only error is src/dolt-server.ts:221 TS2488; same error on pristine main",
+    "mutation: since := \"2020-01-01\" -> # pass 0 / # fail 5; `if (false) await io.sql(UPDATE...)` -> # pass 3 / # fail 2",
+    "src/mirror.ts:91-103 dsql/dsqlRows vs patched `rows` helper at src/mirror.ts:1115-1116: identical JSON.parse(out||'{}').rows ?? [] semantics",
+    "grep callers: scripts/sync-delta.ts:14 `await syncPullDelta()` is the only caller; default io preserved",
+    ".github/workflows/mirror-sync.yml:19 cron \"17 */6 * * *\" (every 6h), not weekly as REPORT.md and the pasted comment state; mirror-sync-delta.yml:13-16 repository_dispatch board-changed + cron 37 * * * *",
+    "Issue #1 body (WebFetch): 'Query items filtered/ordered by `updated` since the last sync cursor (stored in `sync_log`)', 'Keep the weekly full pull as drift backstop', 'Expected: routine syncs drop from ~1,314 pts to tens of points'; state Open; depends-on front-desk-scheduler#3"
+  ],
+  "must_fix": [],
+  "nits": [
+    "REPORT.md and the ready-to-paste #1 comment describe mirror-sync.yml as the 'weekly' full pull; its cron is every 6h (`17 */6 * * *`). Correct the wording before posting (the in-repo comments in scripts/sync-delta.ts:6 and mirror-sync-delta.yml:6 carry the same stale 'weekly' claim).",
+    "`fetched` counts every Search hit including pull requests (isPullRequest is fetched but never filtered, pre-existing); fine for the test but the log line 'search returned N issue(s)' slightly overstates.",
+    "The pasted comment says '#3 (depends-on) is closed' -- could not independently verify #3's state from this sandbox (gh absent, api.github.com not enabled); confirm before closing."
+  ]
+}

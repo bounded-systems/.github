@@ -1,0 +1,33 @@
+{
+  "id": "claude-box-245",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": true,
+  "confidence": "high",
+  "reason": "The diff itself is tightly scoped (one constant in packages/prx/src/room/claude-room.ts plus three room tests), applies cleanly with `git am` on prx main @ 9de9551, uses a Conventional Commit (`fix(room):`) that references the issue, keeps every added line under the biome lineWidth of 100, and the spec/pod/podman/repin room suites pass (19/14/47/5) in a fresh clone. The GitHub comment contains no fabricated facts: claude-box has only claude-box-v0.6.0 and v0.7.0 tags (no v0.8.0 despite the merged release-please commit), publish-ghcr.yml pushes `${REGISTRY}/claude-room:${VERSION}` with the bare version, and podman.ts:149 does render `room.image` straight into the kube-play manifest. It is nonetheless not mergeable as-is: prx's `changeset-check` workflow fails any PR that changes `packages/` without a `.changeset/*.md` (an empty changeset is required even for test-only changes), the patch adds none, and the directly comparable room fix #981 (96707fe) carried one -- so CI would be red on open, and CONTRIBUTING says CI must be green before review. Second, prx runs `pr-claim` against a live Front Desk claim and CLAUDE.md requires claiming before working; the report admits the issue is unclaimed. Third, the patch addresses only Request 3 of the issue (default image ref); Requests 1-2 (document the GHCR pull path/auth, public packages) are left as owner actions -- the report says so honestly and one-PR-one-thing is repo convention, but the scout plan flagged the HOSTING.md doc change as feasible and it was not attempted, so the PR would not close #245. The tag pin (`:0.7.0`, a mutable tag) departs from the ADR stance that 'the digest is the pin', though concierged-room's `:latest` shows the maintainer tolerates tag pins for images whose digest is not yet readable.",
+  "evidence": [
+    "cd /tmp/verify/claude-box-245/prx && git am 0001-*.patch -> 'Applying: fix(room): fully qualify the claude-room image (bounded-systems/claude-box#245)'; 4 files changed, 39 insertions(+), 3 deletions(-); no .changeset/ file in the diffstat",
+    "/tmp/verify/claude-box-245/prx/.github/workflows/changeset-check.yml:48-56: if changed files match ^packages/ and none match ^\\.changeset/.+\\.md$ -> '::error::This PR changes packages/ but adds no changeset.' exit 1",
+    "git show --stat 96707fe (fix(room): mount door fabric ... #981): includes .changeset/pod-guest-door-dir-host-agnostic.md alongside packages/prx/src/room/* and test/room/* changes",
+    "/tmp/verify/claude-box-245/prx/CONTRIBUTING.md: 'CI must be green before a PR is marked ready for review'; 'Use Conventional Commits ... Reference the issue' (patch subject: fix(room): ... (bounded-systems/claude-box#245))",
+    "/tmp/verify/claude-box-245/prx/CLAUDE.md org block: 'Claim before working: dispatch claim-ticket.yml ... confirm the claim comment ON THE ISSUE'; .github/workflows/pr-claim.yml runs on every pull_request; result.json unresolved[3]: 'Issue not claimed via claim-ticket.yml'",
+    "WebFetch github.com/bounded-systems/claude-box/issues/245: three requests (document pull path incl. auth + pinned digest in README; consider public packages; fix default image reference); env claude-box-v0.7.0. Patch addresses request 3 only.",
+    "git ls-remote --tags https://github.com/bounded-systems/claude-box.git | grep v0.[6-9]: only claude-box-v0.6.0 and claude-box-v0.7.0 exist; /tmp/work/claude-box-245/claude-box version.txt = 0.8.0 and commit 00c7e8f 'chore(main): release claude-box 0.8.0 (#135)' -- REPORT's 'pinning 0.8.0 would 404' claim holds",
+    "/tmp/work/claude-box-245/claude-box/.github/workflows/publish-ghcr.yml:71 '[claude-image]=claude-room'; :117-119 push_list \"${ref}:${VERSION}\" for claude-room -- GHCR tag is the bare version, as the REPORT states",
+    "/tmp/verify/claude-box-245/prx/packages/prx/src/room/podman.ts:148-149: if (room.image) lines.push(`      image: ${dq(room.image)}`) -- kube-play manifest renders the bare name verbatim",
+    "bun test packages/prx/test/room/{spec,pod,podman,repin}.test.ts in the fresh clone: 19/14/47/5 pass, 0 fail",
+    "git diff HEAD~1 HEAD | grep '^+' | awk 'length>101' -> empty (biome.jsonc lineWidth 100 respected)",
+    "/tmp/verify/claude-box-245/prx/packages/prx/src/room/concierged-room.ts:42 CONCIERGED_ROOM_IMAGE = 'ghcr.io/bounded-systems/prx/concierged-box:latest' (tag-pin precedent); docs/prx/claude-runtime.md:145 'the digest is the pin'; repin.ts BOX_PINS lacks claude-room (patch does not add it, consistent with a tag pin)",
+    "Note: /tmp/verify/claude-box-245/prx was re-cloned and node_modules symlinked to the worker tree by a concurrent verifier mid-run; the applied commit (213c0c2) has the identical 4-file diffstat, so results reflect the patch file."
+  ],
+  "must_fix": [
+    "Add a changeset under .changeset/ (e.g. `bunx @changesets/cli@^2.27 add` with a patch bump for @bounded-systems/prx, or `--empty` if the maintainer treats a default-image pin as no-release) -- changeset-check.yml hard-fails the PR without it.",
+    "Claim the issue (claim-ticket.yml or manual assign + comment) before opening the prx PR; pr-claim.yml checks every PR against a live Front Desk claim, and CLAUDE.md forbids working unclaimed.",
+    "State in the PR description that this closes only request 3 of claude-box#245 (do not write `Closes #245`); the docs/public-package requests remain open in claude-box."
+  ],
+  "nits": [
+    "Tag pin `:0.7.0` is a mutable ref; the ADR (docs/prx/claude-runtime.md) treats the digest as the pin. Have the owner swap in `@sha256:` and add claude-room to BOX_PINS in repin.ts on merge, or note the follow-up issue in the PR.",
+    "pod.test.ts regex /^[a-z0-9.-]+\\.[a-z]+\\// rejects legitimately registry-qualified refs such as `localhost/...` or `host:5000/...`; it works for today's rooms but over-constrains future ones. Consider `/^[^/]+[.:][^/]*\\//` or checking for a `.` or `:` or `localhost` before the first slash.",
+    "The scout plan's claude-box HOSTING.md note (packages are private; `podman login ghcr.io` with read:packages) was feasible and skipped; a separate small claude-box docs PR would close request 1 of the issue.",
+    "Commit trailer `Claude-Session:` is non-standard for this repo (precedent is only `Co-authored-by: Claude ...`); harmless but the maintainer may squash it away."
+  ]
+}

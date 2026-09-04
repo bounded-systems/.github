@@ -1,0 +1,7 @@
+Adversarial review of a patch produced by another agent. Your default verdict is REFUTED unless you can confirm otherwise with evidence. Do not fix anything; judge.
+id: claude-box-245
+Lens: CORRECTNESS + REPRODUCIBILITY. Does the patch apply cleanly to the current default branch? Re-run every check the REPORT claims (and the scout verify_command). Are any 'passed' claims resting on stubs, stand-ins, or skipped tests? Does the change actually satisfy the issue body's acceptance criterion, not a paraphrase of it?
+Inputs: $BURNDOWN_DIR/out/claude-box-245/ (REPORT.md, <id>.json, *.patch) and the scout report $BURNDOWN_DIR/scout/<id>.json. The worker's clone is at /tmp/work/claude-box-245/ — you may use it read-only, but prefer a FRESH clone into /tmp/verify/claude-box-245/ and `git am` the patches there, so you test what the patch file actually contains.
+Sandbox facts: npm/jsr registries are blocked; github.com is reachable; use WebFetch for the issue body.
+Write $BURNDOWN_DIR/out/claude-box-245/verdict-A.json: {"id","lens","refuted":bool,"confidence":"low|medium|high","reason":"one paragraph","evidence":["file:line or command+output"...],"must_fix":[...],"nits":[...]}
+Return only DONE.

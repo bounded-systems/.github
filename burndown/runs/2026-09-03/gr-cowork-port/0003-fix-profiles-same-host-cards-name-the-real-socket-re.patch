@@ -1,0 +1,209 @@
+From 574644ce8130b5a4b53cb52f15995837212f4ea1 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 11:46:16 +0000
+Subject: [PATCH 3/3] fix(profiles): same-host cards name the real socket;
+ release intent; no /tmp fallback
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Review round for the nopodman profile:
+
+- The rulebook's GRANTED cards reused each catalog door's `use` text verbatim.
+  Catalog text is written for a walled launch and cites in-box mounts
+  (`/run/doors/<x>.sock`, or resolveDoor's `/run/<name>.sock` fallback) that do
+  not exist same-host, so every card named a wrong path. `sameHostDoor` now
+  appends `sameHostNote`: the real unix socket path and its `$<NAME>_SOCK`
+  variable, declared authoritative. Tested for a catalogued and an
+  uncatalogued door; doc paragraph updated.
+- `runDir` refused to fall back to `/tmp` in its comment but did so in code
+  when HOME was unset; it now throws (fail closed). Tested.
+- `.release/nopodman-profile.md` (bump: minor): the patch adds two public
+  entrypoints and the repo's mint convention wants an intent per user-facing PR.
+- guest-room.test.ts removes the per-scenario run dirs it mkdtemps (afterAll),
+  mirroring nopodman.test.ts; README claims pin for guest-room.test.ts
+  regenerated (descriptor-kit `check .` → no drift).
+- assertPrivateDir documents that it checks the immediate parent for
+  other-writable only.
+
+Refs: burndown gr-cowork-port (off-board; no tracking issue)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .release/nopodman-profile.md        |  4 ++++
+ README.md                           |  2 +-
+ docs/working-in-a-cowork-sandbox.md | 10 +++++++---
+ guest-room.test.ts                  | 15 ++++++++++-----
+ nopodman.test.ts                    | 11 +++++++++++
+ profiles/nopodman.ts                | 26 ++++++++++++++++++++------
+ 6 files changed, 53 insertions(+), 15 deletions(-)
+ create mode 100644 .release/nopodman-profile.md
+
+diff --git a/.release/nopodman-profile.md b/.release/nopodman-profile.md
+new file mode 100644
+index 0000000..14a5aaa
+--- /dev/null
++++ b/.release/nopodman-profile.md
+@@ -0,0 +1,4 @@
++---
++bump: minor
++---
++New `profiles/nopodman` and `profiles/allowlist-door` entrypoints: open a room same-host on a substrate with no container runtime (guest socket = broker socket in a private run dir; injecting `HTTPS_PROXY` parent refused unless `GUEST_ROOM_ALLOW_INJECTING_PARENT=1`; rulebook says NO WALLS and names the real socket paths), plus an egress-shaped decision door that answers `connect {host}` from `host=` caveats, fail closed. Engine files untouched.
+diff --git a/README.md b/README.md
+index 781047d..56fa2cc 100644
+--- a/README.md
++++ b/README.md
+@@ -184,7 +184,7 @@ iff the test content changes, so the table can't cite a missing test or a stale
+ | A room grants exactly its doors and denies the rest, by name | `features/rulebook.feature` → `deniedDoors` / `deniedDoorSection` in `mod.ts` | `c31986507bce` |
+ | Attenuation is append-only — authority never widens | `features/attenuation.feature` → `attenuate` / `attenuatesDoors` | `2efc95a11164` |
+ | A capability dies with its lease and never exceeds its ceiling | `features/confinement.feature` → `isConfined` / `resolveProvider` | `0318058ab3aa` |
+-| The engine names no guest, so it works for any agent | `guest-room.test.ts` ("names no guest") | `02cdb5453e3b` |
++| The engine names no guest, so it works for any agent | `guest-room.test.ts` ("names no guest") | `756d38873cb6` |
+ | A door's authority is the same object across unix/vsock/tcp wires | `features/transport.feature` → `transportString` / `resolveDoor` in `mod.ts` | `42ad3cba4222` |
+ | The algebra holds for EVERY case, not just examples (bounded-exhaustive) | `algebra-proofs.test.ts` (bounded model checking by exhaustion) | `e1a7f987b10d` |
+ | A tcp/vsock door requires a per-launch token; unauthorized peers reach no handler | `protocol.test.ts` → `tokenAuthorizer` / `RequestAuthorizer` in `protocol.ts` | `a5b4d772cf72` |
+diff --git a/docs/working-in-a-cowork-sandbox.md b/docs/working-in-a-cowork-sandbox.md
+index 6bf0e0b..35966c0 100644
+--- a/docs/working-in-a-cowork-sandbox.md
++++ b/docs/working-in-a-cowork-sandbox.md
+@@ -142,9 +142,13 @@ and refuses the parts that would lie:
+ 
+ - **Same-host doors.** Every door's guest side *is* its host side — a child
+   connects at the path the broker listens on. Paths go to `XDG_RUNTIME_DIR`,
+-  else `$HOME/.guest-room/run` (0700), never `/tmp`; a world-writable socket dir
+-  is refused. `childEnv` is exactly the `<NAME>_SOCK` map to hand a child under
+-  `env -i`.
++  else `$HOME/.guest-room/run` (0700), never `/tmp` (no `HOME` either: refused);
++  a world-writable socket dir is refused. `childEnv` is exactly the
++  `<NAME>_SOCK` map to hand a child under `env -i`. A catalog's `use` text is
++  written for a walled launch and may cite an in-box mount such as
++  `/run/doors/netd.sock`; that path does not exist here, so every GRANTED card
++  ends with the real socket path and its env var — `$<NAME>_SOCK` is
++  authoritative, the in-box path is not.
+ - **Injecting parent refused unless acknowledged.** A set `HTTPS_PROXY` is the
+   only signal from inside, so it is treated as injecting (fail closed);
+   `GUEST_ROOM_ALLOW_INJECTING_PARENT=1` opts in, and the rulebook then names the
+diff --git a/guest-room.test.ts b/guest-room.test.ts
+index 02cdb54..756d388 100644
+--- a/guest-room.test.ts
++++ b/guest-room.test.ts
+@@ -10,9 +10,9 @@
+  * engine resolves doors, opens rooms, and renders the rulebook for ANY guest —
+  * the whole point of the extraction (the room doesn't know who's staying).
+  */
+-import { describe, test } from "bun:test";
++import { afterAll, describe, test } from "bun:test";
+ import { expect } from "bun:test";
+-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
++import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import {
+   type DoorCatalog,
+@@ -36,9 +36,14 @@ import { parseFeature, StepRegistry, type World } from "./gherkin.ts";
+ import { ALLOW_INJECTING_PARENT, nopodmanRoom } from "./profiles/nopodman.ts";
+ 
+ const env: Env = {};
+-// The nopodman profile resolves REAL socket paths, so it gets a private run dir.
+-const noWallsEnv = (w: World): Env =>
+-  ({ XDG_RUNTIME_DIR: mkdtempSync(`${tmpdir()}/gr-feature-`), ...((w.env as Env) ?? {}) });
++// The nopodman profile resolves REAL socket paths, so it gets a private run dir
++// per scenario, removed when the file is done.
++const runDirs: string[] = [];
++const noWallsEnv = (w: World): Env => {
++  const dir = mkdtempSync(`${tmpdir()}/gr-feature-`); runDirs.push(dir);
++  return { XDG_RUNTIME_DIR: dir, ...((w.env as Env) ?? {}) };
++};
++afterAll(() => { for (const d of runDirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+ 
+ // A fixture hotel — same SHAPE as claude-box's catalog, none of its identity.
+ const catalog: DoorCatalog = {
+diff --git a/nopodman.test.ts b/nopodman.test.ts
+index abab96b..652d1a9 100644
+--- a/nopodman.test.ts
++++ b/nopodman.test.ts
+@@ -34,6 +34,17 @@ describe("nopodman profile — same-host doors", () => {
+     expect(room.childEnv).toEqual({ EGRESS_SOCK: `${env.XDG_RUNTIME_DIR}/net.sock` });
+     expect(room.rulebook.join("\n")).toContain("NO WALLS");
+     expect(room.rulebook.join("\n")).toContain("RESTRICTED to: host=example.com");
++    // The catalog's `use` text was written for a walled launch; the card must name the real socket.
++    expect(net!.use).toContain(`at ${env.XDG_RUNTIME_DIR}/net.sock ($EGRESS_SOCK)`);
++    expect(room.rulebook.join("\n")).toContain(`at ${env.XDG_RUNTIME_DIR}/net.sock ($EGRESS_SOCK)`);
++  });
++
++  test("an uncatalogued door's in-box path is overridden by the real one; no HOME and no run dir refuses", () => {
++    const dir = freshRunDir();
++    const g = sameHostDoor(catalog, "other", { XDG_RUNTIME_DIR: dir });
++    expect(g.use).toContain("/run/other.sock"); // resolveDoor's generic text, kept verbatim …
++    expect(g.use).toContain(`Same-host: this door is the unix socket at ${dir}/other.sock ($OTHER_SOCK)`); // … then corrected
++    expect(() => sameHostDoor(catalog, "net", {})).toThrow(/no HOME/);
+   });
+ 
+   test("a running broker's own env var wins over the default path", () => {
+diff --git a/profiles/nopodman.ts b/profiles/nopodman.ts
+index 9d6de2c..329621c 100644
+--- a/profiles/nopodman.ts
++++ b/profiles/nopodman.ts
+@@ -10,7 +10,10 @@
+  * resolves a room for THAT substrate, and says exactly what it does not buy:
+  *
+  *   - every door's GUEST side IS its HOST side (same filesystem, no mount), so a
+- *     child reaches a broker at the path the broker actually listens on;
++ *     child reaches a broker at the path the broker actually listens on. A
++ *     catalog's `use` text may name an in-box path (`/run/<x>.sock`) that does
++ *     not exist same-host, so each GRANTED card ends with the real path and the
++ *     env var that carries it — `$<NAME>_SOCK` is authoritative;
+  *   - socket paths live in a private run dir (`XDG_RUNTIME_DIR`, else
+  *     `$HOME/.guest-room/run`, 0700) and a world-writable dir is refused — the
+  *     fail-closed check `defaultHostSock` (mod.ts) leaves to the launch site;
+@@ -34,9 +37,11 @@ import { defaultSocketPath } from "../daemon.ts";
+ /** Opt-in: serve a room behind a credential-injecting gateway anyway. */
+ export const ALLOW_INJECTING_PARENT = "GUEST_ROOM_ALLOW_INJECTING_PARENT";
+ 
+-/** The private run dir when `XDG_RUNTIME_DIR` is unset. Never `/tmp`. */
++/** The private run dir when `XDG_RUNTIME_DIR` is unset. Never `/tmp`: with no
++ *  `HOME` either there is no private place to put a socket, so refuse. */
+ export function runDir(env: Env): string {
+-  return `${env.HOME ?? "/tmp"}/.guest-room/run`;
++  if (!env.HOME) throw new Error("no XDG_RUNTIME_DIR and no HOME: nowhere private to put a socket");
++  return `${env.HOME}/.guest-room/run`;
+ }
+ 
+ /** Is a credential-injecting gateway fronting this host? From inside, a set
+@@ -48,7 +53,9 @@ export function injectingParent(env: Env): { proxy?: string; allowed: boolean }
+ }
+ 
+ /** Refuse a socket whose directory anyone can write into (a stranger could
+- *  replace the broker). A missing dir is fine — the broker creates it 0700. */
++ *  replace the broker). A missing dir is fine — the broker creates it 0700.
++ *  Only the immediate parent is checked, and only for other-writable: the run
++ *  dir is either `XDG_RUNTIME_DIR` (0700 by spec) or under `$HOME`. */
+ export function assertPrivateDir(sockPath: string): void {
+   let mode: number;
+   try { mode = statSync(dirname(sockPath)).mode; } catch { return; }
+@@ -56,13 +63,20 @@ export function assertPrivateDir(sockPath: string): void {
+ }
+ 
+ /** Resolve one door same-host: the broker's socket is the child's socket. The
+- *  door's own env var (`<NAME>_SOCK`) wins so an already-running broker is found. */
++ *  door's own env var (`<NAME>_SOCK`) wins so an already-running broker is found.
++ *  The `use` text gains the real path: catalog text written for a walled launch
++ *  cites in-box mounts that do not exist here, and the rulebook must not. */
+ export function sameHostDoor(catalog: DoorCatalog, name: string, env: Env): DoorGrant {
+   const envKey = catalog[name]?.env ?? `${name.toUpperCase().replace(/-/g, "_")}_SOCK`;
+   const path = env[envKey] ?? defaultSocketPath(name, runDir, env);
+   assertPrivateDir(path);
+   const g = resolveDoor(catalog, name, unix(path), env);
+-  return { ...g, guest: g.host, env: envKey };
++  return { ...g, guest: g.host, env: envKey, use: `${g.use} ${sameHostNote(path, envKey)}` };
++}
++
++/** The sentence that makes a same-host card true: where the socket really is. */
++export function sameHostNote(path: string, envKey: string): string {
++  return `Same-host: this door is the unix socket at ${path} ($${envKey}); any other path named here does not exist in this launch.`;
+ }
+ 
+ /** A room opened without walls: its grants, the env a child is launched with
+-- 
+2.43.0
+

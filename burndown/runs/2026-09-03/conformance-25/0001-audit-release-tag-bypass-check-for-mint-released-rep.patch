@@ -1,0 +1,1206 @@
+From 3206446dc233b9233315134a1880849328b3fe5d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:13:24 +0000
+Subject: [PATCH] audit: release-tag bypass check for mint-released repos (#25)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implements trellis#34's contract as a conformance audit: a repo that
+releases via mint (a workflow on `push: tags: [v*]`, a `.release/` dir, or a
+call to mint's release-cut.yml) must give its release identity a
+tag-creation path — an `always` bypass_actor on every ACTIVE ruleset whose
+`creation` rule covers refs/tags/v*. Without one, `git push origin v1.2.3`
+fails with GH013 and the GitHub Release/binaries/provenance silently never
+land; this surfaces it as a repo-config finding at the gate instead.
+
+- scripts/audit/release-tags.ts — Deno runner modeled on actions.ts:
+  `gh repo list` → trees/contents → rulesets?targets=tag&includes_parents
+  → per-ruleset detail; prints a per-repo markdown table (repo,
+  mint-released, restricted, bypass, verdict, evidence) + summary.
+  Report-only (exit 0); --strict exits 1 on FAIL, --fail-unknown also on
+  UNKNOWN; --release-actor selects the identity (any | github-actions |
+  org-admin | integration:<id> | team:<id> | role:<id> | deploy-key:<id>),
+  defaulting to any `always` actor while trellis#34 leaves the declaration
+  site open. bypass_actors absent from the API response (token lacks write
+  access to the ruleset) scores UNKNOWN, never a false PASS.
+- scripts/audit/release-tags-lib.ts — the pure logic (ref_name fnmatch,
+  restriction test, mint detection, scoring, table rendering).
+- scripts/audit/release-tags_test.ts + fixtures/ — 13 unit tests against
+  fixture JSON in the GitHub ruleset API shape (node:assert, no new deps).
+- .github/workflows/release-tags-audit.yml — two jobs split by credential:
+  `pr` (pull_request, github.token only → restricted repos read UNKNOWN)
+  and `org` (schedule + workflow_dispatch, default branch, mints the
+  org-admin App token as open-prs.yml does). PR-modified code never runs
+  with the admin credential.
+- deno.json tasks audit:release-tags[:strict], test:audit; README section +
+  row; cspell: fnmatch, ignore fixtures.
+
+Token scope: rulesets LIST is readable with contents:read, but
+bypass_actors needs write access to the ruleset (admin:org for org
+rulesets; enterprise owner for the enterprise-level refs/tags/* one).
+
+Closes #25
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .github/workflows/release-tags-audit.yml |  99 +++++++
+ README.md                                |  47 +++-
+ cspell.json                              |   2 +
+ deno.json                                |   5 +-
+ scripts/audit/fixtures/repos.json        |  33 +++
+ scripts/audit/fixtures/rulesets.json     | 116 ++++++++
+ scripts/audit/release-tags-lib.ts        | 330 +++++++++++++++++++++++
+ scripts/audit/release-tags.ts            | 189 +++++++++++++
+ scripts/audit/release-tags_test.ts       | 228 ++++++++++++++++
+ 9 files changed, 1047 insertions(+), 2 deletions(-)
+ create mode 100644 .github/workflows/release-tags-audit.yml
+ create mode 100644 scripts/audit/fixtures/repos.json
+ create mode 100644 scripts/audit/fixtures/rulesets.json
+ create mode 100644 scripts/audit/release-tags-lib.ts
+ create mode 100644 scripts/audit/release-tags.ts
+ create mode 100644 scripts/audit/release-tags_test.ts
+
+diff --git a/.github/workflows/release-tags-audit.yml b/.github/workflows/release-tags-audit.yml
+new file mode 100644
+index 0000000..a2faa2b
+--- /dev/null
++++ b/.github/workflows/release-tags-audit.yml
+@@ -0,0 +1,99 @@
++name: release-tags-audit
++
++# Org-wide release-tag bypass audit (scripts/audit/release-tags.ts) — conformance#25,
++# implementing trellis#34. For every mint-released repo (a workflow on
++# `push: tags: [v*]`, a `.release/` dir, or a call to mint's release-cut.yml):
++#   restricted?  an ACTIVE ruleset with a `creation` rule covering refs/tags/v*
++#   bypass?      a bypass_actors entry (bypass_mode: always) for the release identity
++#   verdict      PASS | FAIL | UNKNOWN (bypass_actors not visible) | SKIP (not mint)
++# REPORT-ONLY for now: exits 0 (the actions-audit went report-only → --strict the
++# same way once its baseline was clean). Promote via `audit:release-tags:strict`.
++#
++# Token posture: repo enumeration, trees, contents and the rulesets LIST work with
++# the default token, but `bypass_actors` is only returned to a token with WRITE
++# access to the ruleset — an org-admin token (`admin:org`, the same App
++# scripts/audit.mjs uses) for org rulesets, enterprise ownership for the
++# enterprise-level refs/tags/* ruleset trellis#34 describes.
++#
++# Two jobs, deliberately split by credential (the open-prs.yml / actions-audit.yml
++# precedent): `pr` runs PR-modified code (release-tags.ts, deno.json are in the
++# path filter) with ONLY github.token — restricted repos score UNKNOWN there,
++# never a false PASS. `org` runs on schedule / workflow_dispatch only, from the
++# default branch, and is the only job that mints the org-admin App token
++# (vars.ORG_ADMIN_APP_ID + secrets.ORG_ADMIN_APP_PRIVATE_KEY, as open-prs.yml).
++# An admin credential is never handed to a pull_request-triggered job.
++on:
++  schedule:
++    - cron: "29 6 * * *" # daily, after actions-audit
++  workflow_dispatch:
++  pull_request:
++    paths:
++      - scripts/audit/release-tags.ts
++      - scripts/audit/release-tags-lib.ts
++      - scripts/audit/release-tags_test.ts
++      - scripts/audit/fixtures/**
++      - .github/workflows/release-tags-audit.yml
++      - deno.json
++
++permissions:
++  contents: read
++
++concurrency:
++  group: release-tags-audit-${{ github.ref }}
++  cancel-in-progress: false
++
++jobs:
++  # PR-triggered: unit tests + the audit under the default token. No App token.
++  pr:
++    if: ${{ github.event_name == 'pull_request' }}
++    runs-on: ubuntu-latest
++    steps:
++      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
++        with:
++          egress-policy: audit
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
++        with:
++          deno-version: v2.x
++      - name: unit tests (fixture rulesets, no network)
++        run: deno task test:audit
++      - name: release-tag bypass audit (report-only, default token → UNKNOWN rows)
++        shell: bash
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          set -o pipefail
++          deno task audit:release-tags | tee -a "$GITHUB_STEP_SUMMARY"
++
++  # Scheduled / manual: default-branch code only, org-admin App token so
++  # bypass_actors are readable and rows resolve to PASS/FAIL.
++  org:
++    if: ${{ github.event_name != 'pull_request' }}
++    runs-on: ubuntu-latest
++    steps:
++      - uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
++        with:
++          egress-policy: audit
++      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
++        with:
++          persist-credentials: false
++      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
++        with:
++          deno-version: v2.x
++      - name: unit tests (fixture rulesets, no network)
++        run: deno task test:audit
++      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
++        id: app-token
++        with:
++          app-id: ${{ vars.ORG_ADMIN_APP_ID }}
++          private-key: ${{ secrets.ORG_ADMIN_APP_PRIVATE_KEY }}
++          owner: ${{ github.repository_owner }}
++      - name: release-tag bypass audit (report-only, org-admin token)
++        shell: bash
++        env:
++          GH_TOKEN: ${{ steps.app-token.outputs.token }}
++        run: |
++          set -o pipefail
++          deno task audit:release-tags | tee -a "$GITHUB_STEP_SUMMARY"
+diff --git a/README.md b/README.md
+index 671cc25..378c6b8 100644
+--- a/README.md
++++ b/README.md
+@@ -28,6 +28,7 @@ different things on purpose:
+ | `scripts/open-prs.sh` | audit | never — a digest, not a check |
+ | `scripts/gate/gate.ts` (`conformance-gate.yml`) | gate | descriptor or surface drift |
+ | `scripts/audit/actions.ts` (`actions-audit.yml`) | gate | R1a (floating-branch reusable ref) or R3 (unpinned external action); R1b/R2 reported only |
++| `scripts/audit/release-tags.ts` (`release-tags-audit.yml`) | audit | never — report-only; `--strict` exits 1 on FAIL (`--fail-unknown` also on UNKNOWN) |
+ | `standard.yml` → `repo-standard.yml` (`spell`, cspell) | gate | any token outside the dictionary/allowlist |
+ | `scripts/apply-rulesets.sh` | *(mutator — not audit or gate; it writes org settings)* | — |
+ | `scripts/apply-actions-policy.sh` | *(mutator — unions the org Actions allowlist; only widens)* | — |
+@@ -116,6 +117,49 @@ surface projection now comes from `ts-morph` (pinned via drift-gate's TypeScript
+ dependency and recorded in the golden's `_generated.typescript`), so it no longer
+ depends on the deno version the way the old `deno doc --json` diff did.
+ 
++## Release-tag bypass (mint-released repos)
++
++A repo that releases via [`mint`](https://github.com/bounded-systems/mint) pushes a
++`v*` tag, and its `release.yml` / `publish-jsr.yml` fire on that
++push. An **active ruleset that restricts ref creation on `refs/tags/*`** with no
++bypass for the release identity breaks that silently: `git push origin v1.2.3`
++dies with `GH013 creations restricted` (or the Git-DB API returns 422 with no
++ruleset named), JSR still publishes via CI dispatch, and the GitHub Release,
++binaries and provenance never appear. Enterprise-level rulesets are the usual
++culprit — they are not visible in the repo/org ruleset UI.
++[`scripts/audit/release-tags.ts`](scripts/audit/release-tags.ts) surfaces that as a
++`repo-config` finding at the gate instead
++([conformance#25](https://github.com/bounded-systems/conformance/issues/25),
++implementing [trellis#34](https://github.com/bounded-systems/trellis/issues/34)):
++
++| column | how |
++|---|---|
++| mint-released | a `.github/workflows/*.yml` on `push: tags: [v*]`, a `.release/` intents dir, or a call to mint's `release-cut.yml` |
++| tag creation restricted | `GET repos/{o}/{r}/rulesets?targets=tag&includes_parents=true` → any **active** ruleset with a `creation` rule whose `ref_name` condition covers `refs/tags/v*` |
++| release-identity bypass | a `bypass_actors` entry with `bypass_mode: always` for the release identity |
++| verdict | `SKIP` (not mint-released) · `PASS` · `FAIL` · `UNKNOWN` (bypass actors not readable with this token) |
++
++```sh
++deno task audit:release-tags                                  # per-repo table + summary, exit 0
++deno task audit:release-tags -- --release-actor=github-actions  # require the Actions app (GITHUB_TOKEN, mint's release-cut path)
++deno task audit:release-tags -- --repo=mint --strict            # one repo; exit 1 on FAIL
++deno task test:audit                                            # unit tests against fixture rulesets (no network in the tests themselves)
++```
++
++trellis#34 has not yet settled *where* a repo declares its release identity, so
++the check takes it as `--release-actor` (`any` | `github-actions` | `org-admin` |
++`integration:<id>` | `team:<id>` | `role:<id>` | `deploy-key:<id>`). Until one is
++declared, any `always` bypass actor counts and the actor list is printed as
++evidence for a reviewer to judge.
++
++**Token scope.** Repo enumeration, trees, contents and the rulesets *list* work
++with the default token. `bypass_actors` is only returned to a token with **write
++access to the ruleset**: an org-admin token (`admin:org` — the same App
++`scripts/audit.mjs` and `open-prs.yml` use) for org rulesets, and enterprise
++ownership for an enterprise-level one. With a lesser token every restricted repo
++scores `UNKNOWN`, never a false `PASS`. `release-tags-audit.yml` mints the org-admin
++App token when `ORG_ADMIN_APP_ID` / `ORG_ADMIN_APP_PRIVATE_KEY` are set.
++
+ ## Cross-repo overlap → moved to `trellis`
+ 
+ Cross-repo structural overlap (is the same *structure* copy-pasted across repos
+@@ -159,7 +203,8 @@ unprotected target or signed commits.)
+   `@bounded-systems/drift-gate`; `deno task gate`.
+ - `goldens/` — checked-in surface snapshots the gate diffs against.
+ - `gate.config.json` — what the gate points at (guest-room location).
+-- `deno.json` — gate task runners (`gate`, `gate:descriptor`, `gate:surface`, `surface:update`).
++- `deno.json` — gate task runners (`gate`, `gate:descriptor`, `gate:surface`, `surface:update`) and audits (`audit:actions`, `audit:release-tags`, `test`).
++- `scripts/audit/release-tags.ts` — release-tag bypass audit (Deno); `scripts/audit/fixtures/` — ruleset-API fixtures for its tests.
+ - `.github/workflows/conformance-gate.yml` — runs the gate on PR + daily schedule.
+ - `scripts/open-prs.sh` — org-level open-PR digest; writes `OPEN-PRS.md`.
+ - `cspell.json` — the spell-gate dictionary + project word allowlist.
+diff --git a/cspell.json b/cspell.json
+index 6e2ed65..d95fcd1 100644
+--- a/cspell.json
++++ b/cspell.json
+@@ -12,6 +12,7 @@
+     "devshell",
+     "endswith",
+     "flakehub",
++    "fnmatch",
+     "goldens",
+     "gsub",
+     "hooksmith",
+@@ -34,6 +35,7 @@
+     "CONFORMANCE.md",
+     "OVERLAP.md",
+     "goldens/**",
++    "scripts/audit/fixtures/**",
+     "node_modules/**",
+     ".git/**"
+   ]
+diff --git a/deno.json b/deno.json
+index c4aee0d..e88afe1 100644
+--- a/deno.json
++++ b/deno.json
+@@ -9,7 +9,10 @@
+     "gate:surface": "deno run --allow-read --allow-env --allow-sys scripts/gate/gate.ts --only=surface",
+     "surface:update": "deno run --allow-read --allow-write --allow-env --allow-sys --allow-run=git scripts/gate/update-golden.ts",
+     "audit:actions": "deno run --allow-run=gh --allow-env scripts/audit/actions.ts",
+-    "audit:actions:strict": "deno run --allow-run=gh --allow-env scripts/audit/actions.ts --strict"
++    "audit:actions:strict": "deno run --allow-run=gh --allow-env scripts/audit/actions.ts --strict",
++    "audit:release-tags": "deno run --allow-run=gh --allow-env scripts/audit/release-tags.ts",
++    "audit:release-tags:strict": "deno run --allow-run=gh --allow-env scripts/audit/release-tags.ts --strict",
++    "test:audit": "deno test --allow-read scripts/audit/"
+   },
+   "fmt": { "include": ["scripts/gate/", "scripts/audit/"] },
+   "lint": { "include": ["scripts/gate/", "scripts/audit/"] }
+diff --git a/scripts/audit/fixtures/repos.json b/scripts/audit/fixtures/repos.json
+new file mode 100644
+index 0000000..6b39890
+--- /dev/null
++++ b/scripts/audit/fixtures/repos.json
+@@ -0,0 +1,33 @@
++{
++  "//": "Fixture repo trees: path + (for workflows) raw contents, as scripts/audit/release-tags.ts assembles them from git/trees + contents.",
++  "mint_tag_push": [
++    { "path": ".release/README.md" },
++    {
++      "path": ".github/workflows/release.yml",
++      "content": "name: release\non:\n  push:\n    tags: [\"v*\"]\n  workflow_dispatch:\npermissions:\n  contents: read\n"
++    },
++    {
++      "path": ".github/workflows/standard.yml",
++      "content": "name: standard\non:\n  push:\n    branches: [main]\n  pull_request:\n"
++    }
++  ],
++  "mint_list_form": [
++    {
++      "path": ".github/workflows/publish-jsr.yml",
++      "content": "on:\n  push:\n    tags:\n      - 'v*'\njobs: {}\n"
++    }
++  ],
++  "mint_release_cut": [
++    {
++      "path": ".github/workflows/release-cut.yml",
++      "content": "on:\n  workflow_dispatch:\njobs:\n  cut:\n    uses: bounded-systems/mint/.github/workflows/release-cut.yml@0123456789abcdef0123456789abcdef01234567\n"
++    }
++  ],
++  "not_released": [
++    {
++      "path": ".github/workflows/standard.yml",
++      "content": "on:\n  push:\n    branches: [main]\n  pull_request:\n"
++    },
++    { "path": "README.md" }
++  ]
++}
+diff --git a/scripts/audit/fixtures/rulesets.json b/scripts/audit/fixtures/rulesets.json
+new file mode 100644
+index 0000000..6b94ac2
+--- /dev/null
++++ b/scripts/audit/fixtures/rulesets.json
+@@ -0,0 +1,116 @@
++{
++  "//": "Fixture in the shape of GET /repos/{o}/{r}/rulesets/{id}?includes_parents=true (GitHub REST, 2022-11-28). Keyed by scenario for release-tags_test.ts.",
++  "enterprise_no_bypass": {
++    "id": 9001,
++    "name": "Restrict tag creation",
++    "target": "tag",
++    "source_type": "Enterprise",
++    "source": "bounded",
++    "enforcement": "active",
++    "bypass_actors": [],
++    "conditions": {
++      "ref_name": { "include": ["refs/tags/*"], "exclude": [] },
++      "repository_name": { "include": ["~ALL"], "exclude": [] }
++    },
++    "rules": [{ "type": "creation" }, { "type": "deletion" }]
++  },
++  "enterprise_actions_bypass": {
++    "id": 9002,
++    "name": "Restrict tag creation",
++    "target": "tag",
++    "source_type": "Enterprise",
++    "source": "bounded",
++    "enforcement": "active",
++    "bypass_actors": [
++      {
++        "actor_id": 15368,
++        "actor_type": "Integration",
++        "bypass_mode": "always"
++      }
++    ],
++    "conditions": { "ref_name": { "include": ["~ALL"], "exclude": [] } },
++    "rules": [{ "type": "creation" }]
++  },
++  "org_admin_pr_only": {
++    "id": 9003,
++    "name": "tags-locked",
++    "target": "tag",
++    "source_type": "Organization",
++    "source": "bounded-systems",
++    "enforcement": "active",
++    "bypass_actors": [
++      {
++        "actor_id": 1,
++        "actor_type": "OrganizationAdmin",
++        "bypass_mode": "pull_request"
++      }
++    ],
++    "conditions": {
++      "ref_name": { "include": ["refs/tags/**"], "exclude": [] }
++    },
++    "rules": [{ "type": "creation" }]
++  },
++  "org_admin_always": {
++    "id": 9004,
++    "name": "tags-locked",
++    "target": "tag",
++    "source_type": "Organization",
++    "source": "bounded-systems",
++    "enforcement": "active",
++    "bypass_actors": [
++      {
++        "actor_id": 1,
++        "actor_type": "OrganizationAdmin",
++        "bypass_mode": "always"
++      },
++      { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
++    ],
++    "conditions": { "ref_name": { "include": ["refs/tags/*"], "exclude": [] } },
++    "rules": [{ "type": "creation" }]
++  },
++  "bypass_not_visible": {
++    "id": 9005,
++    "name": "Restrict tag creation",
++    "target": "tag",
++    "source_type": "Enterprise",
++    "source": "bounded",
++    "enforcement": "active",
++    "conditions": { "ref_name": { "include": ["refs/tags/*"], "exclude": [] } },
++    "rules": [{ "type": "creation" }]
++  },
++  "disabled": {
++    "id": 9006,
++    "name": "tags-locked (draft)",
++    "target": "tag",
++    "source_type": "Repository",
++    "source": "bounded-systems/mint",
++    "enforcement": "disabled",
++    "bypass_actors": [],
++    "conditions": { "ref_name": { "include": ["refs/tags/*"], "exclude": [] } },
++    "rules": [{ "type": "creation" }]
++  },
++  "excludes_v": {
++    "id": 9007,
++    "name": "lock non-release tags",
++    "target": "tag",
++    "source_type": "Repository",
++    "source": "bounded-systems/mint",
++    "enforcement": "active",
++    "bypass_actors": [],
++    "conditions": {
++      "ref_name": { "include": ["refs/tags/*"], "exclude": ["refs/tags/v*"] }
++    },
++    "rules": [{ "type": "creation" }]
++  },
++  "deletion_only": {
++    "id": 9008,
++    "name": "no tag deletion",
++    "target": "tag",
++    "source_type": "Organization",
++    "source": "bounded-systems",
++    "enforcement": "active",
++    "bypass_actors": [],
++    "conditions": { "ref_name": { "include": ["~ALL"], "exclude": [] } },
++    "rules": [{ "type": "deletion" }, { "type": "non_fast_forward" }]
++  }
++}
+diff --git a/scripts/audit/release-tags-lib.ts b/scripts/audit/release-tags-lib.ts
+new file mode 100644
+index 0000000..6031057
+--- /dev/null
++++ b/scripts/audit/release-tags-lib.ts
+@@ -0,0 +1,330 @@
++/**
++ * release-tags-lib.ts — pure logic for the release-tag bypass audit
++ * (scripts/audit/release-tags.ts). No I/O here, so it is unit-testable against
++ * fixture JSON of the GitHub ruleset API shape (release-tags_test.ts).
++ *
++ * The contract (conformance#25, implementing trellis#34): a repo that releases
++ * via mint pushes a `v*` tag, and its release workflows fire on that push. If a
++ * ruleset restricts ref creation on `refs/tags/*` and grants the release
++ * identity no bypass, `git push origin v1.2.3` dies with `GH013 creations
++ * restricted` (or the Git-DB API returns 422) — JSR still publishes through CI
++ * dispatch, but the GitHub Release, binaries and provenance never appear. This
++ * check surfaces that as a `repo-config` violation at the gate instead.
++ */
++
++// --- GitHub ruleset API shape (the subset this audit reads) -----------------
++//
++// GET /repos/{o}/{r}/rulesets?targets=tag&includes_parents=true  → RulesetSummary[]
++// GET /repos/{o}/{r}/rulesets/{id}?includes_parents=true         → Ruleset
++//
++// `bypass_actors` is only present when the token has WRITE access to the
++// ruleset (org admin for org rulesets, enterprise admin for enterprise ones).
++// Absent ≠ empty: absent means "not visible", empty means "nobody bypasses".
++
++export type BypassActor = {
++  actor_id: number | null;
++  actor_type:
++    | "Integration"
++    | "OrganizationAdmin"
++    | "RepositoryRole"
++    | "Team"
++    | "DeployKey"
++    | "EnterpriseOwner";
++  bypass_mode: "always" | "pull_request";
++};
++
++export type RulesetSummary = {
++  id: number;
++  name: string;
++  target?: "branch" | "tag" | "push" | "repository";
++  source_type: "Repository" | "Organization" | "Enterprise";
++  source: string;
++  enforcement: "active" | "evaluate" | "disabled";
++};
++
++export type Ruleset = RulesetSummary & {
++  bypass_actors?: BypassActor[];
++  conditions?: {
++    ref_name?: { include?: string[]; exclude?: string[] };
++    repository_name?: { include?: string[]; exclude?: string[] };
++  };
++  rules?: Array<{ type: string; parameters?: unknown }>;
++};
++
++// --- release identity -------------------------------------------------------
++//
++// trellis#34 has not yet settled WHERE a repo declares its release identity, so
++// the audit takes it as an argument. Until one is declared, any `always` bypass
++// actor on the restricting ruleset counts as a tag-creation path (and is
++// listed as evidence so a reviewer can judge whether it is the right one).
++
++export type ReleaseActor =
++  | { kind: "any" }
++  | { kind: "actor"; actor_type: BypassActor["actor_type"]; actor_id: number }
++  | { kind: "org-admin" };
++
++// The GitHub Actions app — the identity behind GITHUB_TOKEN, which is what
++// mint's release-cut.yml (workflow_dispatch cut) pushes the tag with.
++export const GITHUB_ACTIONS_APP_ID = 15368;
++
++/** Parse `--release-actor=` values: any | github-actions | org-admin | <type>:<id>. */
++export function parseReleaseActor(spec: string | undefined): ReleaseActor {
++  if (!spec || spec === "any") return { kind: "any" };
++  if (spec === "github-actions") {
++    return {
++      kind: "actor",
++      actor_type: "Integration",
++      actor_id: GITHUB_ACTIONS_APP_ID,
++    };
++  }
++  if (spec === "org-admin") return { kind: "org-admin" };
++  const m = /^(integration|team|role|deploy-key):(\d+)$/i.exec(spec);
++  if (!m) {
++    throw new Error(
++      `--release-actor: expected any | github-actions | org-admin | integration:<id> | team:<id> | role:<id> | deploy-key:<id>, got "${spec}"`,
++    );
++  }
++  const actor_type = {
++    integration: "Integration",
++    team: "Team",
++    role: "RepositoryRole",
++    "deploy-key": "DeployKey",
++  }[m[1].toLowerCase()] as BypassActor["actor_type"];
++  return { kind: "actor", actor_type, actor_id: Number(m[2]) };
++}
++
++export function actorMatches(a: BypassActor, want: ReleaseActor): boolean {
++  if (a.bypass_mode !== "always") return false; // pull_request bypass can't push a tag
++  switch (want.kind) {
++    case "any":
++      return true;
++    case "org-admin":
++      return a.actor_type === "OrganizationAdmin" ||
++        a.actor_type === "EnterpriseOwner";
++    case "actor":
++      return a.actor_type === want.actor_type && a.actor_id === want.actor_id;
++  }
++}
++
++export const describeActor = (a: BypassActor): string =>
++  `${a.actor_type}${
++    a.actor_id === null ? "" : `#${a.actor_id}`
++  }(${a.bypass_mode})`;
++
++// --- ref-name pattern matching ---------------------------------------------
++//
++// GitHub ruleset ref_name patterns are fnmatch-style: `*` matches within one
++// path segment, `**` crosses segments, plus the `~ALL` / `~DEFAULT_BRANCH`
++// shorthands. Tags are matched as `refs/tags/<name>`.
++
++export function refPatternToRegExp(pattern: string): RegExp {
++  let re = "";
++  for (let i = 0; i < pattern.length; i++) {
++    const c = pattern[i];
++    if (c === "*") {
++      if (pattern[i + 1] === "*") {
++        re += ".*";
++        i++;
++      } else re += "[^/]*";
++    } else if (c === "?") re += "[^/]";
++    else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
++  }
++  return new RegExp(`^${re}$`);
++}
++
++export function refMatches(ref: string, pattern: string): boolean {
++  if (pattern === "~ALL") return true;
++  if (pattern === "~DEFAULT_BRANCH") return false; // never a tag
++  return refPatternToRegExp(pattern).test(ref);
++}
++
++/** Does this ruleset's ref_name condition cover the given fully-qualified ref? */
++export function conditionCovers(rs: Ruleset, ref: string): boolean {
++  const include = rs.conditions?.ref_name?.include ?? [];
++  const exclude = rs.conditions?.ref_name?.exclude ?? [];
++  if (!include.some((p) => refMatches(ref, p))) return false;
++  return !exclude.some((p) => refMatches(ref, p));
++}
++
++/** A ruleset that actively restricts creating `v*` tags. */
++export function restrictsTagCreation(
++  rs: Ruleset,
++  sampleTag = "refs/tags/v1.0.0",
++): boolean {
++  if (rs.enforcement !== "active") return false;
++  if (rs.target && rs.target !== "tag") return false;
++  if (!(rs.rules ?? []).some((r) => r.type === "creation")) return false;
++  return conditionCovers(rs, sampleTag);
++}
++
++// --- mint-released detection -----------------------------------------------
++//
++// A repo is mint-released when a workflow fires on `push: tags: [v*]` (the
++// shape mint prescribes for release.yml / publish-jsr.yml), or
++// it carries mint's `.release/` intents directory, or it calls mint's
++// release-cut reusable workflow.
++
++export type RepoFile = { path: string; content?: string };
++
++// `tags: ["v*"]` / `tags: [v*]` / `tags:\n  - "v*"` — under a `push:` trigger.
++const TAG_TRIGGER_INLINE = /^\s*tags:\s*\[\s*['"]?v\*['"]?/m;
++const TAG_TRIGGER_LIST =
++  /^\s*tags:\s*\n(?:\s*-\s*['"]?[^\n]*\n)*?\s*-\s*['"]?v\*['"]?/m;
++const PUSH_TRIGGER = /^\s*push:\s*$/m;
++// Line-anchored so a commented-out example (mint's own header) doesn't count.
++const RELEASE_CUT =
++  /^\s*-?\s*uses:\s*['"]?bounded-systems\/mint\/\.github\/workflows\/release-cut\.yml/m;
++
++export type MintClassification = { mintReleased: boolean; evidence: string[] };
++
++export function classifyMintReleased(files: RepoFile[]): MintClassification {
++  const evidence: string[] = [];
++  if (files.some((f) => /^\.release\/[^/]+$/.test(f.path))) {
++    evidence.push(".release/ (mint intents)");
++  }
++  for (const f of files) {
++    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(f.path) || !f.content) {
++      continue;
++    }
++    const c = f.content;
++    if (
++      PUSH_TRIGGER.test(c) &&
++      (TAG_TRIGGER_INLINE.test(c) || TAG_TRIGGER_LIST.test(c))
++    ) {
++      evidence.push(`${f.path} (on: push: tags: v*)`);
++    } else if (RELEASE_CUT.test(c)) {
++      evidence.push(`${f.path} (calls mint release-cut.yml)`);
++    }
++  }
++  return { mintReleased: evidence.length > 0, evidence };
++}
++
++// --- verdict ---------------------------------------------------------------
++
++export type Verdict = "PASS" | "FAIL" | "UNKNOWN" | "SKIP";
++
++export type RepoResult = {
++  repo: string;
++  mintReleased: boolean;
++  restricted: boolean;
++  bypass: "yes" | "no" | "n/a" | "unknown";
++  verdict: Verdict;
++  evidence: string[];
++};
++
++const rulesetRef = (rs: RulesetSummary) =>
++  `${rs.source_type.toLowerCase()} ruleset "${rs.name}" (#${rs.id}, ${rs.source})`;
++
++/**
++ * Score one repo.
++ *   SKIP    — not mint-released; the contract does not apply.
++ *   PASS    — no active tag-creation restriction covers refs/tags/v*, OR every
++ *             restricting ruleset grants the release identity an `always` bypass.
++ *   FAIL    — a restricting ruleset is visible and grants no matching bypass.
++ *   UNKNOWN — a restricting ruleset's bypass_actors are not readable with this
++ *             token (typical for enterprise-level rulesets), so the verdict
++ *             cannot be proven either way.
++ */
++export function scoreRepo(
++  repo: string,
++  files: RepoFile[],
++  rulesets: Ruleset[],
++  want: ReleaseActor,
++): RepoResult {
++  const mint = classifyMintReleased(files);
++  if (!mint.mintReleased) {
++    return {
++      repo,
++      mintReleased: false,
++      restricted: false,
++      bypass: "n/a",
++      verdict: "SKIP",
++      evidence: ["no v* tag-triggered workflow / .release/"],
++    };
++  }
++  const evidence = [...mint.evidence];
++  const restricting = rulesets.filter((rs) => restrictsTagCreation(rs));
++  if (restricting.length === 0) {
++    evidence.push(
++      rulesets.length === 0
++        ? "no tag rulesets apply"
++        : `no active creation rule covers refs/tags/v* (${
++          rulesets.map((r) => `#${r.id}`).join(", ")
++        })`,
++    );
++    return {
++      repo,
++      mintReleased: true,
++      restricted: false,
++      bypass: "n/a",
++      verdict: "PASS",
++      evidence,
++    };
++  }
++  let verdict: Verdict = "PASS";
++  let bypass: RepoResult["bypass"] = "yes";
++  for (const rs of restricting) {
++    if (rs.bypass_actors === undefined) {
++      evidence.push(
++        `${
++          rulesetRef(rs)
++        }: restricts creation; bypass_actors NOT VISIBLE to this token`,
++      );
++      if (verdict !== "FAIL") {
++        verdict = "UNKNOWN";
++        bypass = "unknown";
++      }
++      continue;
++    }
++    const ok = rs.bypass_actors.filter((a) => actorMatches(a, want));
++    const all = rs.bypass_actors.map(describeActor).join(", ") || "none";
++    if (ok.length > 0) {
++      evidence.push(
++        `${rulesetRef(rs)}: restricts creation; release-identity bypass via ${
++          ok.map(describeActor).join(", ")
++        }`,
++      );
++    } else {
++      evidence.push(
++        `${
++          rulesetRef(rs)
++        }: restricts creation; NO release-identity bypass (actors: ${all})`,
++      );
++      verdict = "FAIL";
++      bypass = "no";
++    }
++  }
++  return {
++    repo,
++    mintReleased: true,
++    restricted: true,
++    bypass,
++    verdict,
++    evidence,
++  };
++}
++
++// --- report ----------------------------------------------------------------
++
++export function renderTable(results: RepoResult[]): string {
++  const rows = [
++    "| repo | mint-released | tag creation restricted | release-identity bypass | verdict | evidence |",
++    "| --- | :-: | :-: | :-: | :-: | --- |",
++  ];
++  for (const r of results) {
++    rows.push(
++      `| ${r.repo} | ${r.mintReleased ? "yes" : "no"} | ${
++        r.mintReleased ? (r.restricted ? "yes" : "no") : "-"
++      } | ${r.bypass} | ${r.verdict} | ${
++        r.evidence.join("; ").replace(/\|/g, "\\|")
++      } |`,
++    );
++  }
++  return rows.join("\n");
++}
++
++export function summarize(results: RepoResult[]): Record<Verdict, number> {
++  const s: Record<Verdict, number> = { PASS: 0, FAIL: 0, UNKNOWN: 0, SKIP: 0 };
++  for (const r of results) s[r.verdict]++;
++  return s;
++}
+diff --git a/scripts/audit/release-tags.ts b/scripts/audit/release-tags.ts
+new file mode 100644
+index 0000000..949fa19
+--- /dev/null
++++ b/scripts/audit/release-tags.ts
+@@ -0,0 +1,189 @@
++#!/usr/bin/env -S deno run --allow-run=gh --allow-env
++/**
++ * release-tags.ts — org-wide, REPORT-ONLY release-tag bypass audit
++ * (conformance#25, implementing trellis#34).
++ *
++ * A repo that releases via mint pushes a `v*` tag (release.yml / publish-jsr.yml
++ * fire on `push: tags: [v*]`). A ruleset that restricts ref
++ * creation on `refs/tags/*` with no bypass for the release identity silently
++ * breaks that: `git push origin v1.2.3` → `GH013 creations restricted` (or 422
++ * from the Git-DB API), JSR still publishes via CI dispatch, but the GitHub
++ * Release, binaries and provenance never land. This audit turns that into a
++ * `repo-config` finding at the gate instead of at `git push`.
++ *
++ * Per repo:
++ *   mint-released?  — a `.github/workflows/*.yml` with `on: push: tags: [v*]`,
++ *                     a `.release/` intents dir, or a call to mint's
++ *                     release-cut.yml (tree + raw contents, like actions.ts).
++ *   restricted?     — GET repos/{o}/{r}/rulesets?targets=tag&includes_parents=true
++ *                     then GET repos/{o}/{r}/rulesets/{id}: any ACTIVE ruleset
++ *                     whose ref_name condition covers refs/tags/v* and carries
++ *                     a `creation` rule.
++ *   bypass?         — a `bypass_actors` entry with bypass_mode `always` for the
++ *                     release identity (--release-actor; default: any actor,
++ *                     because trellis#34 has not settled where a repo declares
++ *                     its release identity — the actors are printed as evidence).
++ *   verdict         — SKIP (not mint-released) | PASS | FAIL | UNKNOWN (the
++ *                     restricting ruleset's bypass_actors are not visible).
++ *
++ * Token posture: `gh repo list` + trees/contents read public repos with the
++ * default token, and the rulesets LIST is readable with `contents: read` — but
++ * `bypass_actors` is only returned when the token has WRITE access to the
++ * ruleset: an org-admin token (`admin:org`, or the org-admin App scripts/audit.mjs
++ * uses) for org rulesets, and enterprise ownership for enterprise-level ones.
++ * Without it every restricted repo scores UNKNOWN, never a false PASS.
++ *
++ * Report-only: exits 0 (like actions.ts). `--strict` exits 1 on any FAIL;
++ * `--strict --fail-unknown` also on UNKNOWN. `--repo=<name>` limits the run.
++ *
++ *   deno task audit:release-tags
++ *   deno task audit:release-tags -- --release-actor=github-actions
++ *   deno task audit:release-tags -- --repo=mint --release-actor=integration:15368
++ */
++import {
++  parseReleaseActor,
++  renderTable,
++  type RepoFile,
++  type RepoResult,
++  type Ruleset,
++  type RulesetSummary,
++  scoreRepo,
++  summarize,
++} from "./release-tags-lib.ts";
++
++const ORG = Deno.env.get("ORG") || "bounded-systems";
++
++function arg(name: string): string | undefined {
++  const hit = Deno.args.find((a) => a.startsWith(`--${name}=`));
++  return hit?.slice(name.length + 3);
++}
++
++async function gh(path: string, raw = false): Promise<string> {
++  const args = ["api", path];
++  if (raw) args.push("-H", "Accept: application/vnd.github.raw");
++  const cmd = new Deno.Command("gh", { args, stdout: "piped", stderr: "null" });
++  const { code, stdout } = await cmd.output();
++  return code === 0 ? new TextDecoder().decode(stdout) : "";
++}
++async function ghList(args: string[]): Promise<string> {
++  const cmd = new Deno.Command("gh", { args, stdout: "piped", stderr: "null" });
++  const { code, stdout } = await cmd.output();
++  return code === 0 ? new TextDecoder().decode(stdout) : "";
++}
++async function pool<T, R>(
++  items: T[],
++  limit: number,
++  fn: (t: T) => Promise<R>,
++): Promise<R[]> {
++  const res: R[] = new Array(items.length);
++  let i = 0;
++  await Promise.all(
++    Array.from({ length: Math.min(limit, items.length) }, async () => {
++      while (i < items.length) {
++        const idx = i++;
++        res[idx] = await fn(items[idx]);
++      }
++    }),
++  );
++  return res;
++}
++
++// Workflow files (with contents) + the .release/ listing, enough to classify.
++async function repoFiles(repo: string): Promise<RepoFile[]> {
++  const treeRaw = await gh(`repos/${ORG}/${repo}/git/trees/HEAD?recursive=1`);
++  if (!treeRaw) return [];
++  const paths: string[] = (JSON.parse(treeRaw).tree ?? [])
++    .filter((n: { type: string; path: string }) =>
++      n.type === "blob" &&
++      (/^\.github\/workflows\/[^/]+\.ya?ml$/.test(n.path) ||
++        /^\.release\/[^/]+$/.test(n.path))
++    )
++    .map((n: { path: string }) => n.path);
++  const out: RepoFile[] = [];
++  for (const path of paths) {
++    if (path.startsWith(".github/workflows/")) {
++      out.push({
++        path,
++        content: await gh(`repos/${ORG}/${repo}/contents/${path}`, true),
++      });
++    } else out.push({ path });
++  }
++  return out;
++}
++
++// Tag rulesets in effect for the repo (repo + org + enterprise), with details
++// where the token can read them. A detail fetch that fails leaves the summary
++// as-is: no `rules`/`bypass_actors`, which scoreRepo reports as not visible.
++async function tagRulesets(repo: string): Promise<Ruleset[]> {
++  const listRaw = await gh(
++    `repos/${ORG}/${repo}/rulesets?targets=tag&includes_parents=true`,
++  );
++  if (!listRaw) return [];
++  const summaries: RulesetSummary[] = JSON.parse(listRaw);
++  const out: Ruleset[] = [];
++  for (const s of summaries) {
++    const detailRaw = await gh(
++      `repos/${ORG}/${repo}/rulesets/${s.id}?includes_parents=true`,
++    );
++    if (!detailRaw) {
++      // Unreadable detail: assume it restricts (enforcement + tag target are
++      // known from the summary) so it surfaces as UNKNOWN, not a silent PASS.
++      out.push({
++        ...s,
++        rules: [{ type: "creation" }],
++        conditions: { ref_name: { include: ["~ALL"], exclude: [] } },
++      });
++      continue;
++    }
++    out.push({ ...s, ...JSON.parse(detailRaw) });
++  }
++  return out;
++}
++
++// --- run ---
++const want = parseReleaseActor(arg("release-actor"));
++const only = arg("repo");
++const names: string[] = only ? [only] : JSON.parse(
++  await ghList([
++    "repo",
++    "list",
++    ORG,
++    "--limit",
++    "300",
++    "--no-archived",
++    "--json",
++    "name",
++  ]),
++).map((r: { name: string }) => r.name).sort();
++
++const results: RepoResult[] = await pool(names, 10, async (repo) => {
++  const files = await repoFiles(repo);
++  // Only mint-released repos need the ruleset round-trips.
++  const probe = scoreRepo(repo, files, [], want);
++  if (probe.verdict === "SKIP") return probe;
++  return scoreRepo(repo, files, await tagRulesets(repo), want);
++});
++
++const p = (s: string) => console.log(s);
++p(`\n=== release-tag bypass audit (report-only) — ${names.length} repos, release identity: ${
++  arg("release-actor") ?? "any"
++} ===\n`);
++p(renderTable(results));
++const s = summarize(results);
++p(
++  `\nSummary: PASS=${s.PASS} FAIL=${s.FAIL} UNKNOWN=${s.UNKNOWN} SKIP=${s.SKIP} (mint-released: ${
++    results.filter((r) => r.mintReleased).length
++  })`,
++);
++if (s.UNKNOWN > 0) {
++  p(
++    "UNKNOWN = the restricting ruleset's bypass_actors are not visible to GH_TOKEN; rerun with an org-admin (or enterprise-owner) token.",
++  );
++}
++
++if (Deno.args.includes("--strict")) {
++  const hard = s.FAIL + (Deno.args.includes("--fail-unknown") ? s.UNKNOWN : 0);
++  p(`\n--strict: ${hard} violations.`);
++  Deno.exit(hard > 0 ? 1 : 0);
++}
++p("Report-only: exit 0.");
+diff --git a/scripts/audit/release-tags_test.ts b/scripts/audit/release-tags_test.ts
+new file mode 100644
+index 0000000..ec87a08
+--- /dev/null
++++ b/scripts/audit/release-tags_test.ts
+@@ -0,0 +1,228 @@
++// Unit tests for the release-tag bypass audit (conformance#25), against fixture
++// JSON in the GitHub ruleset API shape (fixtures/rulesets.json) and fixture repo
++// trees (fixtures/repos.json). No network; `deno test scripts/audit/`.
++// node:assert (built into Deno) so the suite adds no dependency — CI's deno
++// cache/lock stay untouched.
++import {
++  deepStrictEqual as assertEquals,
++  ok as assert,
++  throws as assertThrows,
++} from "node:assert";
++import {
++  classifyMintReleased,
++  conditionCovers,
++  GITHUB_ACTIONS_APP_ID,
++  parseReleaseActor,
++  refMatches,
++  renderTable,
++  type RepoFile,
++  restrictsTagCreation,
++  type Ruleset,
++  scoreRepo,
++  summarize,
++} from "./release-tags-lib.ts";
++
++const here = new URL(".", import.meta.url);
++const load = <T>(f: string): T =>
++  JSON.parse(Deno.readTextFileSync(new URL(`fixtures/${f}`, here)));
++const RS = load<Record<string, Ruleset>>("rulesets.json");
++const REPOS = load<Record<string, RepoFile[]>>("repos.json");
++const ANY = parseReleaseActor(undefined);
++const ACTIONS = parseReleaseActor("github-actions");
++
++Deno.test("refMatches: fnmatch semantics of ruleset ref_name patterns", () => {
++  assert(refMatches("refs/tags/v1.0.0", "refs/tags/*"));
++  assert(refMatches("refs/tags/v1.0.0", "refs/tags/v*"));
++  assert(refMatches("refs/tags/v1.0.0", "~ALL"));
++  assert(!refMatches("refs/tags/v1.0.0", "~DEFAULT_BRANCH"));
++  assert(!refMatches("refs/tags/v1.0.0", "refs/heads/*"));
++  assert(!refMatches("refs/tags/v1.0.0", "refs/tags/release-*"));
++  // `*` stays within a segment; `**` crosses them
++  assert(!refMatches("refs/tags/release/v1", "refs/tags/*"));
++  assert(refMatches("refs/tags/release/v1", "refs/tags/**"));
++  // regex metacharacters in a pattern are literal
++  assert(!refMatches("refs/tags/v1x0", "refs/tags/v1.0"));
++});
++
++Deno.test("restrictsTagCreation: active + creation rule + covering condition", () => {
++  assert(restrictsTagCreation(RS.enterprise_no_bypass));
++  assert(restrictsTagCreation(RS.enterprise_actions_bypass));
++  assert(restrictsTagCreation(RS.org_admin_pr_only));
++  assert(restrictsTagCreation(RS.bypass_not_visible));
++  assert(!restrictsTagCreation(RS.disabled), "disabled enforcement");
++  assert(!restrictsTagCreation(RS.excludes_v), "v* excluded");
++  assert(!restrictsTagCreation(RS.deletion_only), "no creation rule");
++  assert(!conditionCovers(RS.excludes_v, "refs/tags/v2.0.0"));
++  assert(conditionCovers(RS.excludes_v, "refs/tags/nightly"));
++});
++
++Deno.test("classifyMintReleased: tag-push, list form, release-cut, none", () => {
++  const a = classifyMintReleased(REPOS.mint_tag_push);
++  assert(a.mintReleased);
++  assertEquals(a.evidence, [
++    ".release/ (mint intents)",
++    ".github/workflows/release.yml (on: push: tags: v*)",
++  ]);
++  assert(classifyMintReleased(REPOS.mint_list_form).mintReleased);
++  assertEquals(classifyMintReleased(REPOS.mint_release_cut).evidence, [
++    ".github/workflows/release-cut.yml (calls mint release-cut.yml)",
++  ]);
++  assert(!classifyMintReleased(REPOS.not_released).mintReleased);
++});
++
++Deno.test("parseReleaseActor", () => {
++  assertEquals(parseReleaseActor("any"), { kind: "any" });
++  assertEquals(ACTIONS, {
++    kind: "actor",
++    actor_type: "Integration",
++    actor_id: GITHUB_ACTIONS_APP_ID,
++  });
++  assertEquals(parseReleaseActor("team:42"), {
++    kind: "actor",
++    actor_type: "Team",
++    actor_id: 42,
++  });
++  assertEquals(parseReleaseActor("org-admin"), { kind: "org-admin" });
++  assertThrows(() => parseReleaseActor("bogus"));
++});
++
++Deno.test("scoreRepo: not mint-released → SKIP regardless of rulesets", () => {
++  const r = scoreRepo(
++    "docs",
++    REPOS.not_released,
++    [RS.enterprise_no_bypass],
++    ANY,
++  );
++  assertEquals(r.verdict, "SKIP");
++  assertEquals(r.bypass, "n/a");
++});
++
++Deno.test("scoreRepo: mint-released, no tag rulesets → PASS (unrestricted)", () => {
++  const r = scoreRepo("mint", REPOS.mint_tag_push, [], ANY);
++  assertEquals(r.verdict, "PASS");
++  assert(!r.restricted);
++  assert(r.evidence.includes("no tag rulesets apply"));
++});
++
++Deno.test("scoreRepo: only non-restricting rulesets → PASS with ids as evidence", () => {
++  const r = scoreRepo(
++    "mint",
++    REPOS.mint_tag_push,
++    [RS.disabled, RS.deletion_only, RS.excludes_v],
++    ANY,
++  );
++  assertEquals(r.verdict, "PASS");
++  assert(r.evidence.some((e) => e.includes("#9006, #9008, #9007")));
++});
++
++Deno.test("scoreRepo: restriction with empty bypass_actors → FAIL (the trellis#34 shape)", () => {
++  const r = scoreRepo(
++    "mint",
++    REPOS.mint_tag_push,
++    [RS.enterprise_no_bypass],
++    ANY,
++  );
++  assertEquals(r.verdict, "FAIL");
++  assertEquals(r.bypass, "no");
++  assert(
++    r.evidence.some((e) =>
++      e.includes(
++        'enterprise ruleset "Restrict tag creation" (#9001, bounded)',
++      ) &&
++      e.includes("NO release-identity bypass (actors: none)")
++    ),
++    r.evidence.join(" | "),
++  );
++});
++
++Deno.test("scoreRepo: pull_request-mode bypass does not count", () => {
++  const r = scoreRepo(
++    "mint",
++    REPOS.mint_list_form,
++    [RS.org_admin_pr_only],
++    ANY,
++  );
++  assertEquals(r.verdict, "FAIL");
++  assert(
++    r.evidence.some((e) => e.includes("OrganizationAdmin#1(pull_request)")),
++  );
++});
++
++Deno.test("scoreRepo: any `always` actor passes when no identity is declared", () => {
++  const r = scoreRepo("mint", REPOS.mint_tag_push, [RS.org_admin_always], ANY);
++  assertEquals(r.verdict, "PASS");
++  assertEquals(r.bypass, "yes");
++  assert(
++    r.evidence.some((e) =>
++      e.includes("OrganizationAdmin#1(always), RepositoryRole#5(always)")
++    ),
++  );
++});
++
++Deno.test("scoreRepo: a declared release identity must match exactly", () => {
++  assertEquals(
++    scoreRepo("mint", REPOS.mint_tag_push, [RS.org_admin_always], ACTIONS)
++      .verdict,
++    "FAIL",
++  );
++  assertEquals(
++    scoreRepo(
++      "mint",
++      REPOS.mint_tag_push,
++      [RS.enterprise_actions_bypass],
++      ACTIONS,
++    )
++      .verdict,
++    "PASS",
++  );
++  assertEquals(
++    scoreRepo(
++      "mint",
++      REPOS.mint_tag_push,
++      [RS.org_admin_always],
++      parseReleaseActor("org-admin"),
++    ).verdict,
++    "PASS",
++  );
++});
++
++Deno.test("scoreRepo: bypass_actors absent (token can't read them) → UNKNOWN, not PASS", () => {
++  const r = scoreRepo(
++    "mint",
++    REPOS.mint_tag_push,
++    [RS.bypass_not_visible],
++    ANY,
++  );
++  assertEquals(r.verdict, "UNKNOWN");
++  assertEquals(r.bypass, "unknown");
++  assert(r.evidence.some((e) => e.includes("NOT VISIBLE")));
++  // ...but a visible FAIL on another ruleset outranks UNKNOWN
++  const both = scoreRepo(
++    "mint",
++    REPOS.mint_tag_push,
++    [RS.bypass_not_visible, RS.enterprise_no_bypass],
++    ANY,
++  );
++  assertEquals(both.verdict, "FAIL");
++});
++
++Deno.test("renderTable + summarize: one markdown row per repo, evidence paths kept", () => {
++  const results = [
++    scoreRepo("mint", REPOS.mint_tag_push, [RS.enterprise_no_bypass], ANY),
++    scoreRepo("drift-gate", REPOS.mint_list_form, [
++      RS.enterprise_actions_bypass,
++    ], ANY),
++    scoreRepo("docs", REPOS.not_released, [], ANY),
++  ];
++  const table = renderTable(results);
++  const lines = table.split("\n");
++  assertEquals(lines.length, 2 + results.length);
++  assert(lines[2].startsWith("| mint | yes | yes | no | FAIL | .release/"));
++  assert(
++    lines[3].startsWith(
++      "| drift-gate | yes | yes | yes | PASS | .github/workflows/publish-jsr.yml",
++    ),
++  );
++  assert(lines[4].startsWith("| docs | no | - | n/a | SKIP |"));
++  assertEquals(summarize(results), { PASS: 1, FAIL: 1, UNKNOWN: 0, SKIP: 1 });
++});
+-- 
+2.43.0
+

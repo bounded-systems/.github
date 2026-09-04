@@ -1,0 +1,30 @@
+{
+  "id": "mint-18",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "The patch applies cleanly via `git am` onto a fresh clone of origin/main (3e1ef40, same base the REPORT names) and every claimed check reproduces independently: `npm test` 32/32 with 0 skipped (run against the exact lockfile versions semver 7.7.4 / zod 4.4.3 symlinked in — no stubs, and the tests exercise the workflow allow-lists, not README content, so a docs-only change passing is expected rather than suspicious), the scout verify_command prints OK, `mint plan` parses the new intent as 0.8.0 → 0.8.1, and release-cut.yml is still valid YAML. The issue's two asks are met literally, not paraphrased: (1) README explains the `mint version` vs `mint release` input distinction and gives both bootstrap paths the issue names (manual manifest+CHANGELOG seed, and `bump: minor` intent → `mint version` → `mint release`); (2) README documents that a bypass actor with tag-creation permission is needed before the first release, names the actor per path, quotes the issue's exact rejection string, and documents the `--no-push` split. I re-exercised both paths in fresh scratch repos with the patched clone's mint.mjs and every behavioural statement in the doc matches the code: manifest read order (mint.mjs:44), the exact `no CHANGELOG.md entry for <v> — run \\`mint version\\` first.` message (mint.mjs:155), CHANGELOG created from nothing by `mint version` (mint.mjs:111-117), tag created before push so a rejected push leaves the tag locally and a re-run refuses (mint.mjs:223,230,236), the CI cut step gated by `if: ${{ !inputs.dry-run }}` and pushing as github-actions[bot] with `contents: write` GITHUB_TOKEN (release-cut.yml:292,134,315-321), and the unconsumed-intent guard (release-cut.yml:266-273). The only unverifiable claim — whether GitHub's ruleset bypass picker can list the Actions identity — is explicitly hedged in the doc and flagged in the REPORT, which is the honest treatment given the sandbox. Two non-blocking process items remain: the issue was never claimed (no credentials), and the added intent will make the next CI cut refuse until `mint version` runs, which is the repo's intended flow but maintainers may prefer to drop it per the 6cae138 precedent.",
+  "evidence": [
+    "git clone https://github.com/bounded-systems/mint.git /tmp/verify/mint-18-A && git am 0001-*.patch -> 'Applying: docs: bootstrapping a first release, and the tag-creation bypass actor (#18)'; HEAD fe28a08 on top of 3e1ef40 (main), git status clean",
+    "npm test -> '# tests 32 / # pass 32 / # fail 0 / # skipped 0' with node_modules/semver 7.7.4 and zod 4.4.3 (lockfile: 7.8.5 wanted / 4.4.3 exact); npm registry blocked so deps symlinked, same as REPORT states",
+    "scout verify_command (grep first release / bypass / no-push / github-actions[bot] + npm test --silent) -> OK",
+    "node mint.mjs plan --date 2026-09-03 -> 'mint plan — 0.8.0 → 0.8.1  (patch, 1 intent)' with the #18 summary line",
+    "python3 yaml.safe_load('.github/workflows/release-cut.yml') -> ok (patch adds comment lines only at release-cut.yml:300-306)",
+    "Scratch Path A (manifest 0.1.0 + hand-written '## 0.1.0 — 2026-07-08', no .release/): `mint release --dry-run` previews; `mint release` pushed v0.1.0 to a bare remote; re-run -> 'mint release: tag v0.1.0 already exists.'",
+    "Scratch Path B (manifest 0.0.0 + .release/first.md bump: minor): `mint plan` -> '0.0.0 → 0.1.0 (minor, 1 intent)'; `mint version` -> created CHANGELOG.md with '## 0.1.0 — 2026-07-08', consumed intent; `mint release --no-push` created tag v0.1.0 without pushing",
+    "Manifest 0.2.0 with no entry -> 'mint release: no CHANGELOG.md entry for 0.2.0 — run `mint version` first.' (matches README text; mint.mjs:155)",
+    "mint.mjs:44 MANIFESTS = [deno.json, jsr.json, package.json] (README read-order claim); mint.mjs:230 git tag then :236 git push (README 'tags first, then pushes' claim); mint.mjs:223 refuses when tag exists",
+    "release-cut.yml:292 `if: ${{ !inputs.dry-run }}` on 'Cut and push the tag'; :134 `contents: write`; :315-316 `git config user.name \"github-actions[bot]\"`; :320-321 `git tag -a ... && git push origin \"$TAG\"` (README actor table + 'dry run never pushes' claim)",
+    "release-cut.yml:266-273 'Guard — no unconsumed release intents' (README 'CI cut refuses while .release/ still holds an intent' claim)",
+    "release.yml:50 `tags: [\"v*\"]` push trigger (README 'push: tags path' claim)",
+    "Issue #18 body (WebFetch): asks for README guidance on mint version vs mint release + both bootstrap paths, and docs on a bypass actor for tag creation + --no-push; rejection string 'Cannot create ref due to creations being restricted' quoted verbatim in README and release-cut.yml comment",
+    "git log --diff-filter=A -- .release/*.md shows prior commits (#49, #46, #43, #41) shipped intents; 6cae138 'Drop the intent: this is mint's own plumbing' is the counter-precedent the REPORT cites"
+  ],
+  "must_fix": [],
+  "nits": [
+    "Issue #18 was not claimed (CLAUDE.md requires claim-ticket.yml or manual assign+comment); whoever applies the patch should claim first — process gap, not a patch defect.",
+    "README bypass paragraph hedges on whether the ruleset bypass picker can list the GitHub Actions identity used by GITHUB_TOKEN; an org admin should confirm once and tighten or keep the sentence (GitHub has historically not allowed github-actions[bot]/GITHUB_TOKEN as a ruleset bypass actor, in which case the 'narrow the rule or cut from a checkout' fallback is the operative advice and could be stated more directly).",
+    ".release/first-release-docs.md is an unconsumed intent; the next CI cut will refuse until `mint version` is run and merged. Intended flow, but drop it if maintainers treat docs as mint's own plumbing (cf. 6cae138).",
+    "Path A example in README hard-codes a 2026-07-08 date in the sample CHANGELOG heading; harmless (any date parses — matcher is `^## <version>(\\s|$)` at plan.mjs:63) but a YYYY-MM-DD placeholder would read less like a copy-paste trap."
+  ]
+}

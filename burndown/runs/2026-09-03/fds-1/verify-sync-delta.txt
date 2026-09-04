@@ -1,0 +1,8 @@
+ok 1 - second sync after a single-item change fetches only that delta and writes only that row
+ok 2 - the delta lane is metered as delta-search and costs no GraphQL
+ok 3 - a reopen in the delta clears closed_at, and status is left to the board
+ok 4 - a changed issue the mirror does not have is counted, not written
+ok 5 - the cursor is the last sync_log row at date granularity
+# tests 5
+# pass 5
+# fail 0

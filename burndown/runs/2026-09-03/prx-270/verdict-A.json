@@ -1,0 +1,25 @@
+{
+  "id": "prx-270",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "medium",
+  "reason": "The patch applies cleanly with `git am` on a fresh clone of origin/main (9de9551) and is genuinely comment-only: the diff touches exactly 16 lines, every one of them a ` *` JSDoc line inside the existing top-of-file block, and bun's transpiled output of the file is byte-identical before/after. The scout's header grep (`verify_command` prefix) passes and all five `export`s in the file (lines 44/49/56/69/76) are named in the header. The issue's acceptance criterion (top-of-file doc comment present; typecheck clean; tests pass) is met on the first point, and the second/third cannot be altered by a change that produces identical transpiled output — but I must be honest that `bun run typecheck` / `bun run check` / `bun test` could NOT be re-run here either: registry.npmjs.org returns 403 (host_not_allowed), `bun install` hangs/fails, and every node_modules symlink is dangling, so those checks rest on the comment-only argument rather than on execution. The REPORT and result.json state this plainly (verify_passed=false) rather than claiming a pass, so no 'passed' claim rests on a stub. Two content inaccuracies in the new prose keep this from a high-confidence pass: the header says tests run 'offline with a stub signer', but the test file actually uses the real signer with PRX_PROVENANCE_KEY=dev (only loadIdentity/buildResolver are stubbed); and it says the same entry point serves 'the intake actor inside the pipeline', yet runIntakeSource has exactly one caller (pr-state/cli.ts) — the pipeline only instructs the operator to run `prx intake source` (runtime_profiles.ts:835). Also, #270 literally asks for a 'one-paragraph' summary and the block is now five paragraphs plus a list; the acceptance-criteria bullet only requires that a comment exist, so this is a style nit, not a refutation.",
+  "evidence": [
+    "git clone https://github.com/bounded-systems/prx /tmp/verify/prx-270 -> HEAD 9de9551 (== origin/main); `git am 0001-docs-prx-expand-intake-source.ts-module-doc-comment-.patch` -> 'Applying: docs(prx): expand intake-source.ts module doc comment (GH-270)' with no conflicts",
+    "git diff HEAD~1 HEAD --stat -> packages/prx/src/intake/intake-source.ts | 16 ++++++++++++++++ ; changed lines not matching '^[+-] \\*': 0",
+    "bun build --no-bundle --target=bun on main vs patched copy of the file -> cmp: TRANSPILED_IDENTICAL",
+    "scout verify_command header part (head -1 grep '^/\\*\\*' + five-symbol grep within '1,/^\\*\\//p') -> HEADER_OK; grep -n '^export' -> lines 44,49,56,69,76, exactly the five names",
+    "Longest header line 94 chars (biome lineWidth 100); no tabs, no trailing whitespace",
+    "curl https://registry.npmjs.org/zod -> 403; `bun install --frozen-lockfile` killed at 120s; node_modules/.bun contains 0 packages (all symlinks dangling) -> typecheck/check/test not executable in this sandbox, matching the REPORT's stated failure",
+    "Issue #270 (WebFetch): open, labels area::prx/priority::low/type::task, body asks for 'a one-paragraph module doc comment ... it pins `<unit>:source@pinned` for the intake actor, runnable by a human or an agent'; AC: top-of-file doc comment present; `bun run typecheck` clean; tests pass; no comments, no linked PR",
+    "packages/prx/test/intake/intake-source.test.ts:47-49 sets PRX_PROVENANCE_KEY='dev' and PRX_PROVENANCE_PER_ACTOR='off'; no test passes `signer:` -> header's 'tests run offline with a stub signer' is inaccurate",
+    "grep -rn runIntakeSource packages/prx/src -> only packages/prx/src/pr-state/cli.ts:390,393,2233,15587-15588; packages/prx/src/machine/runtime_profiles.ts:835 merely tells the operator to run `prx intake source` -> no in-pipeline actor calls the entry point"
+  ],
+  "must_fix": [],
+  "nits": [
+    "Header line 'so tests run offline with a stub signer' is false for the current test file (real signer under PRX_PROVENANCE_KEY=dev); say 'so tests can run offline (e.g. with a dev key or an injected signer)' or drop the clause. The pre-existing field JSDoc on `signer` ('Tests inject a stub') has the same inaccuracy.",
+    "'the same entry point serves ... the intake actor inside the pipeline' overstates: the only caller is the CLI. Rephrase to 'an agent invoking `prx intake source`' to match the code.",
+    "Issue asks for a 'one-paragraph' summary; the block is now 5 paragraphs + a bulleted export list. Acceptable under the AC as written, but a reviewer may ask to condense.",
+    "`bun run typecheck && bun run check && bun test packages/prx/test/intake/intake-source.test.ts` remain unexecuted by both worker and verifier; must be run by CI / the applier before merge."
+  ]
+}

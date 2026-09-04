@@ -1,0 +1,29 @@
+{
+  "id": "prx-360",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "medium",
+  "reason": "Fresh clone of bounded-systems/prx (default branch HEAD 9de9551, same as the patch base) and `git am` of the single patch applied cleanly with no fuzz. Every check the REPORT claims reproduces in the fresh clone using the worker's vendored deps (versions spot-checked against the lockfile pins: xstate 5.32.6, zod 4.4.3, drizzle-orm 0.45.2, ajv-formats 3.0.1, anchored-chain v0.2.2): the scout's targeted suites 196/196, packages/prx/test/machine 439/439, full suite 5763 pass on main vs 5772 pass on the branch (+9 = the new tests) with an identical failing-test set (timing-stripped diff empty); docs:check / schemas:check / features:check exit 0 with driftCount 0; biome on the 10 changed .ts files clean and whole-tree biome error/warning counts identical to main; tsc 6.0.3 repo-file error list identical to main (34 pre-existing, none in touched files). The only stand-in is a 17-line @anthropic-ai/claude-agent-sdk stub whose `query()` throws; the new tests inject fake `runAgent`/`openSession` and never reach it, so no 'passed' claim rests on it. Code review confirms the fix hits the scout-traced root cause: session-entry.ts selects the new read-only tester profile on headless+role:'tester', open.ts threads role and mints `<unit>:spawn@tester`, pilot-real.ts passes role for the tester leg, and pilot.ts already advances testing->reviewing on a successful leg; actorRuleset('implement',{role:'reader'}) really does deny Edit/Write and SHARED_DENY keeps raw git/gh/bd out, and `prx tools git log|diff` are in READ_ONLY_GIT_SUBCOMMANDS. Confidence is medium, not high, because the issue's literal acceptance criterion ('a complete pilot drive on a docs-only unit must reach author -> CI -> merge with distinct, advancing tester legs') is a live PRX_PILOT_REAL=1 drive that neither the worker nor this review could run (no API key / beads server); the evidence is a mocked full-machine drive to `merged` plus unit tests at the profile-selection seam, which the REPORT discloses honestly.",
+  "evidence": [
+    "cd /tmp/verify && git clone https://github.com/bounded-systems/prx prx-360 && git am 0001-...patch -> 'Applying: fix(pilot): ...' HEAD c72f84d on 9de9551; 11 files, +436/-7",
+    "bun test <8 scout/report files> -> 196 pass / 0 fail (Ran 196 tests across 8 files)",
+    "bun test packages/prx/test/machine -> 439 pass / 0 fail across 32 files",
+    "full `bun test` main@9de9551: 5763 pass, 5812 total; branch: 5772 pass, 5821 total; diff of sorted (fail) lines (timings stripped): empty -> IDENTICAL_FAIL_SETS",
+    "bun run docs:check / schemas:check / features:check -> exit 0, driftCount 0 (schemas count 47, features count 5)",
+    "/tmp/work/vendor/biome check <10 changed .ts> -> 'Checked 10 files. No fixes applied.'; whole tree: 3 errors / 78 warnings / 2 infos on both main and branch (pre-existing; biome.jsonc deserialize + unused imports in untouched files)",
+    "tsc 6.0.3 --noEmit --customConditions bun: repo-file (packages/**) errors 34 on main, 34 on branch, diff empty -> TSC_IDENTICAL; none in touched files",
+    "packages/prx/src/machine/actor_ruleset.ts:35-36,65-76,147-153: reader base = Read/Grep/Glob; reader deny adds Edit+Write; SHARED_DENY includes Bash(git:*), Bash(gh:*), Bash(bd:*)",
+    "packages/prx/src/tools/git_read.ts:20-22: READ_ONLY_GIT_SUBCOMMANDS contains log, diff (the prompt's `prx tools git log/diff` is reachable)",
+    "packages/prx/src/machine/machines/pilot.ts:382: testing: legState('tester','reviewing','executing'); pilot-runner.ts:68-69: advance = run.kind==='success' && !rejected",
+    "packages/prx/src/pipeline/spawn-attestation.ts:79 role: string; spawn/verify.ts:19 role is z.string() -> spawn@tester is a valid slot",
+    "node_modules/@anthropic-ai/claude-agent-sdk/index.ts: sandbox stub; query() throws; new tests inject fakeOpen/fakeRun (pilot-real.test.ts) and never call it",
+    "Issue #360 body (WebFetch): acceptance = complete pilot drive on a docs-only unit reaching author -> CI -> merge with distinct advancing tester legs; REPORT.md 'Unresolved' #1 states no live drive was run"
+  ],
+  "must_fix": [],
+  "nits": [
+    "Issue bullet 2 ('consume the committed implementation as input, not the draft plan') is only satisfied at the prompt level: the tester's signed spawn attestation still records `<unit>:plan@draft` as its sole input material (open.ts resolveLegInput('implement') -> resolvePlanInput; leg-input.ts:97-99). Binding the tester's spawn to the executor's commit/output is deferred in-repo ('wired once the executor path lands', leg-input.ts:88-90) but should be called out as a follow-up in the PR.",
+    "Tester profile keeps `permissionMode: 'acceptEdits'` while denying Edit/Write; harmless (allow/deny lists are the authority) but a reader may find it contradictory. Also `Bash(bun run:*)` lets the tester execute any package.json script, some of which write generated artifacts (docs:render, openapi:render) -- consider narrowing to `Bash(bun test:*)` + `Bash(bun run test:*)`.",
+    "Issue bullet 3 semantics: a tester that runs cleanly but REPORTS failing tests still yields run.kind==='success' and advances testing -> reviewing (pilot-runner.ts:69); the REPORT flags this as a separate decision. Worth a follow-up issue so the pilot cannot promote a red unit.",
+    "Acceptance criterion not exercised live (PRX_PILOT_REAL=1 drive); the mocked pilot-real.test drives the machine to `merged` with opens [plan, implement/executor, implement/tester, author], which is the closest sandbox-feasible evidence."
+  ]
+}

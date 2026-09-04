@@ -1,0 +1,75 @@
+From fbd45290111022b1ec2f7dd24d7cff2c35246a92 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:21:10 +0000
+Subject: [PATCH] docs(prx): expand intake-source.ts module doc comment
+ (GH-270)
+
+Extend the existing top-of-file JSDoc on
+packages/prx/src/intake/intake-source.ts so it covers what #270 asks
+for and names every export:
+
+- the verb is runnable by a human (CLI) or an agent invoking the same
+  command, and the pin is signed either way (GH-292; missing key is a
+  hard refusal)
+- an Exports list: intakeSourceOptionsSchema / IntakeSourceOptions,
+  IntakeSourceDeps, IntakeSourceError, runIntakeSource
+
+Adds an empty changeset (.changeset/gh270-intake-source-doc-comment.md)
+to satisfy changeset-check for a docs-only change under packages/.
+
+Comment-only; the transpiled output is byte-identical to main.
+
+Refs #270
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ .changeset/gh270-intake-source-doc-comment.md |  6 ++++++
+ packages/prx/src/intake/intake-source.ts      | 18 ++++++++++++++++++
+ 2 files changed, 24 insertions(+)
+ create mode 100644 .changeset/gh270-intake-source-doc-comment.md
+
+diff --git a/.changeset/gh270-intake-source-doc-comment.md b/.changeset/gh270-intake-source-doc-comment.md
+new file mode 100644
+index 0000000..862eaf1
+--- /dev/null
++++ b/.changeset/gh270-intake-source-doc-comment.md
+@@ -0,0 +1,6 @@
++---
++---
++
++Docs-only: expand the top-of-file module doc comment on
++`packages/prx/src/intake/intake-source.ts` (#270). No package codepath
++changes, so this changeset is empty.
+diff --git a/packages/prx/src/intake/intake-source.ts b/packages/prx/src/intake/intake-source.ts
+index 3a32500..ce7125f 100644
+--- a/packages/prx/src/intake/intake-source.ts
++++ b/packages/prx/src/intake/intake-source.ts
+@@ -13,6 +13,24 @@
+  * Sits upstream of the parity chain (the chain root), so it emits no XState
+  * event here — it produces the content-addressed artifact the rest of the
+  * pipeline reads.
++ *
++ * Runnable by a human or an agent: the verb (`prx intake source`, wired from
++ * `../pr-state/cli.ts`) serves an operator at the CLI and an agent invoking the
++ * same command on the pipeline's behalf. Either way the pin is SIGNED (GH-292):
++ * the submitting actor must hold a signing key, and a missing key is a hard
++ * refusal.
++ *
++ * Exports (GH-270):
++ * - `intakeSourceOptionsSchema` / `IntakeSourceOptions` — zod schema for the
++ *   verb's options: `id` (the work unit) and `format` (`plain` | `json`).
++ * - `IntakeSourceDeps` — injectable `loadIdentity`, `buildResolver`,
++ *   `pinSource`, `signer` and `repoPath`, so tests can run offline (with a dev
++ *   key or an injected signer).
++ * - `IntakeSourceError` — scout's `ScoutSourceError` re-wrapped under this
++ *   verb's surface; anything else propagates untouched.
++ * - `runIntakeSource(options, output, deps)` — delegate the fetch to scout,
++ *   pin the signed result, print `pinned <ref>` (or JSON), and resolve to the
++ *   process exit code `0`.
+  */
+ 
+ import { z } from "zod";
+-- 
+2.43.0
+

@@ -1,0 +1,27 @@
+{
+  "id": "site-32",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Both patches apply cleanly via `git am` to fresh clones of the current default branches (site main @ 0ede7fd, bounded.tools main @ 6c7299c). The scout's verify_command greps, re-run verbatim against the freshly patched READMEs (only the raw.githubusercontent.com fetch replaced by local cat, since the proxy returns CONNECT 403 for that host — confirmed independently), print OK with exit 0. The issue body's own remedy #2 ('Add clarification to the README distinguishing between the two projects') is satisfied literally: site/README.md names both repos by URL, says which is which and why (directory-name trap from the old clone URL), removes the wrong `clone …/bounded.tools.git` instruction, and records a rename proposal without executing anything; bounded.tools/README.md links back to https://github.com/bounded-systems/site and to issue #32. No 'passed' claim rests on a stub: no gate under scripts/, build.mjs, flake.nix, or .github reads README.md, `npm run check` output is byte-identical with the patched and unpatched README (the chain stops at the pre-existing gen-strings failure on main, exactly as the REPORT states), and the individual gates the REPORT lists as passing (check-emphasis, check-outline, check-inline-purity, check-copy-coverage, check-jargon, check-license, check-repetition, coldread.test 30/30) do pass on the patched tree. The REPORT is candid about what could not run (npm ci / bun install 403, upstream verify_command unreachable, bounded.tools tsc/bun test). Only nits remain: the patch adds 'no submodules to init' to Setup while the very next section still says `brand/` is a git submodule (pre-existing staleness the worker deliberately scoped out), and the README title remains `# bounded.tools` (explained inline rather than changed).",
+  "evidence": [
+    "git -C /tmp/verify/site-32/site am site-0001-readme-naming.patch -> 'Applying: docs(readme): say which repo this is — site, not bounded.tools (#32)' on main 0ede7fd (Sep 1 2026)",
+    "git -C /tmp/verify/site-32/bounded.tools am bounded.tools-0002-readme-not-the-website.patch -> applied on main 6c7299c (Sep 2 2026)",
+    "scout verify greps against /tmp/verify/site-32/{site,bounded.tools}/README.md -> 'OK', exit=0",
+    "curl https://raw.githubusercontent.com/bounded-systems/site/main/README.md -> curl (56) CONNECT tunnel failed, response 403 (agent-proxy connect_rejected) — matches REPORT",
+    "/tmp/verify/site-32/site/README.md:73 `git clone https://github.com/bounded-systems/site.git`; :78 'Not `bounded.tools.git` — that is a different repo'; no line matches 'clone.*bounded-systems/bounded.tools.git'",
+    "/tmp/verify/site-32/bounded.tools/README.md:11 links https://github.com/bounded-systems/site; :16 links site/issues/32",
+    "grep -rn README scripts build.mjs flake.nix .github package.json .string-audit.json -> only a comment in scripts/legibility/coldread.mjs:240; no gate reads README.md",
+    "npm run check (patched README) vs (main README) -> diff: IDENTICAL_OUTPUT; both stop at '✗ index.html: data-str=\"name\" — no such key in content/strings.json' (pre-existing on main, node_modules absent because npm registry 403)",
+    "individual gates on patched tree: check-emphasis/outline/inline-purity/copy-coverage/jargon/license/repetition all exit=0; node --test scripts/legibility/coldread.test.mjs -> # pass 30 / # fail 0",
+    "WebFetch github.com/bounded-systems/site/issues/32: open, unlabelled; proposed remedies: (1) rename local dir to site/, (2) add README clarification distinguishing the two projects, (3) re-clone — patch covers (2) and documents (1)/(3) as guidance",
+    "/tmp/verify/site-32/site: no .gitmodules, no brand/ dir (confirms the removed submodule steps were dead)"
+  ],
+  "must_fix": [],
+  "nits": [
+    "site/README.md: new Setup comment says 'no submodules to init' while the immediately following 'How it consumes the brand' section (line ~49) still says `brand/` is a git submodule — the patch makes the pre-existing staleness read as a direct contradiction; a one-line touch to that sentence (or the promised follow-up issue) would avoid it.",
+    "README title remains `# bounded.tools` (the scout plan suggested retitling); the patch explains the title is the product name instead, which is defensible but leaves the very first line still saying the confusing name.",
+    "The bounded.tools patch commit message contains a Claude-Session trailer; harmless but noisy for a public repo history.",
+    "REPORT's 'Verify output' quotes the later gates as 'ok', which is true individually, but `npm run check` as a chain never reaches them because gen-strings fails first (on main too); the REPORT does say this, just worth reading carefully."
+  ]
+}

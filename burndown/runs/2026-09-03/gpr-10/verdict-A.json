@@ -1,0 +1,30 @@
+{
+  "id": "gpr-10",
+  "lens": "CORRECTNESS + REPRODUCIBILITY",
+  "refuted": false,
+  "confidence": "medium",
+  "reason": "Fresh clone of bounded-systems/gh-project-room (main @ f28b2b2, the current default-branch head) plus `git am` of the patch applied cleanly with no conflicts. Every check the REPORT claims reproduced independently: `deno fmt --check` clean (31 files), `deno lint` on the 5 touched/adjacent files clean, `deno check` on the 8 network-free modules clean, the scout verify_command step `deno test window-meter_test.ts --filter window` = 5 passed / 0 failed, and the 7 network-free test files = 34 passed / 0 failed. The CLI end-to-end runs reproduce exactly (rolling-5h with 10.5 pts burned exits 1, weekly exits 0, no-ledger warns and exits 0, unreadable ledger fails open, no --budget exits 2). The tests are real (fixed epoch clock, no stubs/mocks; they exercise the real prioritization.ts budgets) and assert both halves of the scout's verify criterion: accumulate-per-window and slide-out for rolling, accumulate-then-reset-at-boundary for calendar. The 'passed' claims do rest on one stand-in: @std/assert is vendored from github via a local import map because jsr.io/npm are blocked, so the whole-repo `deno task check` / `deno task test` fail here with 403 (registry.npmjs.org not in allowlist), exactly as the REPORT discloses; the 6 unexercised test files (health, health-issue, ready, scout-reads, verbs, webhook) do not import budget-check.ts or window-meter.ts and prioritization.ts/deno.lock are untouched, so the residual risk is limited to CI confirming the deno.json export/publish list. On the acceptance criterion: the issue body says 'wires real per-window burn into budget-check.ts' and 'Depends on: telemetry/OTLP (the metering source)'. The patch delivers the meter and a --ledger file seam but no source writes that ledger, and front-desk-budget.yml callers pass no ledger by default, so production behaviour is unchanged (unmetered, fail-open). This is a narrower deliverable than the issue's literal wording, but it matches the scout's explicitly agreed scope, the commit says 'Refs #10' not 'Closes', and the REPORT states the gap plainly; confidence is medium rather than high because of that scope gap and because full CI could not be run in the sandbox.",
+  "evidence": [
+    "cd /tmp/verify && git clone https://github.com/bounded-systems/gh-project-room gpr-10 → HEAD f28b2b2 (same as REPORT's base)",
+    "git am 0001-feat-budget-wire-window-burn-metering-consumedPoints.patch → 'Applying: feat(budget): wire window-burn metering — consumedPoints per window (#10)', a5d5710 on top of f28b2b2, clean tree",
+    "deno 2.9.6: deno fmt --check → 'Checked 31 files' exit=0",
+    "deno lint --config <empty> window-meter.ts window-meter_test.ts budget-check.ts budget-check_test.ts prioritization.ts → 'Checked 5 files' exit=0",
+    "deno check --import-map /tmp/work/importmap.json --no-lock contract.ts prioritization.ts window-meter.ts budget-check.ts board-inputs.ts window-meter_test.ts budget-check_test.ts prioritization_test.ts → exit=0",
+    "deno test --import-map ... window-meter_test.ts --filter window → 'ok | 5 passed | 0 failed | 3 filtered out'",
+    "deno test --import-map ... (7 network-free test files) → 'ok | 34 passed | 0 failed (611ms)'",
+    "deno task check → exit=1 'Bad response: 403 / Host not in allowlist: registry.npmjs.org'; deno task test → exit=1 'Failed caching npm package zod@4.4.3 ... 403' (sandbox, matches REPORT's disclosure)",
+    "deno run --allow-read budget-check.ts --budget rolling-5h --about-to-spend 1 --ledger ledger.json (250k units 1h ago + 4.5 pts 1m ago + 99 pts in 2020) → 'exhausted: 10.5/10 pts (5h window)' exit=1; --budget weekly → 'healthy (10.5/40 pts)' exit=0; no --ledger → warn + exit=0; --ledger /nonexistent.json → 'unreadable ... (warn)' exit=0; no args → usage exit=2",
+    "window-meter_test.ts:592-608 rolling: 1→3→6, still 6 at +5h (inclusive), 5 at +5h+1ms, 3 at +6h+1ms, 0 at +7h+1ms; window-meter_test.ts:610-635 calendar: 4→10→15 then 2 at boundary, 9, 0 next week — both halves of scout verify criterion asserted against real ROLLING_5H_BUDGET/WEEKLY_BUDGET",
+    "grep -l 'budget-check|window-meter' *.ts → only the 4 touched files; git diff main -- deno.lock → empty; prioritization.ts untouched, so the 6 unrun npm-dependent test files are not affected by the change",
+    "Issue #10 body (WebFetch): 'This issue wires real per-window burn into budget-check.ts. Depends on: telemetry/OTLP (the metering source).' — patch provides consumedPoints() + --ledger seam; no emitter exists in repo; front-desk-budget.yml default ledger=\"\" so callers remain unmetered",
+    "window-meter.ts:504 default anchor=0 → 168h boundaries fall on Thursday 00:00 UTC (e.g. 2026-06-11); documented in REPORT, anchor injectable but no CLI flag"
+  ],
+  "must_fix": [
+    "PR must not use 'Closes #10': the issue's stated deliverable is real per-window burn wired into budget-check.ts with the telemetry/OTLP source; this patch lands only the meter + --ledger seam and production callers (front-desk-budget.yml, no ledger input) keep the exact pre-patch unmetered/fail-open behaviour. State this in the PR body and leave #10 open or split a follow-up for the emitter."
+  ],
+  "nits": [
+    "Calendar 'weekly' window is epoch-aligned (resets Thursday 00:00 UTC); if the org expects Monday/Sunday weeks, budget-check.ts needs an --anchor flag before the ledger is ever populated, or the reset day will surprise.",
+    "Full `deno task check` / `deno task test` / repo `deno lint` and `npx jsr publish --dry-run` were not run in either the worker's or this verifier's sandbox (npm/jsr blocked); jsr-check.yml on the PR is the first real run of the new './window-meter' export.",
+    "REPORT's `deno lint --config '{}'` invocation does not work as written on deno 2.9.6 (it treats '{}' as a file path); a real empty config file is needed to reproduce. Cosmetic, result is the same."
+  ]
+}

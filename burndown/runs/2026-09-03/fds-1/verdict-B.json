@@ -1,0 +1,34 @@
+{
+  "id": "fds-1",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": true,
+  "confidence": "high",
+  "reason": "The diff itself is in scope and conventional: it applies cleanly on main 19437d5 with git am, touches only src/mirror.ts, scripts/sync-delta.ts and a new test/sync-delta.test.ts (tests live in test/, run by `npm test` = node --test test/*.test.ts), the seam-injection pattern matches existing practice (src/reaper.ts injects `q`, src/verbs.ts uses Deps), dsqlRows semantics are preserved verbatim in the local `rows` helper, the closed-at-freshness source-grep test still passes (11/11 with the new file), npm test goes 355->360 with the same 7 pre-existing ERR_MODULE_NOT_FOUND failures on main and on the branch, and deno check on the touched files only surfaces the pre-existing src/dolt-server.ts:221 TS2488 that is identical on main. What blocks a maintainer merging it as-is is not the code but the submission: (1) the repo's CLAUDE.md managed block mandates 'Claim before working' and the repo's pr-claim.yml fails-closed on a PR that does not name an OPEN, CLAIMED issue -- issue #1 is open but has no assignee, no `claimed` label and zero comments, and the scout recorded claimed:false, so a PR citing `Closes #1` would report not-claimed until someone dispatches claim-ticket.yml; (2) the commit message and the proposed GitHub comment cite `efcd8d6` as the commit where the full pull dropped to ~15 points, but efcd8d6 is NOT an ancestor of main (it is a pre-squash commit of PR #57; the mainline commit is 3f9285a) -- a hash a reader cannot find in `git log main`; (3) the proposed comment asserts the full pull 'remains the weekly drift backstop (mirror-sync.yml), as proposed here', which is false: mirror-sync.yml has run on `17 */6 * * *` (every 6h) since it was created in 47bb562 and CLAUDE.md L516 says so explicitly -- the word 'weekly' only survives in stale code comments that the patch copies into the new test header; (4) the comment's 'Closing as shipped ... Patch attached ... git am' flow is not this repo's flow (PR with `Closes #1` gated by test/vars/drift and pr-claim), and its Apply line runs `npm test` without the mandated `deno install --frozen`. The four fixes are small, but as delivered the PR would be red on pr-claim and the closing comment contains two incorrect facts.",
+  "evidence": [
+    "git clone + git am in /tmp/verify/fds-1/front-desk-scheduler: 'Applying: #1: prove the delta sync fetches only the delta' -> 455b9aa on top of 19437d5, clean",
+    "node --test test/sync-delta.test.ts test/closed-at-freshness.test.ts -> # tests 11 / pass 11 / fail 0",
+    "npm test on branch: tests 360 pass 353 fail 7; on main: tests 355 pass 348 fail 7; same 7 files (capability, claim-named, claim-ticket-summary, graph, held, list, next) -- ERR_MODULE_NOT_FOUND from blocked registry (deno install --frozen: 'Host not in allowlist: registry.npmjs.org')",
+    "deno check src/mirror.ts test/sync-delta.test.ts scripts/sync-delta.ts -> touched files check; only error is src/dolt-server.ts:221 TS2488, reproduced on untouched main",
+    "git merge-base --is-ancestor efcd8d6 main -> FALSE; f3c0f61, 1b1683c, ca285a8, 3f9285a (#57 'board: read the board with fieldValueByName — 1,415 points to ~15') are ancestors. Patch commit body and REPORT.md comment both cite efcd8d6.",
+    ".github/workflows/mirror-sync.yml:19 `- cron: \"17 */6 * * *\" # every 6h — the board's freshness contract`; git log -p shows that is the only cron line the file has ever had (created 47bb562). CLAUDE.md L515-516: 'Status only reaches the mirror through the full mirror-sync.yml, cron: \"17 */6 * * *\"'. REPORT.md comment: 'it remains the weekly drift backstop (mirror-sync.yml), as proposed here'.",
+    "test/sync-delta.test.ts L18-19 (new): 'Brand-new items and board FIELD changes are the weekly full pull's job' -- copies stale 'weekly' wording from src/mirror.ts:1075/1108 and scripts/sync-delta.ts:6/17",
+    "https://github.com/bounded-systems/front-desk-scheduler/issues/1 (WebFetch): State Open, Labels none, Assignees none, 0 comments, 'Depends-on: front-desk-scheduler#3'. #3: Closed by PR #144 -- the REPORT's '#3 is Closed' claim is correct.",
+    "CLAUDE.md managed block step 2: 'Claim before working: dispatch claim-ticket.yml ... then confirm the claim comment ON THE ISSUE names your claimant.' scout fds-1.json: \"claimed\": false",
+    ".github/workflows/pr-claim.yml: 'WHAT IT CHECKS. That this PR names an issue which is OPEN and still carries a claim — via `Closes #N`' ; pinned to _pr-claim.yml@63715f9; fail-closed",
+    "CLAUDE.md L406-409: 'Install deps with `deno install --frozen`, never `npm install`'; REPORT.md Apply line: 'git am ... && npm test' (no install step)",
+    "Commit subject '#1: prove the delta sync fetches only the delta' matches the style of f3c0f61 '#1: delta sync via Search API — ~1 GraphQL point vs 610'; Co-Authored-By and Claude-Session trailers are used in recent main history (git log -20 shows 10 Claude-Session trailers)",
+    "REPORT.md's 'Verify output' (5/5, 11/11, 360/353/7) reproduced exactly in the fresh clone; src/mirror.ts:80 'measured 2026-07-31, a full 1,521-item pull costs 16 points' supports the '~15 points' figure"
+  ],
+  "must_fix": [
+    "Claim issue #1 before opening the PR (dispatch claim-ticket.yml in bounded-systems/.github with repo/issue/claimant, confirm the claim comment on #1) -- pr-claim.yml fails closed on an unclaimed issue and CLAUDE.md forbids working unclaimed.",
+    "Replace `efcd8d6` with `3f9285a` (#57) in the commit message and in the proposed GitHub comment; efcd8d6 is not reachable from main.",
+    "Fix the proposed comment: mirror-sync.yml is the every-6h backstop (`17 */6 * * *`), not weekly; drop 'as proposed here' or say the cadence differs from the issue's proposal.",
+    "Deliver as a PR whose body/commit carries `Closes #1` (the repo's merge path), not as an issue comment with an attached patch; if a comment is posted, its Apply line must run `deno install --frozen` before `npm test`."
+  ],
+  "nits": [
+    "test/sync-delta.test.ts header says 'weekly full pull' -- consistent with the stale comments in src/mirror.ts and scripts/sync-delta.ts it sits next to, but contradicts CLAUDE.md; either say 'the full pull (every 6h)' in the new file or note the stale wording in the PR.",
+    "The `rows` helper inside syncPullDelta duplicates dsqlRows' parse logic; a one-line `dsqlRowsVia(io.sql, q)` or exporting dsqlRows' parser would avoid two copies drifting.",
+    "REPORT.md and commit message say 'the full pull dropped to ~15 points in efcd8d6' -- that commit only says 'should bring that to ~15 — confirm'; the measured figure (16 points, 2026-07-31) is at src/mirror.ts:80 and is the better citation.",
+    "The mainline PR for #1 could also update the stale '~610' / 'weekly' comments the worker deliberately left, since the issue body's numbers are what a closer will read against."
+  ]
+}

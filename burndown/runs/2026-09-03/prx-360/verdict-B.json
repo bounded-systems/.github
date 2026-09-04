@@ -1,0 +1,37 @@
+{
+  "id": "prx-360",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": true,
+  "confidence": "medium",
+  "reason": "The patch applies cleanly with `git am` on main@9de9551 (fresh clone), is entirely within the issue's stated scope (tester profile, committed-implementation input, role axis into openSession; the spawn@tester slot is a necessary consequence of the role axis and only `prx spawn verify` consumes that slot with a free-form role string), follows repo conventions (Conventional Commit `fix(pilot): … (GH-360)` + `Closes #360`, tests in both existing locations, biome clean on the 10 changed .ts files, docs:check / schemas:check / features:check driftCount 0, +9 tests verified 163→172 on the four touched suites, targeted 196/196, no tsc errors in touched files), and the REPORT/GitHub comment contain no fabricated numbers (+436/-7, +9 tests, 1 commit all verified). What blocks an as-is merge in a capability-security repo is one authority leak the report and the proposed comment both misdescribe: `actorRuleset(\"implement\", {role:\"reader\", …})` keeps the own-namespace glob, so the supposedly read-only tester profile's allowedTools contains `Bash(prx implement:*)` — the very verb (`prx implement agent`) that launches an executor over the plan, i.e. the tester can still re-trigger the implementation the issue complains about. The repo already has the precedent for this exact hazard (`submit` uses `omitOwnNamespace: true` because the glob would re-admit `prx submit publish`), the new test asserts only that Edit/Write are denied and never pins the allowlist, and the ready-to-paste comment says 'reader ruleset (Edit/Write denied, `bun test` + `prx tools git` allowed)' which omits both `Bash(prx implement:*)` and `Bash(bun run:*)`. Fix is one line (`omitOwnNamespace: true`) plus a test pin and a corrected comment; the issue's acceptance criterion (a live doc-only pilot drive reaching review/merge) is honestly reported as not exercised, which the maintainer may also treat as a gate.",
+  "evidence": [
+    "cd /tmp/verify/prx-360 && git clone … && git checkout 9de9551 && git am /home/claude/burndown/out/prx-360/0001-*.patch → 'Applying: fix(pilot): serve the tester leg its own tester profile, not the executor's (GH-360)'; 11 files, +436/-7",
+    "bun test <8 targeted suites incl. test/audit/architecture.test.ts> → 196 pass / 0 fail (fresh clone + worker's vendored node_modules symlinked)",
+    "bun test <4 touched suites> on 9de9551 → 163 tests; on cc475b0 → 172 tests (+9, matches REPORT/comment claim)",
+    "/tmp/work/vendor/biome check <10 changed .ts files> → 'Checked 10 files. No fixes applied.'",
+    "bun run docs:check → status ok; bun run schemas:check → driftCount 0, count 47; bun run features:check → driftCount 0, count 5",
+    "tsc 6.0.3 --noEmit --customConditions bun → 598 errors, all in node_modules/xstate|ajv-formats source and files importing unavailable deps; zero in any touched file",
+    "probe: buildWorkUnitClaudeTestSdkRuntimeProfile({workUnitId:'GH-360'}).sdkSpec.allowedTools = [Read, Grep, Glob, 'Bash(prx implement:*)', 'Bash(bun test:*)', 'Bash(bun run:*)', 'Bash(prx tools git:*)'] — `prx implement:*` is granted to the tester",
+    "packages/prx/src/machine/actor_ruleset.ts:139 `const ownNamespace = options.omitOwnNamespace ? [] : [`Bash(prx ${actor}:*)`]` — the patch calls actorRuleset(\"implement\", …) at runtime_profiles.ts (new profile) without omitOwnNamespace",
+    "packages/prx/src/machine/runtime_profiles.ts:304-317 (unchanged) — submit profile comment: 'omitOwnNamespace: true — submit must NOT broaden to Bash(prx submit:*), because that would re-admit prx submit publish' (repo precedent for the same hazard)",
+    "packages/prx/src/cli/registry.data.ts:109 verb 'implement agent' exists under the implement namespace (what Bash(prx implement:*) admits)",
+    "packages/prx/test/pr-state/runtime_profiles.test.ts (new): asserts allowed contains Read/Bash(bun test)/Bash(prx tools git) and denied contains Edit/Write; never asserts absence of Bash(prx implement:*)",
+    "REPORT.md ready-to-paste comment: 'reader ruleset (Edit/Write denied, `bun test` + `prx tools git` allowed)' — omits Bash(prx implement:*) and Bash(bun run:*) that the profile actually grants",
+    "commit message body says '9 implement legs, zero author legs' while issue #360 says '10 legs spawned at implement, 0 at review/author stages' (minor factual drift; not in the GitHub comment)",
+    "CONTRIBUTING.md: Conventional Commits + reference the issue → commit is `fix(pilot): … (GH-360)` / `Closes #360`; generated artifacts (schemas, community, help snapshots) untouched and drift checks green; docs/prx/pipeline-orchestrator.md is hand-written (not in docs:render outputs)",
+    "packages/prx/src/pipeline/spawn-attestation.ts:80 `role: string` and spawn/verify.ts:19 `role: z.string()` — spawn@tester slot is accepted; only consumer of spawnEdge outside the module is prx spawn verify",
+    "Issue #360 acceptance criterion: 'A complete pilot drive on documentation-only units must progress through review and merge' — REPORT.md follow-up 1 states no live PRX_PILOT_REAL=1 drive was run"
+  ],
+  "must_fix": [
+    "runtime_profiles.ts buildWorkUnitClaudeTestSdkRuntimeProfile: pass `omitOwnNamespace: true` to actorRuleset(\"implement\", …) so the tester does not receive `Bash(prx implement:*)` (it can currently launch `prx implement agent`, re-triggering the executor the issue is about); add an `expect(allowed).not.toContain(\"Bash(prx implement:*)\")` pin in runtime_profiles.test.ts",
+    "Correct the ready-to-paste GitHub comment and REPORT.md table to describe the actual allowlist (currently also grants `Bash(bun run:*)`; after the fix should read: Read/Grep/Glob + bun test/bun run + prx tools git, Edit/Write denied)"
+  ],
+  "nits": [
+    "Tester prompt says 'run the unit tests' while the executor profile (prx-who) documents that bun is outside the headless exec sandbox; add the scout-suggested 'if the test runner is unavailable, say so and report what you could verify' so a tester without bun does not spin or fabricate a pass",
+    "Commit message body '9 implement legs' vs issue's '10 legs spawned at implement'",
+    "docs/prx/pipeline-orchestrator.md addition carries a 'Before that the testing leg was served…' history paragraph; design docs in this repo state the current contract — consider trimming the narrative to the role→profile rule",
+    "`permissionMode: \"acceptEdits\"` on a read-only profile is harmless (Edit/Write denied) but reads oddly; a one-line comment or `default` would be clearer",
+    "Issue acceptance criterion (live doc-only drive through review/merge) is unexercised; state this explicitly in the PR description as CONTRIBUTING requires the scope/verification statement",
+    "CLAUDE.md org claim-ticket step not performed (no credentials) — the REPORT already flags it; claim before opening the PR"
+  ]
+}

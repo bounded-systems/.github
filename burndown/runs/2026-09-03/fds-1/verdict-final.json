@@ -1,0 +1,24 @@
+{
+  "id": "fds-1",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/front-desk-scheduler at main 19437d5 into /tmp/final/fds-1: the regenerated patch (commit 3c63bdf in the file) applies with `git am` cleanly as 3c15724, touching only scripts/sync-delta.ts, src/mirror.ts, test/sync-delta.test.ts. Re-ran every check the prior verifiers ran and all reproduce: `node --test test/sync-delta.test.ts test/closed-at-freshness.test.ts` 11/11; `npm test` 360 tests / 353 pass / 7 fail on the patched tree vs 355/348/7 on pristine 19437d5, the same 7 files (capability, claim-named, claim-ticket-summary, graph, held, list, next) failing on ERR_MODULE_NOT_FOUND 'zod' because registry.npmjs.org is blocked; `deno check` on the touched files reports only the pre-existing src/dolt-server.ts:221 TS2488, identical on main; cursor mutation (since := '2020-01-01') fails 5/5 new tests. All four verdict-B must_fix items are addressed: (2) the commit message, REPORT table and PR body now cite 3f9285a (#57) and the measured 16-point figure at src/mirror.ts:80 -- confirmed 3f9285a IS an ancestor of main and efcd8d6 is NOT and no longer appears anywhere in the patch or report; (3) the PR body states `17 */6 * * *` (every 6h) for mirror-sync.yml, explicitly contrasts it with the issue's weekly proposal, and the new test header/assertion message say 'every 6h' -- confirmed against .github/workflows/mirror-sync.yml:19; (4) the deliverable is a PR body with `Closes #1` in both commit trailer and body, and the local-check line is `deno install --frozen && npm test` (CLAUDE.md L410); (1) claiming #1 is correctly deferred as an owner action -- it requires dispatching claim-ticket.yml with the owner's claimant identity, which a patch cannot do, and the report says so explicitly with the pr-claim.yml fail-closed consequence. Verdict A's nits are also fixed (weekly wording, #3 state). Live GitHub re-check: #1 is Open, no labels, no assignees, 0 comments (still unclaimed, as the report states); #3 is Closed by PR #144 (the PR body's claim is true). Every factual statement in the ready-to-paste PR body was checked against the repo: f3c0f61/1b1683c/3f9285a/#57/ca285a8 exist on main with the stated subjects; hourly delta cron `37 * * * *`; 16 points measured 2026-07-31 at src/mirror.ts:80; '1,415 to ~15' is 3f9285a's own subject line; DeltaIo default is the live trio with the sole caller (scripts/sync-delta.ts) unchanged; stale 'weekly'/'~610' comments genuinely remain in src/mirror.ts:1075/1108 and scripts/sync-delta.ts:17 and the body discloses them. No false statement remains.",
+  "resolved": [
+    "B.must_fix[2]: efcd8d6 replaced by 3f9285a (#57) in commit message, REPORT evidence table and PR body; efcd8d6 confirmed not an ancestor of main, 3f9285a confirmed an ancestor; string 'efcd8d6' absent from the patch",
+    "B.must_fix[3]: PR body says mirror-sync.yml runs `17 */6 * * *` (every 6h) and that this differs from the issue's weekly proposal; 'as proposed here' removed; new test header and newSeen assertion message say 'every 6h'",
+    "B.must_fix[4]: deliverable is a PR body carrying `Closes #1` (also in the commit trailer); local-check line is `deno install --frozen && npm test`",
+    "A.nit: 'weekly' wording in REPORT and pasted text corrected",
+    "A.nit: #3 (depends-on) state verified live -- Closed by PR #144, matching the PR body",
+    "Code claims re-verified on fresh clone: git am clean, 11/11 targeted tests, npm test 360/353/7 (same 7 env-only failures as main 355/348/7), deno check only pre-existing dolt-server.ts:221, cursor mutation fails 5/5"
+  ],
+  "still_open": [
+    "B.must_fix[1] (claim #1) is a process step that cannot be done from a patch; it is correctly and explicitly deferred to the owner checklist with the pr-claim.yml fail-closed consequence spelled out. #1 remains unclaimed on GitHub as of this check (Open, no assignee/label/comments).",
+    "CI (`deno install --frozen && npm test`, vars/drift, pr-claim) has not run; sandbox cannot install deps. Touched files typecheck clean; the report says so."
+  ],
+  "owner_actions": [
+    "Dispatch claim-ticket.yml in bounded-systems/.github for front-desk-scheduler#1 with your claimant, then confirm the claim comment appears on #1 (pr-claim.yml fails closed otherwise).",
+    "Push branch claude/burndown-fds-1 (or `git am` the patch onto main) and open the PR against main with the 'Ready-to-paste PR body' from REPORT.md; do not close #1 by hand.",
+    "Let CI be the green gate (deno install --frozen, npm test, vars/drift, pr-claim).",
+    "Optional follow-up: fix the stale 'weekly'/'~610'/'1,314' wording in src/mirror.ts:1075/1108, scripts/sync-delta.ts:6/17 and mirror-sync-delta.yml:6 (disclosed in the PR body, deliberately out of scope)."
+  ]
+}

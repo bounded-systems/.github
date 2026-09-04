@@ -1,0 +1,21 @@
+{
+  "id": "synoptic-4",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Fresh clone of bounded-systems/synoptic main (be917d0) into /tmp/final/synoptic-4; both patches `git am` cleanly in order (bc29765 feat, ea71380 chore). Patch 1 is byte-identical to the commit verdicts A/B verified (git diff of be917d0..HEAD in both clones is identical), so the prior correctness/scope findings carry over; patch 2 adds only tokens/brands/webfont-demo/OFL.txt (55 lines: the Poppins copyright header matching name-table nameID 0, a note that the embedded WOFF is a basic-Latin subset / Modified Version, and the full SIL OFL 1.1 text). Re-ran the prior verifiers' checks with their real-deps harness (verbspec 0.3.1 source + zod 4.4.3 from disk, harness deno.json + node_modules placed in tokens/ for the run and restored afterwards, tree clean): `deno check` on every non-network .ts exit 0; check.ts for burnt-orange->mock-orange, deep-blue->mock-blue, webfont-demo->mock-webfont each report drift ✓ · audit ✓ · cvd ✓ exit 0; audit rule 5 rejects a hand-written `font-family: Arial` (exit 1); `font: \"Helvetica\"` rejected (must end in a generic); https src rejected; weight [100,900] accepted; \"Helvetica Neue\" quoted correctly; existing brands' style.css only contain `font-family: var(--font-sans)`; mock-webfont has the single @font-face + `--font-sans: Poppins, system-ui, sans-serif`; fixture decodes to a 5972-byte wOFF; deno lint on the 7 touched files: 5 problems (same as main); font.ts contains the gen-font.ts template block. Issue #4 (WebFetch) is still open, no assignees/labels/claim, and commit 1 carries `Closes #4`, so the process item stands and is correctly deferred to the owner. Both prior must_fix items are addressed: (1) the OFL notice now ships and the false 'license travels in the name table' claim is gone from REPORT.md and the ready-to-paste comment (which now says the name table holds only the copyright string); (2) the claim-before-PR requirement is called out explicitly in the comment and in a 'Before merging (owner)' checklist. The lint-count nit is corrected to 5 mixed findings. No false statement remains in the ready-to-paste comment; every factual claim in it reproduced here.",
+  "resolved": [
+    "A+B must_fix: SIL OFL 1.1 notice shipped as tokens/brands/webfont-demo/OFL.txt (commit ea71380) with the Poppins copyright header and a Modified-Version/subset note; REPORT.md and the ready-to-paste comment no longer claim the license text travels in the font's name table.",
+    "B must_fix (comment wording): the ready-to-paste comment now states explicitly that #4 is unclaimed, the commit says `Closes #4`, and pr-claim.yml will fail the PR until the issue is claimed.",
+    "Nit: REPORT.md's deno lint claim corrected to the verified 5 pre-existing problems of mixed kinds.",
+    "Re-verified: both patches apply cleanly on main@be917d0; deno check, all three check.ts gates, audit rule 5, schema negatives, byte-identical existing style.css all reproduce."
+  ],
+  "still_open": [
+    "Nits not acted on (none blocking): audit rule 5 double-reports a direct font-family; FontFace.src regex rejects base64url/whitespace payloads without saying why; deriveFontFamily not exposed as a verbspec verb; 'CSP-clean' assumes `font-src data:` is allowed; the new .refine() on `font` is a minor breaking constraint for out-of-repo brand.json files with a non-generic tail; commit subject uses 'feat(tokens):' vs the repo's bare 'feat:' habit.",
+    "Not verifiable in the sandbox: type-check of gen-*.ts / validate.ts / resolve.test.ts and real jsr.io/npm resolution — CI tokens-check.yml is the authoritative gate (disclosed in the report)."
+  ],
+  "owner_actions": [
+    "Claim issue #4 (dispatch claim-ticket.yml, or assign yourself and comment) BEFORE opening the PR — pr-claim.yml fails a PR whose `Closes #4` names an unclaimed issue; #4 is currently open with no assignee or claim.",
+    "Apply both patches in order (`git checkout -b claude/burndown-synoptic-4 main && git am 000*.patch`), open the PR, and let tokens-check.yml run as the final gate.",
+    "Optional: swap the WOFF fixture for a woff2 subset if smaller bytes are wanted (keep OFL.txt alongside it)."
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "mint-18",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/mint-18/0001-docs-bootstrapping-a-first-release-and-the-tag-creat.patch"
+  ],
+  "verify_passed": true,
+  "summary": "README gains 'First release' (two numbered bootstrap paths + CI variant) and 'Tag creation under rulesets \u2014 the bypass actor' (actor per path: releaser's account vs github-actions[bot]/GITHUB_TOKEN, rejection signature, recovery, --no-push); plus .release pointer, release-cut.yml comment, patch intent; npm test 32/32, scout verify OK. Fix round: subject suffix '(#18)' dropped, sample date -> YYYY-MM-DD placeholder; patch regenerated, checks re-run green. Only must_fix (claim #18) is a process item recorded in REPORT 'Before merging (owner)'.",
+  "unresolved": [
+    "PROCESS (verdict-B must_fix): issue #18 must be claimed (claim-ticket.yml or assign+comment) before the PR is opened, or the pr-claim check fails on `Fixes #18`; no GitHub credentials in sandbox.",
+    "Ruleset bypass behaviour not reproducible in sandbox; README hedges whether the Actions identity can be listed as a bypass actor \u2014 org admin to confirm.",
+    "Patch intent .release/first-release-docs.md is optional; drop if maintainers treat this as mint's own plumbing (cf. 6cae138)."
+  ]
+}

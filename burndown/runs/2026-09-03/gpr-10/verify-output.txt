@@ -1,0 +1,99 @@
+$ deno fmt --check
+Checked 31 files
+exit=0
+$ deno lint --config '{}' window-meter.ts window-meter_test.ts budget-check.ts budget-check_test.ts prioritization.ts   (deno lint under the repo deno.json resolves the exports graph and needs jsr.io/npm — blocked in sandbox; bare config = same default rule set)
+Checked 5 files
+exit=0
+$ deno check contract.ts prioritization.ts window-meter.ts budget-check.ts board-inputs.ts + the 3 test files  (import map vendors @std/assert from github.com/denoland/std; full `deno task check` needs jsr.io/npm — blocked)
+Check file:///tmp/work/gpr-10/gh-project-room/contract.ts
+Check file:///tmp/work/gpr-10/gh-project-room/prioritization.ts
+Check file:///tmp/work/gpr-10/gh-project-room/window-meter.ts
+Check file:///tmp/work/gpr-10/gh-project-room/budget-check.ts
+Check file:///tmp/work/gpr-10/gh-project-room/board-inputs.ts
+Check file:///tmp/work/gpr-10/gh-project-room/window-meter_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/budget-check_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/prioritization_test.ts
+exit=0
+$ deno test window-meter_test.ts --filter window   (scout verify_command step)
+Check file:///tmp/work/gpr-10/gh-project-room/window-meter_test.ts
+running 5 tests from ./window-meter_test.ts
+windowStart: rolling is now minus the duration ... ok (0ms)
+windowStart: calendar snaps to the last boundary from the anchor ... ok (0ms)
+consumedPoints: rolling window accumulates, then slides samples out ... ok (0ms)
+consumedPoints: calendar window accumulates and resets at the boundary ... ok (0ms)
+meterBudget: feeds the windowed burn into planCapacity ... ok (0ms)
+
+ok | 5 passed | 0 failed | 3 filtered out (4ms)
+
+exit=0
+$ deno test <all network-free test files>   (full `deno task test` needs npm zod / MCP SDK for verbs/webhook/health tests — blocked in sandbox)
+Check file:///tmp/work/gpr-10/gh-project-room/window-meter_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/budget-check_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/prioritization_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/board-inputs_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/contract-guard_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/traceability-check_test.ts
+Check file:///tmp/work/gpr-10/gh-project-room/reads_test.ts
+running 8 tests from ./window-meter_test.ts
+windowStart: rolling is now minus the duration ... ok (0ms)
+windowStart: calendar snaps to the last boundary from the anchor ... ok (0ms)
+consumedPoints: rolling window accumulates, then slides samples out ... ok (0ms)
+consumedPoints: calendar window accumulates and resets at the boundary ... ok (0ms)
+consumedPoints: future samples never count, order is irrelevant ... ok (0ms)
+consumedPoints: empty ledger is zero burn ... ok (0ms)
+unitsToPoints: inverse of the budget's conversion ... ok (0ms)
+meterBudget: feeds the windowed burn into planCapacity ... ok (0ms)
+running 5 tests from ./budget-check_test.ts
+evaluate: no ledger fails open — only the static envelope is enforced ... ok (0ms)
+evaluate: metered burn inside the window closes the gate ... ok (0ms)
+evaluate: calendar burn resets at the weekly boundary ... ok (0ms)
+evaluate: unknown budget fails open regardless of ledger ... ok (0ms)
+parseLedger: points, units (via conversion), ISO timestamps; junk skipped ... ok (0ms)
+running 7 tests from ./prioritization_test.ts
+score: ineligible items always score 0 ... ok (0ms)
+score: estimated path is unchanged when Effort or Value is set ... ok (0ms)
+score: #60 fallback — no longer collapses to a constant across Kinds ... ok (0ms)
+score: #60 fallback — unblocks still carries its normal weight ... ok (0ms)
+score: #60 fallback — age nudges score up, capped ... ok (0ms)
+score: #60 fallback never fires once value or effort is nonzero, even at 0 age ... ok (0ms)
+isEligible: open/in_progress with no open blockers only ... ok (0ms)
+running 4 tests from ./board-inputs_test.ts
+parseDependsOn: extracts #N references, tolerates null ... ok (0ms)
+statusToBeadState: maps Projects Status to BeadState ... ok (0ms)
+boardItemsToInputs: preserves order and defaults kind to task ... ok (0ms)
+boardItemsToInputs: computes openBlockers and unblocks from deps ... ok (0ms)
+running 5 tests from ./contract-guard_test.ts
+stale when contract.ts blob differs between running commit and main ... ok (1ms)
+NOT stale when the blob is identical (main advanced but contract unchanged) ... ok (0ms)
+fail-open: no running SHA (local run) → not stale ... ok (0ms)
+fail-open: no token → not stale ... ok (0ms)
+fail-open: API error resolving a blob → not stale (never blocks on uncertainty) ... ok (0ms)
+running 4 tests from ./traceability-check_test.ts
+evaluateTraceability: 0 closing issues passes (off-roadmap report, not a gate) ... ok (0ms)
+evaluateTraceability: 1 closing issue passes (ideal) ... ok (0ms)
+evaluateTraceability: 2 closing issues blocks ... ok (0ms)
+evaluateTraceability: >2 closing issues blocks, no exemption ... ok (0ms)
+running 1 test from ./reads_test.ts
+directReads: implements the whole BoardReads port ... ok (0ms)
+
+ok | 34 passed | 0 failed (421ms)
+
+exit=0
+$ deno run --allow-read budget-check.ts --budget rolling-5h --about-to-spend 1 --ledger ledger.json   (ledger: 5 pts + 4.5 pts within last hour, 99 pts in 2020)
+budget "rolling-5h" exhausted: 10.5/10 pts (5h window) — blocking new agent work until reset
+exit=1
+$ deno run --allow-read budget-check.ts --budget weekly --about-to-spend 1 --ledger ledger.json
+budget "weekly" healthy (10.5/40 pts)
+exit=0
+$ deno run budget-check.ts --budget rolling-5h --about-to-spend 1   (no ledger: unchanged fail-open behaviour)
+window burn unmetered (no --ledger) — consumedPoints=0, enforcing the static envelope only (warn)
+budget "rolling-5h" healthy (1/10 pts)
+exit=0
+$ deno task check
+error: Failed caching npm package 'etag@1.8.1'
+
+exit=1
+$ deno task test
+error: Failed caching npm package 'content-type@1.0.5'
+
+exit=1

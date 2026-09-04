@@ -1,0 +1,29 @@
+# fix round — 2026-09-03T11:46:48Z — fresh clone /tmp/fix/conformance-25/conformance, git am, fixes amended into 3206446
+$ deno fmt --check scripts/audit/ && deno lint scripts/audit/ && deno check scripts/audit/*.ts
+Checked 6 files
+Checked 4 files
+$ deno test --no-npm --node-modules-dir=none --allow-read scripts/audit/
+
+ok | 13 passed | 0 failed (10ms)
+
+$ PATH=fake-gh deno run ... scripts/audit/release-tags.ts
+
+=== release-tag bypass audit (report-only) — 4 repos, release identity: any ===
+
+| repo | mint-released | tag creation restricted | release-identity bypass | verdict | evidence |
+| --- | :-: | :-: | :-: | :-: | --- |
+| docs-site | no | - | n/a | SKIP | no v* tag-triggered workflow / .release/ |
+| drift-gate | yes | yes | unknown | UNKNOWN | .github/workflows/publish-jsr.yml (on: push: tags: v*); enterprise ruleset "Restrict tag creation" (#9001, bounded): restricts creation; bypass_actors NOT VISIBLE to this token; organization ruleset "release-tags" (#42, bounded-systems): restricts creation; release-identity bypass via Integration#15368(always) |
+| guest-room | yes | no | n/a | PASS | .github/workflows/release.yml (on: push: tags: v*); no tag rulesets apply |
+| mint | yes | yes | no | FAIL | .release/ (mint intents); .github/workflows/release.yml (on: push: tags: v*); enterprise ruleset "Restrict tag creation" (#9001, bounded): restricts creation; NO release-identity bypass (actors: none) |
+
+Summary: PASS=1 FAIL=1 UNKNOWN=1 SKIP=1 (mint-released: 3)
+UNKNOWN = the restricting ruleset's bypass_actors are not visible to GH_TOKEN; rerun with an org-admin (or enterprise-owner) token.
+Report-only: exit 0.
+$ ... --strict --release-actor=github-actions
+--strict: 1 violations.
+exit=1
+$ python3 yaml parse release-tags-audit.yml
+jobs: ['pr', 'org'] | pr.if: ${{ github.event_name == 'pull_request' }} | org.if: ${{ github.event_name != 'pull_request' }} | app-token step in pr job: False
+$ git am onto fresh clone
+Applying: audit: release-tag bypass check for mint-released repos (#25) -> clean

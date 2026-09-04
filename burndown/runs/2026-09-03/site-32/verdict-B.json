@@ -1,0 +1,27 @@
+{
+  "id": "site-32",
+  "lens": "SCOPE + MERGEABILITY",
+  "refuted": false,
+  "confidence": "high",
+  "reason": "Both patches apply cleanly with `git am` onto fresh clones of the current mains (site 0ede7fd, bounded.tools 6c7299c) and touch only README.md in each repo. Everything in the site diff maps to the issue body (README note stating which repo is which, canonical clone path, local rename guidance, re-clone advice) or to its root cause (the Setup block cloning bounded.tools.git); the only slight widening is dropping the dead `--recurse-submodules`/`git submodule update` lines from the same block, which is defensible since the block was being rewritten and .gitmodules was removed in #137. No rename is executed; the proposal is explicitly marked not-executed, matching the task. Repo conventions hold: there is no CONTRIBUTING/AGENTS file; CLAUDE.md is the org harness block (claim-before-work, no cross-repo in degraded mode) and the worker correctly flagged both the unclaimed issue and the second-repo PR as unresolved rather than pretending; commit subjects use the `type(scope): ...` style seen in history; `Fixes #32` is accepted by the org's _pr-claim.yml regex (close|fix|resolve). No CI gate reads README.md (check-repetition reads content/pages and blog only; grep of scripts/, build.mjs, flake.nix, workflows finds no README consumer), so the change cannot trip a gate. Every factual claim in the new prose and the proposed GitHub comment checks out against the repos: bounded-tools-site is the package.json/wrangler/flake pname/GHCR name; brand became an npm dep in #137 (6ad8478, deleted .gitmodules); bounded.tools first commit 765fc64 is the prx receiver scaffold and wrangler.jsonc routes hooks.bounded.tools; the scout verify greps pass against the patched READMEs. The remaining mergeability blockers are procedural, not defects in the patch: the issue must be claimed (assignee or `claimed` label) before pr-claim goes green, and the bounded.tools commit needs its own PR. One content wart a maintainer may push back on: the new Setup line says '(no submodules to init)' while the untouched section directly above still says brand/ is a git submodule, so the README now contradicts itself explicitly on one page; the worker disclosed this as deliberate scoping.",
+  "evidence": [
+    "cd /tmp/verify/site-32-B/site && git am site-0001-readme-naming.patch -> applied on 0ede7fd as 3463d9b; git diff --stat: README.md | 50 (+46/-4) only",
+    "cd /tmp/verify/site-32-B/bounded.tools && git am bounded.tools-0002-*.patch -> applied on 6c7299c as 472c375; README.md | 9 (+9) only",
+    "Issue #32 body (WebFetch): asks for local dir rename to site/, a README note with canonical clone path, re-clone advice; state open, no labels, no assignees",
+    "site CLAUDE.md: org harness block only (claim-ticket.yml before work; degraded mode = this repo only, no cross-repo); no CONTRIBUTING*/AGENTS*/PULL_REQUEST_TEMPLATE in either repo",
+    ".github/.github/workflows/_pr-claim.yml@bc4cb7d regex '(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \\t]+#([0-9]+)' accepts 'Fixes #32'; check requires the issue to carry an assignee or `claimed` label (currently none)",
+    "grep -rn README scripts build.mjs flake.nix .github/workflows package.json -> only a comment in scripts/legibility/coldread.mjs:240; scripts/check-repetition.mjs:22 reads content/pages/*.md and blog/*.md only",
+    "package.json:2 name bounded-tools-site; wrangler.jsonc:5 name bounded-tools-site; flake.nix:32 pname; deploy.yml:69 GHCR_REPO ghcr.io/bounded-systems/bounded-tools-site",
+    "git log --diff-filter=D -- .gitmodules -> 6ad8478 'feat: replace brand git submodule with @bounded-systems/brand npm dependency (#137)'; package.json:39 @bounded-systems/brand ^2.0.0; build.mjs:14-20 brand/ or node_modules fallback",
+    "bounded.tools: git log --reverse -> 765fc64 2026-06-04 'chore: scaffold bounded.tools — GitHub App receiver stub for prx'; wrangler.jsonc:39 pattern hooks.bounded.tools",
+    "Scout verify greps run against patched READMEs -> VERIFY_OK",
+    "Patched site README.md:50 still says '`brand/` is a **git submodule**' and :131/:163-164 reference the submodule pointer, while :75 says 'npm install # pulls @bounded-systems/brand (no submodules to init)'"
+  ],
+  "must_fix": [],
+  "nits": [
+    "The Setup line '(no submodules to init)' now sits 25 lines below a section asserting brand/ is a git submodule; either drop the parenthetical or fix the stale submodule prose in the same PR (or open the follow-up issue before this merges and link it from the PR).",
+    "The site commit uses 'Fixes #32', which will close the issue on squash-merge while the bounded.tools half of the verify criterion is still an unmerged separate PR; consider 'Claim-issue: bounded-systems/site#32' on the site PR and closing manually after both land, or say so in the PR body.",
+    "pr-claim will be red until the issue is claimed (assignee or `claimed` label); the REPORT says this but the proposed GitHub comment does not.",
+    "Commit messages carry a 'Claude-Session:' trailer not seen elsewhere in either repo's history; harmless but nonstandard for these repos."
+  ]
+}

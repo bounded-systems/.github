@@ -1,0 +1,16 @@
+{
+  "id": "dev-contracts-2",
+  "done": false,
+  "partial": true,
+  "patch_files": [],
+  "verify_passed": false,
+  "summary": "No patch. The original commit (.trunk/.gitignore + trunk.yaml lint.ignore + contracts.toml entry) was withdrawn after review: .trunk/.gitignore re-added a file the maintainer deleted in fe6d335 and duplicated the generated root .gitignore, and the lint.ignore block was an unverifiable no-op (the alerts came from GitHub scanning committed blobs, not trunk check; the paths are already gitignored). main @ 3f1d3e2 is clean of key material and already ignores .trunk/plugins/. All three acceptance criteria of issue #2 need a maintainer: dismiss the 2 alerts as 'Used in tests' (security_events), record the history-scrub decision, and scope the broader rework in its own issue.",
+  "unresolved": [
+    "Dismiss the 2 secret-scanning alerts as 'Used in tests' (needs GitHub security_events credentials)",
+    "History scrub decision (issue says 'declined currently'; maintainer should record the final decision on #2)",
+    "Broader dev-contracts rework is unspecified in the issue; mise.toml still references non-existent tools/, templates/, runtimes/ trees; needs its own scoped issue",
+    "trunk check could not be executed in sandbox (trunk.io blocked); nothing to verify with it since the diff is empty",
+    "Repo deno CI could not run here (registry.npmjs.org blocked); fails identically on main; no code changed",
+    "Issue not claimed via claim-ticket.yml (no credentials); any future PR must use 'Claim-issue: bounded-systems/dev-contracts#2', not 'Closes #2'"
+  ]
+}

@@ -1,0 +1,106 @@
+From f259ab0e288338ffed83cb11031c9c0bbb163a13 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:07:57 +0000
+Subject: [PATCH] =?UTF-8?q?docs(readme):=20say=20which=20repo=20this=20is?=
+ =?UTF-8?q?=20=E2=80=94=20site,=20not=20bounded.tools=20(#32)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Setup block still told people to clone bounded.tools.git, which is why
+checkouts of this repo end up in a directory named bounded.tools/ while a
+separate, unrelated bounded-systems/bounded.tools repo (the prx receiver
+Worker at hooks.bounded.tools) exists. Add a Naming section that states
+which repo is which and why, cites the other by URL, gives the local-dir
+fix (mv bounded.tools site; origin is the source of truth), and records
+the rename proposal without executing it. Fix the clone URL and drop the
+submodule steps the clone block still carried (brand has been an npm
+dependency since #137).
+
+Fixes #32
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ README.md | 50 ++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 46 insertions(+), 4 deletions(-)
+
+diff --git a/README.md b/README.md
+index 506da09..bf07271 100644
+--- a/README.md
++++ b/README.md
+@@ -7,6 +7,44 @@ design system.
+ > Design fidelity reference lives in the design project as `bounded.tools.dc.html`.
+ > This repo is the productionized, deployable version.
+ 
++## Naming: `site` vs `bounded.tools`
++
++Two different repos share the "bounded.tools" name, and it is easy to land in
++the wrong one:
++
++- **This repo is [`bounded-systems/site`][site-repo]** — the static website
++  served at <https://bounded.tools>. Its identifier everywhere it matters is
++  `bounded-tools-site` (`package.json` name, the Worker name in
++  `wrangler.jsonc`, the flake `pname`, the GHCR image
++  `ghcr.io/bounded-systems/bounded-tools-site`). The title above is the
++  *product* (the domain), not the repo.
++- **[`bounded-systems/bounded.tools`][hooks-repo] is not the website.** It is
++  a separate, unrelated project: the GitHub App receiver for `prx`, a
++  TypeScript Cloudflare Worker deployed at `hooks.bounded.tools`. It does not
++  build, contain, or deploy this site.
++
++The trap: an earlier version of this README told people to clone
++`bounded.tools.git`, so a local checkout of *this* repo often lives in a
++directory literally named `…/bounded-systems/bounded.tools/` while its
++`origin` points at `site.git`. Anything that keys on the directory name — a
++human, a script, an agent — then resolves to the wrong GitHub repo.
++
++- The directory name is never the source of truth; `git remote get-url origin`
++  is.
++- The canonical local path is `…/bounded-systems/site/`. If you have a stale
++  checkout, `mv bounded.tools site` (or re-clone per **Setup** below) — nothing
++  in the build depends on the directory name.
++
++**Proposed rename (not executed):** neither GitHub repo should be renamed to
++fix this. `site` is what everything deploy-side is wired to under the
++`bounded-tools-site` name, and `bounded.tools` is a live Worker on
++`hooks.bounded.tools`. Renaming either buys little and risks a deploy. If a
++maintainer later wants the collision gone at the GitHub level, the
++least-disruptive option is renaming `bounded-systems/bounded.tools` to
++something that says what it is (e.g. `prx-receiver`; GitHub keeps redirects
++for renamed repos), *not* renaming `site`. Until then, the two READMEs
++cross-link and local clones are named `site/`. Tracked in [#32][issue-32].
++
+ ## How it consumes the brand
+ 
+ `brand/` is a **git submodule** pinned to a commit of [`bounded-systems/brand`][brand].
+@@ -32,12 +70,13 @@ from brand tokens on purpose.
+ ## Setup
+ 
+ ```bash
+-git clone --recurse-submodules https://github.com/bounded-systems/bounded.tools.git
+-cd bounded.tools
+-# already cloned without --recurse-submodules?
+-git submodule update --init --recursive
++git clone https://github.com/bounded-systems/site.git
++cd site
++npm install   # pulls @bounded-systems/brand
+ ```
+ 
++Not `bounded.tools.git` — that is a different repo (see **Naming** above).
++
+ ## Build & preview
+ 
+ ```bash
+@@ -132,5 +171,8 @@ stay aligned.
+ - [ ] Confirm the colophon copy / links read the way you want
+ 
+ [brand]: https://github.com/bounded-systems/brand
++[site-repo]: https://github.com/bounded-systems/site
++[hooks-repo]: https://github.com/bounded-systems/bounded.tools
++[issue-32]: https://github.com/bounded-systems/site/issues/32
+ [seed]: data/seams.json
+ [synoptic]: https://github.com/bdelanghe/synoptic-github
+-- 
+2.43.0
+

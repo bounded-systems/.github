@@ -1,0 +1,87 @@
+From 1ab2c6aa1b1f428f2410f340e21a33944308f1be Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 3 Sep 2026 03:13:56 +0000
+Subject: [PATCH 3/3] chore: lock the drift-gate + guest-room inputs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+flake.nix has declared `drift-gate` and `guest-room` since the
+descriptor-honesty edge landed (#29), but flake.lock never gained entries
+for them, so every `nix flake check` / status build silently locked them
+at whatever upstream HEAD was that day. With contract-check now a
+blocking gate that would make its result depend on unpinned repos — pin
+them like every other input (descriptor-honesty passes at these revs).
+
+Entries computed the same validated way as the re-pin commit; `nix flake
+lock` regenerates them identically.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVjvRP7P9oSiX3uhjK1xsz
+---
+ flake.lock | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/flake.lock b/flake.lock
+index 395d8b4..a55a6a5 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -80,6 +80,22 @@
+         "type": "github"
+       }
+     },
++    "drift-gate": {
++      "flake": false,
++      "locked": {
++        "lastModified": 1788300497,
++        "narHash": "sha256-tOLdlu/xXXsYfPWJO/MO2N3ApjDpvfXWOCZyTigBefg=",
++        "owner": "bounded-systems",
++        "repo": "drift-gate",
++        "rev": "af65beaccdb595cb2f75d693e37a25c4f37c816d",
++        "type": "github"
++      },
++      "original": {
++        "owner": "bounded-systems",
++        "repo": "drift-gate",
++        "type": "github"
++      }
++    },
+     "fs": {
+       "flake": false,
+       "locked": {
+@@ -96,6 +112,22 @@
+         "type": "github"
+       }
+     },
++    "guest-room": {
++      "flake": false,
++      "locked": {
++        "lastModified": 1788300396,
++        "narHash": "sha256-SSvu2Iwsp4eKqbUgbik4goYoCHu3Oy4lcfs+7oXDP8k=",
++        "owner": "bounded-systems",
++        "repo": "guest-room",
++        "rev": "e6c38969dba77bb2839b1b7b04c9968a6df1aa57",
++        "type": "github"
++      },
++      "original": {
++        "owner": "bounded-systems",
++        "repo": "guest-room",
++        "type": "github"
++      }
++    },
+     "keeper-wire": {
+       "flake": false,
+       "locked": {
+@@ -135,7 +167,9 @@
+         "door-keeper": "door-keeper",
+         "door-kit": "door-kit",
+         "door-scout": "door-scout",
++        "drift-gate": "drift-gate",
+         "fs": "fs",
++        "guest-room": "guest-room",
+         "keeper-wire": "keeper-wire",
+         "nixpkgs": "nixpkgs",
+         "scout-wire": "scout-wire",
+-- 
+2.43.0
+

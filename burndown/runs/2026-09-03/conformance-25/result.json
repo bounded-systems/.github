@@ -1,0 +1,17 @@
+{
+  "id": "conformance-25",
+  "done": true,
+  "patch_files": [
+    "/home/claude/burndown/out/conformance-25/0001-audit-release-tag-bypass-check-for-mint-released-rep.patch"
+  ],
+  "verify_passed": true,
+  "summary": "Added scripts/audit/release-tags.ts (+lib, 13 fixture unit tests, workflow, README, deno tasks): per-repo PASS/FAIL/UNKNOWN/SKIP table with evidence for mint-released repos vs refs/tags/* creation rulesets. Fix round: workflow split into a github.token-only `pr` job and a schedule/dispatch `org` job that alone mints the org-admin App token; commit carries `Closes #25`; binaries.yml reference dropped, test task renamed test:audit, v* trigger regex tightened, pipefail explicit. fmt/lint/check/tests pass, runner proven against an offline gh shim \u2014 live org run and issue claim need org credentials (owner checklist in REPORT.md).",
+  "unresolved": [
+    "PROCESS (owner): issue #25 not claimed via claim-ticket.yml / org-repair.sh not run (need org credentials); required pr-claim check stays red until claimed. Commit already carries `Closes #25`.",
+    "Live org findings not produced: no GitHub credentials / api.github.com blocked in sandbox; owner must run GH_TOKEN=<org-admin App token> deno task audit:release-tags (enterprise-level ruleset bypass_actors may still read as UNKNOWN without enterprise-owner scope).",
+    "Release identity is passed as --release-actor (default: any `always` bypass actor) because trellis#34 has not settled where a repo declares it.",
+    "Workflow is report-only; promote to audit:release-tags:strict once the live baseline is clean (issue says 'caught by the gate').",
+    "cspell not runnable offline (npm blocked); new tokens reviewed by hand (fnmatch added, fixtures ignored)."
+  ],
+  "partial": true
+}
