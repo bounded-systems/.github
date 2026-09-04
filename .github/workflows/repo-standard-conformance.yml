@@ -137,17 +137,20 @@ jobs:
               -f ref="refs/heads/$b" -f sha="$GITHUB_SHA" >/dev/null
           fi
           stamp="$(jq -r .generated_at /tmp/repo-standard-conformance.json)"
-          gh api graphql \
-            -f query='mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) {
-              createCommitOnBranch(input: {
-                branch: { repositoryNameWithOwner: $repo, branchName: $b },
-                expectedHeadOid: $head,
-                message: { headline: $msg },
-                fileChanges: { additions: [ { path: "repo-standard-conformance.json", contents: $c } ] }
-              }) { commit { oid } } }' \
-            -f repo="$GITHUB_REPOSITORY" -f b="$b" -f head="$GITHUB_SHA" \
-            -f msg="repo-standard conformance $stamp" \
-            -f c="$(base64 -w0 /tmp/repo-standard-conformance.json)" \
+          # THE PAYLOAD NEVER TOUCHES ARGV (#384). The first run died right here
+          # with "Argument list too long": ninety pretty-printed rows of base64
+          # exceed Linux's per-argument limit, which the pin job's few-KB payload
+          # this was copied from never approached. So the whole GraphQL request
+          # body is built by jq from a file and handed to gh as a file; nothing
+          # about the snapshot's size can reach the command line.
+          base64 -w0 /tmp/repo-standard-conformance.json > /tmp/snapshot.b64
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg b "$b" --arg head "$GITHUB_SHA" \
+                --arg msg "repo-standard conformance $stamp" --rawfile c /tmp/snapshot.b64 '
+            {
+              query: "mutation($repo: String!, $b: String!, $head: GitObjectID!, $msg: String!, $c: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repo, branchName: $b }, expectedHeadOid: $head, message: { headline: $msg }, fileChanges: { additions: [ { path: \"repo-standard-conformance.json\", contents: $c } ] } }) { commit { oid } } }",
+              variables: { repo: $repo, b: $b, head: $head, msg: $msg, c: $c }
+            }' > /tmp/publish.json
+          gh api graphql --input /tmp/publish.json \
             --jq '"published " + .data.createCommitOnBranch.commit.oid'
           {
             echo ""
