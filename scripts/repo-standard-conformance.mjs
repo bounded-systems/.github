@@ -63,6 +63,7 @@ export const ORG_MANAGED = new Map([
   ["claim-sweep.yml", "_claim-sweep.yml (this repo)"],
   ["version.yml", "mint version.yml"],
   ["dependabot-auto-merge.yml", ".github-private docs/handoffs/dependabot-auto-merge.yml"],
+  ["auto-merge.yml", "_auto-merge.yml (this repo)"],
   ["lease-key-rotation.yml", ".github-private docs/handoffs/lease-key-rotation.yml"],
   ["gate.yml", ".github-private docs/handoffs/gate.yml"],
 ]);

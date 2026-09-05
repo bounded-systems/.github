@@ -263,3 +263,29 @@ test("_labels: apply and prune default false, strict defaults true", () => {
     );
   }
 });
+
+// ── _auto-merge holds contents:write only through the broker, and never fetches the PR ──
+//
+// The arming lane (.github#386) is called from every gated repo on every PR. Three
+// properties make that safe, and each is one line that fails silently if it moves:
+//   - it is `pull_request`-shaped and never `pull_request_target` — the PR's code gets no
+//     write token and no run in the base repo's context;
+//   - it checks nothing out — nothing from the PR is fetched or executed;
+//   - its only write identity is the broker door `pr-arm`, asserted for both scopes it
+//     uses, so a caller that forgets `id-token: write` fails at the mint naming the gap.
+// Asserted structurally, from the file.
+test("_auto-merge: broker-minted identity, no checkout, never pull_request_target", () => {
+  // Comments are stripped first: the header NAMES pull_request_target to say never.
+  const src = readFileSync(join(DIR, "_auto-merge.yml"), "utf8")
+    .split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  assert.doesNotMatch(src, /pull_request_target/, "_auto-merge must never run in the base repo's context on a fork PR");
+  assert.doesNotMatch(src, /actions\/checkout/, "_auto-merge must not fetch the PR (or anything)");
+  assert.match(src, /uses: bounded-systems\/\.github\/\.github\/actions\/broker-gh-token@[0-9a-f]{40}/, "the broker action is SHA-pinned");
+  assert.match(src, /app: pr-arm/, "the door is pr-arm");
+  assert.match(src, /require: contents, pull_requests/, "both scopes the job uses are asserted at mint");
+  assert.match(src, /id-token: write/, "the job declares the OIDC grant it needs from its caller");
+  // The only token that arms is the minted one — GITHUB_TOKEN reads the rules and nothing more.
+  const armStep = src.slice(src.indexOf("name: Arm auto-merge"));
+  assert.match(armStep, /GH_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/, "the arm step uses the minted token");
+  assert.doesNotMatch(armStep, /github\.token/, "the arm step never falls back to GITHUB_TOKEN");
+});
