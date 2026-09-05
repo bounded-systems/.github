@@ -1,0 +1,160 @@
+name: _auto-merge
+
+# THE arming lane: ask GitHub to merge a pull request the moment its required
+# checks pass. One implementation; every repo is a caller. `.github`#386,
+# step 3 of `.github-private`#913.
+#
+# WHAT IT DOES, in one sentence: on a non-draft PR in a repo whose default
+# branch has a required status check, it enables auto-merge (squash) under an
+# App identity minted through the OIDC broker — and if the PR is already clean
+# it merges it there and then, because "wait for the blockers" has nothing to
+# wait for.
+#
+# WHAT IT DOES NOT DO. It merges nothing that the repo's own rules would
+# refuse. Auto-merge is GitHub's, not this file's: the merge happens only when
+# every required check is green and every ruleset is satisfied, and the
+# `required-baseline` ruleset makes `pr-claim / pr-claim` required org-wide —
+# so an unclaimed PR is armed and never merges. "CI is the only gate" is a
+# statement about which checks are required, and this lane changes none of them.
+#
+# WHY AN APP IDENTITY AND NOT THE WORKFLOW'S GITHUB_TOKEN. Two reasons, both
+# measured elsewhere rather than argued here:
+#   1. A merge performed under a workflow's GITHUB_TOKEN starts no workflow
+#      runs — GitHub's rule for events that token causes. The org's `push`
+#      lanes on main (publish, version, deploy) must keep firing after an
+#      automated merge or the factory stops at the merge. An App-attributed
+#      merge fires them.
+#   2. The broker pins a door to one `job_workflow_ref`, and under
+#      `workflow_call` that ref is the CALLEE's — so ONE door (`pr-arm`,
+#      infra `cloudflare/broker/doors.json`) covers every repo that calls this
+#      file, with no per-repo entry. `bounded-tools-site-promote` is the
+#      precedent: pinned to `site-deploy.yml@<sha>` in this repo.
+#   The pin is a SHA, so a change to this file is a new door pin (broker-deploy,
+#   Face ID) and a caller re-roll (Face ID). That is the trust model working:
+#   the bytes that hold `contents: write` cannot move without a person.
+#
+# WHAT A FORK PR GETS: nothing. `pull_request` from a fork carries no OIDC
+# identity, so the mint cannot happen and this job says so and exits green. The
+# weekly `pr-sweep` drains a fork PR that goes clean under the gate.
+#
+# NO CHECKOUT, EVER. Nothing from the PR is fetched or executed; the job reads
+# GitHub and calls GitHub. `pull_request`, never `pull_request_target`.
+#
+# WHY NOT `dependabot-auto-merge.yml`'s per-repo GITHUB_TOKEN shape
+# (.github-private docs/handoffs). It read `allow_auto_merge` with a token
+# GitHub does not return that field to, so its precondition was false by
+# construction and its effective set measured EMPTY (2026-08-21). This file
+# does not read the setting at all: it reads the one public fact that matters
+# — is there a required check to wait on — and lets the arm call fail LOUDLY
+# if the repo's `allow_auto_merge` is off, because in a rolled repo that is a
+# real misconfiguration and not an expected state.
+
+on:
+  workflow_call:
+    inputs:
+      merge_method:
+        description: >-
+          squash | merge | rebase. Squash is the only method the org's rulesets
+          accept on main (linear history + signed commits), so callers should
+          leave this alone; it exists so a repo with different rules is not
+          forced into a fork of this file.
+        type: string
+        required: false
+        default: squash
+
+permissions:
+  contents: read
+
+jobs:
+  arm:
+    # A draft is the author saying "not ready" — never armed. A fork PR has no
+    # OIDC identity — see the header; it is skipped here rather than failed at
+    # the mint. Anything that is not a pull_request event has nothing to arm.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC → broker; the caller must grant this
+      contents: read
+    steps:
+      - name: Is this repo gated? (a required check to wait on)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Rules on the default branch are readable by anyone on a public repo
+          # and by the workflow token on a private one. A failed READ must not
+          # read as "no rules": default to `unreadable` and fail closed.
+          rules="$(gh api "repos/$REPO/rules/branches/$DEFAULT_BRANCH" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo unreadable)"
+          echo "required_status_check_rules=$rules"
+          if [ "$rules" = "unreadable" ]; then
+            echo "::error::could not read the rules on $REPO@$DEFAULT_BRANCH — refusing to decide whether to arm"
+            exit 1
+          fi
+          if [ "$rules" -eq 0 ]; then
+            echo "::notice title=not armed::$REPO has no required status check on $DEFAULT_BRANCH, so there is nothing for auto-merge to wait on and GitHub would refuse to arm it. Expected until the repo is in a ci-green-* ruleset. Not a failure."
+            echo "gated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "gated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint the arming identity via the OIDC broker
+        id: app-token
+        if: steps.gate.outputs.gated == 'true'
+        # Same-repo action, pinned by SHA like any other. Not `./` — a callee
+        # has no checkout of its own repo, and this job never checks anything out.
+        uses: bounded-systems/.github/.github/actions/broker-gh-token@b267ca52c70b8b5497e91dd42a8c6c47cce113a1
+        with:
+          app: pr-arm
+          broker-url: ${{ vars.CF_BROKER_URL }}
+          # Both scopes are used below: `pull_requests` to arm, `contents` for
+          # the merge GitHub performs on this identity's behalf.
+          require: contents, pull_requests
+
+      - name: Arm auto-merge — or merge now if there is nothing left to wait on
+        if: steps.gate.outputs.gated == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          METHOD: ${{ inputs.merge_method }}
+        run: |
+          set -euo pipefail
+          case "$METHOD" in
+            squash|merge|rebase) ;;
+            *) echo "::error::merge_method '$METHOD' is not one of squash|merge|rebase"; exit 1 ;;
+          esac
+
+          # Facts first, from the PR itself — never from an error string.
+          state="$(gh pr view "$PR_URL" --json isDraft,mergeStateStatus,autoMergeRequest \
+            --jq '"\(.isDraft) \(.mergeStateStatus) \(if .autoMergeRequest == null then "unarmed" else "armed" end)"')"
+          read -r draft merge_state armed <<< "$state"
+          echo "isDraft=$draft mergeStateStatus=$merge_state autoMerge=$armed"
+
+          if [ "$draft" = "true" ]; then
+            echo "::notice title=not armed::the PR became a draft between the event and this step. Nothing to do."
+            exit 0
+          fi
+          if [ "$armed" = "armed" ]; then
+            echo "::notice title=already armed::auto-merge is already enabled on this PR (a re-push does not re-arm). Nothing to do."
+            exit 0
+          fi
+
+          case "$merge_state" in
+            CLEAN)
+              # Every blocker already cleared — auto-merge would have nothing to
+              # wait on, and GitHub refuses to arm a PR in that state. Merging now
+              # is the same decision at a different moment.
+              gh pr merge "--$METHOD" "$PR_URL"
+              echo "::notice title=merged::all required checks were already green, so the PR was merged now rather than armed."
+              ;;
+            *)
+              gh pr merge --auto "--$METHOD" "$PR_URL"
+              echo "::notice title=auto-merge armed::this PR merges itself the moment its required checks pass. $METHOD — the method the org's rulesets accept."
+              ;;
+          esac
