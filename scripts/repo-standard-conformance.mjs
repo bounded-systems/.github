@@ -236,7 +236,7 @@ export function runtimeExpectation(rootNames, configured) {
  * ({conclusion, url, sha, at} | {unreadable} | null); `fleet` is the per-repo
  * slice of ci.json or null when the feed was unavailable.
  */
-export function classifyRepo({ repo, archived = false, defaultBranch = "main", files, filesError = null, root, rootError = null, run = null, fleet = null, headSha = null, tier = null }) {
+export function classifyRepo({ repo, archived = false, defaultBranch = "main", files, filesError = null, root, rootError = null, run = null, fleet = null, headSha = null, tier = null, rules }) {
   const findings = [];
   const gaps = [];
   const row = { repo: `${ORG}/${repo}`, archived, default_branch: defaultBranch, tier };
@@ -306,6 +306,36 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     if (red) findings.push("standard-run-red");
   }
 
+  // The dark-factory arrangement (.github-private#913 step 4): three facts, all
+  // observed here — what the default branch REQUIRES, whether the org's arming
+  // lane is present, and the conjunction that makes a green PR land unattended.
+  // `allow_auto_merge` is deliberately NOT one of them: GitHub returns it only to
+  // an admin-rights caller and this lane mints nothing; it is declared and applied
+  // in infra github-admin/repositories.tf, and this row does not guess at it.
+  // `rules` not passed at all (the unit surface) means not under measurement —
+  // `dark_factory: null`, no finding, no gap. The sweep always passes it.
+  const basenames = files ? files.map((f) => f.path.split("/").pop()) : null;
+  const arming = basenames ? (basenames.includes("auto-merge.yml") ? "auto-merge.yml" : null) : null;
+  const legacy = basenames ? basenames.includes("dependabot-auto-merge.yml") : null;
+  if (rules === undefined) row.dark_factory = null;
+  else if (!rules.read) {
+    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, legacy_arming: legacy, gate_ready: null };
+    gaps.push(`rules-unreadable:${rules.reason}`);
+  } else {
+    const req = rules.contexts;
+    const gated = req.length > 0;
+    const hasTest = req.includes("standard / test");
+    const hasClaim = req.includes("pr-claim / pr-claim");
+    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, legacy_arming: legacy, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
+    // Green gates nothing: a caller whose contexts nothing on the default branch
+    // requires is the fail-open case #913 names — the check runs and decides nothing.
+    if (row.caller.state === "present" && !gated) findings.push("gate-absent");
+    // Green waits for a person: something is required, and nothing arms the merge.
+    // A legacy dependabot-auto-merge.yml does not count — its precondition is false
+    // by construction (.github-private#929). Unreadable workflows are already a gap.
+    if (gated && basenames && arming === null) findings.push("arming-lane-absent");
+  }
+
   row.fleet = fleet;
   row.findings = findings;
   row.gaps = gaps;
@@ -333,8 +363,17 @@ export function summarize(rows) {
     with_findings: 0,
     findings: 0,
     gaps: 0,
+    // the dark factory: any required check at all · the org arming lane present · both plus the standard required
+    gated: 0,
+    arming_lane: 0,
+    gate_ready: 0,
   };
   for (const r of rows) {
+    if (r.dark_factory) {
+      if (r.dark_factory.required_checks?.length) t.gated++;
+      if (r.dark_factory.arming_lane) t.arming_lane++;
+      if (r.dark_factory.gate_ready === true) t.gate_ready++;
+    }
     t.caller[r.caller.state]++;
     if (r.caller.state === "present" && r.caller.pinned) t.pinned++;
     t.test_lane[r.test_lane]++;
@@ -390,6 +429,7 @@ export function renderSummary(snap, limit = 25) {
   lines.push(`| standard run green / red / other / none / unreadable | ${t.standard_run.green} / ${t.standard_run.red} / ${t.standard_run.other} / ${t.standard_run.none} / ${t.standard_run.unreadable} |`);
   lines.push(`| runtime mismatch (reported) | ${t.runtime_mismatch} |`);
   lines.push(`| repo-specific workflows (reported) | ${t.extra_workflows} |`);
+  lines.push(`| gated / arming lane / dark-factory ready | ${t.gated} / ${t.arming_lane} / ${t.gate_ready} |`);
   lines.push(`| repos with findings | ${t.with_findings} (${t.findings} findings) |`);
   lines.push(`| measurement gaps | ${t.gaps} |`);
   lines.push("");
@@ -455,13 +495,34 @@ export function parseYaml(text) {
   return Bun.YAML.parse(text);
 }
 
+/**
+ * The default branch's rules, reduced to what a PR must satisfy to merge: the
+ * `required_status_checks` contexts and the rulesets that require them. Public
+ * on a public repo, so the lane's own token reads it (#913 step 1 read desk's
+ * this way). Anything but a 200 array is `unreadable` with the status — a
+ * failed read is never an empty gate.
+ */
+export function readRules(res) {
+  if (res.status !== 200 || !Array.isArray(res.body)) return { read: false, reason: `${res.status}` };
+  const contexts = new Set();
+  const rulesets = new Set();
+  for (const rule of res.body) {
+    if (rule?.type !== "required_status_checks") continue;
+    if (rule.ruleset_id != null) rulesets.add(rule.ruleset_id);
+    for (const c of rule.parameters?.required_status_checks ?? []) if (typeof c?.context === "string") contexts.add(c.context);
+  }
+  return { read: true, contexts: [...contexts].sort(), rulesets: [...rulesets].sort((a, b) => a - b) };
+}
+
 async function fetchRepo({ fetchImpl, token, name, defaultBranch, parse, log }) {
   const full = `${ORG}/${name}`;
-  const [wfList, rootList, props] = await Promise.all([
+  const [wfList, rootList, props, rulesRes] = await Promise.all([
     api(fetchImpl, token, `/repos/${full}/contents/.github/workflows?ref=${encodeURIComponent(defaultBranch)}`),
     api(fetchImpl, token, `/repos/${full}/contents/?ref=${encodeURIComponent(defaultBranch)}`),
     api(fetchImpl, token, `/repos/${full}/properties/values`),
+    api(fetchImpl, token, `/repos/${full}/rules/branches/${encodeURIComponent(defaultBranch)}`),
   ]);
+  const rules = readRules(rulesRes);
 
   let files = null;
   let filesError = null;
@@ -507,7 +568,7 @@ async function fetchRepo({ fetchImpl, token, name, defaultBranch, parse, log }) 
   }
 
   log(`  ${full}: caller ${caller.state}${files ? ` (${files.length} workflows)` : ""}`);
-  return { name, files, filesError, root, rootError, run, tier };
+  return { name, files, filesError, root, rootError, run, tier, rules };
 }
 
 export async function fetchFleet(fetchImpl) {

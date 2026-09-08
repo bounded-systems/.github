@@ -33,6 +33,7 @@ import {
   runtimeExpectation,
   summarize,
   sweep,
+  readRules,
 } from "./repo-standard-conformance.mjs";
 
 // ── fixtures: real callers ───────────────────────────────────────────────────
@@ -346,6 +347,101 @@ test("classifyRepo: a workflow that does not parse is recorded on the row, not d
 
 // ── denominator, summary, snapshot ───────────────────────────────────────────
 
+// ── the dark-factory arrangement (.github-private#913 step 4) ────────────────
+
+const RULES_37 = { read: true, contexts: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366] };
+const AUTO_MERGE = `name: auto-merge
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+permissions:
+  contents: read
+jobs:
+  auto-merge:
+    permissions:
+      contents: read
+      id-token: write
+    uses: bounded-systems/.github/.github/workflows/_auto-merge.yml@2cd9ebc0a2543b3ba11dc7673b351a9d1f6c9445
+`;
+const RUST_ROOT = ["Cargo.toml", "lakefile.lean"];
+
+test("readRules: the required contexts and the rulesets that require them; anything but a 200 array is unreadable", () => {
+  const r = readRules({ status: 200, body: [
+    { type: "required_status_checks", ruleset_id: 22333366, parameters: { required_status_checks: [{ context: "standard / test" }] } },
+    { type: "required_status_checks", ruleset_id: 21805316, parameters: { required_status_checks: [{ context: "pr-claim / pr-claim" }] } },
+    { type: "required_signatures", ruleset_id: 1 },
+  ] });
+  assert.deepEqual(r, RULES_37);
+  assert.deepEqual(readRules({ status: 200, body: [] }), { read: true, contexts: [], rulesets: [] });
+  // A failed read is never an empty gate.
+  assert.deepEqual(readRules({ status: 403, body: { message: "no" } }), { read: false, reason: "403" });
+  assert.deepEqual(readRules({ status: 200, body: { not: "an array" } }), { read: false, reason: "200" });
+});
+
+test("classifyRepo: dark factory — the standard and the claim required, and the arming lane present, is gate_ready with no finding", () => {
+  const row = classifyRepo({ repo: "desk", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
+  assert.deepEqual(row.dark_factory, { required_checks: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366], arming_lane: "auto-merge.yml", legacy_arming: false, gate_ready: true });
+  assert.deepEqual(row.findings, []);
+  assert.deepEqual(row.gaps, []);
+  // The caller is org-managed, so it is not counted as extra CI.
+  assert.deepEqual(row.extra, []);
+  assert.ok(row.managed.includes("auto-merge.yml"));
+});
+
+test("classifyRepo: dark factory — gated but unarmed is a finding; a caller nothing requires is the fail-open finding; a legacy armer does not count", () => {
+  const unarmed = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
+  assert.deepEqual(unarmed.findings, ["arming-lane-absent"]);
+  assert.equal(unarmed.dark_factory.gate_ready, false);
+
+  const ungated = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: { read: true, contexts: [], rulesets: [] } });
+  assert.deepEqual(ungated.findings, ["gate-absent"], "green that gates nothing is the fail-open case");
+  assert.equal(ungated.dark_factory.gate_ready, false);
+
+  // No caller and no rules: caller-absent already says it; gate-absent is about a caller whose green decides nothing.
+  const bare = classifyRepo({ repo: "k", files: [], root: [], rules: { read: true, contexts: [], rulesets: [] } });
+  assert.deepEqual(bare.findings, ["caller-absent"]);
+
+  // Only the legacy lane: still unarmed — its precondition is false by construction (.github-private#929).
+  const legacy = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/dependabot-auto-merge.yml", "name: dependabot-auto-merge\non: pull_request\n")], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
+  assert.deepEqual(legacy.findings, ["arming-lane-absent"]);
+  assert.equal(legacy.dark_factory.legacy_arming, true);
+  assert.equal(legacy.dark_factory.arming_lane, null);
+
+  // Gated by something other than the standard (this repo's own `schema`): gated, unarmed, not gate_ready — the standard is not what is required.
+  const schema = classifyRepo({ repo: "dot", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: { read: true, contexts: ["pr-claim / pr-claim", "schema"], rulesets: [1] } });
+  assert.deepEqual(schema.findings, []);
+  assert.equal(schema.dark_factory.gate_ready, false);
+});
+
+test("classifyRepo: dark factory — unreadable rules are a gap with the status, never a finding; not measured at all is null", () => {
+  const unreadable = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: { read: false, reason: "403" } });
+  assert.deepEqual(unreadable.findings, []);
+  assert.deepEqual(unreadable.gaps, ["rules-unreadable:403"]);
+  assert.equal(unreadable.dark_factory.gate_ready, null);
+  assert.equal(unreadable.dark_factory.required_checks, null);
+  // Workflows unreadable AND rules readable: gated, but whether it is armed is unknown — no arming finding on top of the workflows gap.
+  const dark = classifyRepo({ repo: "k", files: null, filesError: "403", root: null, rootError: "403", rules: RULES_37 });
+  assert.deepEqual(dark.findings, []);
+  assert.equal(dark.dark_factory.arming_lane, null);
+  assert.equal(dark.dark_factory.gate_ready, false);
+  // The unit surface: rules not passed is "not under measurement", stated as null rather than defaulted to ungated.
+  assert.equal(classifyRepo({ repo: "k", files: [], root: [] }).dark_factory, null);
+});
+
+test("summarize + renderSummary: the dark-factory totals count what was measured, and the row prints even at zero", () => {
+  const rows = [
+    classifyRepo({ repo: "ready", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37 }),
+    classifyRepo({ repo: "gated", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: RULES_37 }),
+    classifyRepo({ repo: "unmeasured", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success") }),
+  ];
+  const t = summarize(rows);
+  assert.equal(t.gated, 2);
+  assert.equal(t.arming_lane, 1);
+  assert.equal(t.gate_ready, 1);
+  const snap = buildSnapshot({ now: "2026-09-08T12:00:00Z", rows, denominator: { public_repos: 3, enumerated: 3, verified: true, archived: 0, rows: 3 }, fleet: { unavailable: "x" }, standard: { head_sha: null, selftest: { state: "none" } }, strict: false });
+  assert.match(renderSummary(snap), /\| gated \/ arming lane \/ dark-factory ready \| 2 \/ 1 \/ 1 \|/);
+});
+
 test("assertDenominator: exact equality, and a non-integer is a refusal too", () => {
   assert.deepEqual(assertDenominator({ enumerated: 94, publicRepos: 94 }), { ok: true });
   assert.equal(assertDenominator({ enumerated: 93, publicRepos: 94 }).ok, false);
@@ -397,7 +493,7 @@ test("fleetSlice: the repo's red rows and whether the feed lists it unobserved",
 
 // ── the sweep, against a fake GitHub ─────────────────────────────────────────
 
-function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRepo, fleet = null, selftest = "success" }) {
+function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRepo, rulesByRepo = {}, fleet = null, selftest = "success" }) {
   const json = (status, body) => ({ status, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body) });
   const text = (status, body) => ({ status, headers: new Headers(), json: async () => { throw new Error("not json"); }, text: async () => body });
   return async (url) => {
@@ -424,6 +520,11 @@ function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRep
     }
     if (rest.startsWith("contents/")) return rootByRepo[repo] ? json(200, rootByRepo[repo].map((name) => ({ name, type: "file" }))) : json(403, {});
     if (rest.startsWith("properties/values")) return json(403, {});
+    if (rest.startsWith("rules/branches/")) {
+      const rr = rulesByRepo[repo];
+      if (rr === "forbidden") return json(403, {});
+      return json(200, (rr ?? []).map((context, i) => ({ type: "required_status_checks", ruleset_id: 100 + i, parameters: { required_status_checks: [{ context }] } })));
+    }
     if (rest.startsWith("actions/workflows/")) {
       const r = runsByRepo[repo];
       if (r === "forbidden") return json(403, {});
@@ -452,12 +553,14 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
     publicRepos: 3,
     repos: ["keycard", "repo-health", "night-audit"],
     workflowsByRepo: {
-      keycard: { ".github/workflows/standard.yml": KEYCARD, ".github/workflows/deps.yml": DEPS },
+      keycard: { ".github/workflows/standard.yml": KEYCARD, ".github/workflows/deps.yml": DEPS, ".github/workflows/auto-merge.yml": AUTO_MERGE },
       "repo-health": { ".github/workflows/ci.yml": REPO_HEALTH_CI },
       // night-audit: an empty repo — no workflows dir at all
     },
     rootByRepo: { keycard: ["Cargo.toml", "lakefile.lean"], "repo-health": ["deno.json"], "night-audit": [] },
     runsByRepo: { keycard: "forbidden" },
+    // keycard is gated on the two contexts the dark factory needs; the other two have no rules at all.
+    rulesByRepo: { keycard: ["standard / test", "pr-claim / pr-claim"] },
     fleet: { generated_at: "2026-09-04T14:13:32Z", repos_known: 97, repos_observed: 92, coverage_complete: false, unobserved: ["bounded-systems/night-audit"], red: [{ repo: "bounded-systems/repo-health", workflow: "ci", conclusion: "failure", since: "s", run_url: "r" }] },
   });
   const snap = await sweep({ fetchImpl, token: "t", now: "2026-09-04T15:00:00Z", headSha: "d126d721fa50275e12af0bdeaf1a2ff3016eedfd", log: () => {} });
@@ -476,6 +579,12 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
   assert.equal(by["night-audit"].test_lane, "n/a");
   assert.equal(snap.repos[0].findings.length >= snap.repos[snap.repos.length - 1].findings.length, true);
   assert.equal(snap.totals.rows, 3);
+  // The dark-factory read rode along: keycard is gated, armed and ready; the two without a caller are neither gated nor findings for it.
+  assert.equal(by.keycard.dark_factory.gate_ready, true);
+  assert.deepEqual(by.keycard.dark_factory.required_checks, ["pr-claim / pr-claim", "standard / test"]);
+  assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], arming_lane: null, legacy_arming: false, gate_ready: false });
+  assert.deepEqual(snap.totals.gated, 1);
+  assert.deepEqual(snap.totals.gate_ready, 1);
 });
 
 test("sweep: an unavailable fleet feed is recorded, not fatal, and rows carry no join", async () => {
