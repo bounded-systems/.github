@@ -98,6 +98,7 @@ jq -r --arg stamp "$stamp" --arg human "$human" '
   "  callers:     \(.totals.caller.present) present · \(.totals.caller.absent) absent · \(.totals.caller.unreadable) unreadable   pinned \(.totals.pinned)",
   "  test lane:   \(.totals.test_lane.present) present · \(.totals.test_lane.absent) absent · \(.totals.test_lane["n/a"]) n/a · \(.totals.test_lane.unmeasured) unmeasured",
   "  runs:        \(.totals.standard_run.green) green · \(.totals.standard_run.red) red · \(.totals.standard_run.other) other · \(.totals.standard_run.none) none · \(.totals.standard_run.unreadable) unreadable",
+  "  gate:        \(.totals.gated // "?") gated · \(.totals.arming_lane // "?") arming lane · \(.totals.gate_ready // "?") dark-factory ready",
   "  findings:    \(.totals.findings) across \(.totals.with_findings) repos    gaps: \(.totals.gaps)"
 ' <<<"$body"
 
