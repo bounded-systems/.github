@@ -401,6 +401,16 @@ test("classifyRepo: dark factory — gated but unarmed is a finding; a caller no
   const bare = classifyRepo({ repo: "k", files: [], root: [], rules: { read: true, contexts: [], rulesets: [] } });
   assert.deepEqual(bare.findings, ["caller-absent"]);
 
+  // THE CLAIM ALONE IS NOT A GATE (#391). required-baseline requires pr-claim on every default
+  // branch, so a caller whose only required context is the claim is still the fail-open case,
+  // and a bare repo with only the claim is neither gated nor unarmed-while-gated.
+  const claimOnly = { read: true, contexts: ["pr-claim / pr-claim"], rulesets: [21805316] };
+  const claimGated = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: claimOnly });
+  assert.deepEqual(claimGated.findings, ["gate-absent"], "the claim is the human touch, not CI — nothing requires the standard");
+  assert.deepEqual(claimGated.dark_factory.required_checks, ["pr-claim / pr-claim"], "the claim is still LISTED; it just does not count as a gate");
+  const bareClaim = classifyRepo({ repo: "k", files: [], root: [], rules: claimOnly });
+  assert.deepEqual(bareClaim.findings, ["caller-absent"], "no caller and no CI gate: not arming-lane-absent — there is no green to wait on");
+
   // Only the legacy lane: still unarmed — its precondition is false by construction (.github-private#929).
   const legacy = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/dependabot-auto-merge.yml", "name: dependabot-auto-merge\non: pull_request\n")], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
   assert.deepEqual(legacy.findings, ["arming-lane-absent"]);
@@ -433,12 +443,14 @@ test("summarize + renderSummary: the dark-factory totals count what was measured
     classifyRepo({ repo: "ready", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37 }),
     classifyRepo({ repo: "gated", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: RULES_37 }),
     classifyRepo({ repo: "unmeasured", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success") }),
+    // Only the org baseline's claim is required: counted in the row, not as gated (#391).
+    classifyRepo({ repo: "claim-only", files: [], root: [], rules: { read: true, contexts: ["pr-claim / pr-claim"], rulesets: [21805316] } }),
   ];
   const t = summarize(rows);
-  assert.equal(t.gated, 2);
+  assert.equal(t.gated, 2, "the claim-only repo is not gated");
   assert.equal(t.arming_lane, 1);
   assert.equal(t.gate_ready, 1);
-  const snap = buildSnapshot({ now: "2026-09-08T12:00:00Z", rows, denominator: { public_repos: 3, enumerated: 3, verified: true, archived: 0, rows: 3 }, fleet: { unavailable: "x" }, standard: { head_sha: null, selftest: { state: "none" } }, strict: false });
+  const snap = buildSnapshot({ now: "2026-09-08T12:00:00Z", rows, denominator: { public_repos: 4, enumerated: 4, verified: true, archived: 0, rows: 4 }, fleet: { unavailable: "x" }, standard: { head_sha: null, selftest: { state: "none" } }, strict: false });
   assert.match(renderSummary(snap), /\| gated \/ arming lane \/ dark-factory ready \| 2 \/ 1 \/ 1 \|/);
 });
 
