@@ -323,9 +323,13 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     gaps.push(`rules-unreadable:${rules.reason}`);
   } else {
     const req = rules.contexts;
-    const gated = req.length > 0;
     const hasTest = req.includes("standard / test");
     const hasClaim = req.includes("pr-claim / pr-claim");
+    // `gated` means a CI context is required. The claim is NOT one: `required-baseline`
+    // requires `pr-claim / pr-claim` on every default branch, so counting it made
+    // `gated` 90 of 90 by construction on the first run (#391). The claim is the
+    // passkey's rung — the human touch #913 keeps outside the CI gate on purpose.
+    const gated = req.some((c) => c !== "pr-claim / pr-claim");
     row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, legacy_arming: legacy, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
     // Green gates nothing: a caller whose contexts nothing on the default branch
     // requires is the fail-open case #913 names — the check runs and decides nothing.
@@ -363,14 +367,14 @@ export function summarize(rows) {
     with_findings: 0,
     findings: 0,
     gaps: 0,
-    // the dark factory: any required check at all · the org arming lane present · both plus the standard required
+    // the dark factory: a CI context required (the claim alone does not count) · the org arming lane present · both plus the standard required
     gated: 0,
     arming_lane: 0,
     gate_ready: 0,
   };
   for (const r of rows) {
     if (r.dark_factory) {
-      if (r.dark_factory.required_checks?.length) t.gated++;
+      if (r.dark_factory.required_checks?.some((c) => c !== "pr-claim / pr-claim")) t.gated++;
       if (r.dark_factory.arming_lane) t.arming_lane++;
       if (r.dark_factory.gate_ready === true) t.gate_ready++;
     }
