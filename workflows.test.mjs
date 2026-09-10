@@ -290,6 +290,34 @@ test("_auto-merge: broker-minted identity, no checkout, never pull_request_targe
   assert.doesNotMatch(armStep, /github\.token/, "the arm step never falls back to GITHUB_TOKEN");
 });
 
+// ── _auto-merge's gate: "gated" means a CI context is required — the claim alone is not one ──
+//
+// `required-baseline` requires `pr-claim / pr-claim` on every default branch in the org.
+// A gate that COUNTED required_status_checks rules was therefore never zero, and the lane
+// armed wherever its caller was rolled: a claimed PR merged on the claim with its CI red
+// (#397) — the fail-open .github-private#913 exists to close. The gate now reads the
+// contexts themselves and drops the claim, the rule `classifyRepo` applies in
+// scripts/repo-standard-conformance.mjs (#392). Two lines fail silently if they move:
+// the exclusion, and the fail-closed exit on an unreadable read. Asserted from the file.
+test("_auto-merge: gated means a CI context is required — the claim is excluded, an unreadable read fails closed", () => {
+  const src = readFileSync(join(DIR, "_auto-merge.yml"), "utf8")
+    .split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  const start = src.indexOf("name: Is this repo gated?");
+  const end = src.indexOf("name: Mint the arming identity");
+  assert.ok(start !== -1 && end > start, "the gate step precedes the mint step");
+  const gateStep = src.slice(start, end);
+  assert.match(gateStep, /required_status_checks\[\]\.context/, "the gate reads the required CONTEXTS — the same path classifyRepo reads");
+  assert.doesNotMatch(gateStep, /\| length/, "a count of rules is what armed on the claim alone (#397); it must not come back");
+  assert.match(gateStep, /grep -vxF 'pr-claim \/ pr-claim'/, "pr-claim / pr-claim is dropped before deciding: the claim is not a gate (#392's rule)");
+  assert.match(gateStep, /gated=false/, "an empty remainder records gated=false, so the mint and the arm are skipped");
+  // Fail closed: a read that is not 200 exits 1 before any decision is recorded.
+  assert.match(gateStep, /refusing to decide whether to arm"\n\s*exit 1/, "an unreadable ruleset read exits 1 — it never reads as 'no rules'");
+  assert.ok(gateStep.indexOf("exit 1") < gateStep.indexOf("gated=false"), "the fail-closed exit comes before any gated= decision");
+  // Both privileged steps still hang off that one output.
+  const conditioned = src.match(/if: steps\.gate\.outputs\.gated == 'true'/g) ?? [];
+  assert.equal(conditioned.length, 2, "the mint and the arm are each conditioned on the gate's output");
+});
+
 // ── signed-commit opens PRs ready, not draft (#398) ──────────────────────────
 //
 // Under the arming lane a draft is the one state the factory never merges:
