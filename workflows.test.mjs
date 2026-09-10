@@ -330,6 +330,8 @@ test("CLAUDE.md no longer tells a session to open PRs as draft", () => {
   const src = readFileSync("CLAUDE.md", "utf8");
   assert.doesNotMatch(src, /Open PRs as draft/i, "CLAUDE.md §3 must say PRs open ready (#398)");
   assert.match(src, /Open PRs \*\*ready\*\*/, "CLAUDE.md §3 states the ready convention");
+});
+
 // ── The reference caller triggers on merge_group ─────────────────────────────
 //
 // A merge queue re-runs a branch's required contexts on `merge_group` and on
