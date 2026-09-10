@@ -26,6 +26,8 @@
  * rendered by the keeper, and is recomputed by the door from its own inputs.
  */
 
+import https from "node:https";
+
 import { CLAIM_REQUEST_V1 } from "./claim-digest.mjs";
 import { CLAIM_POLICY_V1 } from "./claim-authorization.mjs";
 
@@ -211,30 +213,29 @@ export function announceInputs({ repo, issue, claimant, approveUrl }) {
 /**
  * What to print when the notice did not send (#305).
  *
- * MEASURED 2026-08-31, not inferred — and measured as a SHAPE, not as a kind of
- * credential: `GITHUB_TOKEN` in this process holds a proxy placeholder, and what
- * reaches GitHub is injected at the egress proxy, so this file cannot say what
- * that credential is, only what it is refused. A workflow GET answers 200 with
- * `X-Accepted-Github-Permissions: actions=read`; the dispatch POST answers 403
- * `Resource not accessible by integration` with `actions=write` — GITHUB's
- * voice, not the proxy's. The proxy is not what refuses it: it denies
- * `/actions/secrets`, `/actions/variables` and `/actions/permissions`, and lets
- * the dispatch path through. So this process will never dispatch, whatever it
- * retries, and better tooling in it changes nothing.
+ * MEASURED 2026-09-10, superseding the 2026-08-31 reading this block used to
+ * carry ("this process will never dispatch, whatever it retries"). In a cloud
+ * session `GITHUB_TOKEN`/`GH_TOKEN` hold the literal PROXY_SENTINEL and the real
+ * credential is injected by the egress proxy at `HTTPS_PROXY` — a proxy Node's
+ * built-in `fetch` does not use. So the dispatch went DIRECT to GitHub carrying
+ * `Bearer proxy-injected`, and the `HTTP 401` every session printed from
+ * 2026-09-05 to 09-09 was GitHub reading the sentinel as a bad credential.
+ * Through the proxy the header is replaced whatever it holds (nonsense, the
+ * sentinel, or nothing all answered `/user` as the same login); direct with no
+ * header the request is simply unauthenticated. Neither the header rule nor the
+ * route fixes it alone, so `announceCeremony` now does both.
  *
- * But the SESSION is not this process. A session driven through a GitHub tool
- * holds a different credential — one this process cannot read, cannot borrow,
- * and must not be given — and it dispatches workflows routinely, `claim-ticket`
- * among them. Announcing is strictly less capability than claiming, so a session
- * that can open the door can certainly ring the bell. It just has to be told.
- *
- * That half is a CITATION, not a re-derivation: `front-desk-scheduler` →
- * `docs/claiming-from-a-session.md` measured both sides minutes apart in one
- * session on 2026-08-06 — `curl …/claim-ticket.yml/dispatches` 403,
- * `actions_run_trigger` on the same workflow 204. Run history cannot stand in
- * for it: both credentials answer `/user` as the same login, so an actor name
- * on a dispatched run attributes nothing. If that date has aged past what you
- * are willing to lean on, `docs/api-reachability.md` says how to re-prove it.
+ * What remains for this hand-off is the session whose injected credential is
+ * refused: a session `.github` was not attached to at creation answers 403 on
+ * every `.github` path, and the 2026-08-31 reading (`Resource not accessible by
+ * integration` on the dispatch POST) may still hold for some grants — this
+ * file cannot say what the injected credential is, only what it is refused.
+ * A session driven through a GitHub tool holds a different credential, one this
+ * process cannot read, cannot borrow, and must not be given, and it dispatches
+ * workflows routinely (`claim-ticket` among them). Announcing is strictly less
+ * capability than claiming, so a session that can open the door can ring the
+ * bell. It just has to be told — and only when this process's own attempt was
+ * refused, which is the only time this text is printed.
  *
  * That is all this is: a HAND-OFF, not a mechanism. Nothing here sends anything,
  * nothing here checks that anyone acted, and the ceremony neither waits for it
@@ -245,7 +246,7 @@ export function handoffNotice({ repo, issue, claimant, approveUrl }) {
   const inputs = announceInputs({ repo, issue, claimant, approveUrl });
   return [
     `To ring a phone anyway, dispatch ${ANNOUNCE_WORKFLOW} in ${ANNOUNCE_REPO} (ref ${ANNOUNCE_REF}) with your own`,
-    "GitHub tool — this process cannot, and no credential it could be given should be:",
+    "GitHub tool — this process's own dispatch was refused, and its credential is not one to widen:",
     `  title: ${inputs.title}`,
     `  body:  ${inputs.body}`,
     `  url:   ${inputs.url}`,
@@ -253,18 +254,79 @@ export function handoffNotice({ repo, issue, claimant, approveUrl }) {
 }
 
 /**
+ * The placeholder a cloud session holds where a GitHub token would be — the
+ * same constant as `PROXY_SENTINEL` in infra's `github-admin/check-repo-drift.mjs`.
+ * The egress proxy at `HTTPS_PROXY` injects the real credential, and only a
+ * request that goes THROUGH it gets one; sent to GitHub directly, the sentinel
+ * is a bad credential (401) and its absence an unauthenticated request.
+ */
+export const PROXY_SENTINEL = "proxy-injected";
+
+/**
+ * The Authorization header to send, if any — the drift checker's `authHeader`
+ * rule: a real token travels as Bearer; the sentinel or nothing travels as no
+ * header at all, so the proxy has nothing to overrule.
+ */
+export function authHeader(token) {
+  if (!token || token === PROXY_SENTINEL) return {};
+  return { authorization: `Bearer ${token}` };
+}
+
+/** The injecting proxy the environment names, or "". Read here because Node's fetch will not. */
+export function proxyUrl(env) {
+  return env.HTTPS_PROXY || env.https_proxy || "";
+}
+
+/**
+ * How the dispatch is credentialed, decided from the environment alone. A real
+ * token is sent whether or not a proxy is present (CI, a local PAT). Without one,
+ * the request is sent bare ONLY when a proxy is named to inject a credential —
+ * an unauthenticated dispatch is a 404, not a notice, so with neither there is
+ * nothing worth sending and the reason says which half is missing.
+ */
+export function announceCredential(env) {
+  const headers = authHeader(env.GH_TOKEN || env.GITHUB_TOKEN || "");
+  if (Object.keys(headers).length > 0 || proxyUrl(env)) return { ok: true, headers };
+  return { ok: false, reason: "no GitHub token in this session, and no egress proxy to inject one" };
+}
+
+/**
+ * A fetch that honors `HTTPS_PROXY`. Node's built-in fetch does not, and the
+ * variable that would make it (`NODE_USE_ENV_PROXY`) is read at process start,
+ * so it cannot be set from inside this file. `https.Agent({ proxyEnv })` is the
+ * public API for the same behaviour (Node >= 22.21 / 24.5): CONNECT to the
+ * proxy, TLS inside the tunnel, `NO_PROXY` honored. Resolves to the one field
+ * `announceCeremony` reads; a refused tunnel rejects, and is reported as such.
+ */
+export function proxiedFetch(url, { method = "GET", headers = {}, body } = {}, { env = process.env } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method, headers, agent: new https.Agent({ proxyEnv: env }) }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+/** The transport for this environment: through the proxy when one is named, global fetch otherwise. */
+export function announceFetch(env) {
+  return proxyUrl(env) ? (url, init) => proxiedFetch(url, init, { env }) : fetch;
+}
+
+/**
  * BEST EFFORT, ALWAYS. It returns a reason and never throws, because the
  * ceremony is the gate and this is a convenience: a session with no GitHub
- * token, or an API that refuses, must still print the URL exactly as before.
- * Reporting "not announced" is the honest outcome; failing the claim over an
- * undelivered notification would make the convenience load-bearing.
+ * credential, or an API that refuses, must still print the URL exactly as
+ * before. Reporting "not announced" is the honest outcome; failing the claim
+ * over an undelivered notification would make the convenience load-bearing.
  */
 export async function announceCeremony(
   { repo, issue, claimant, approveUrl },
-  { fetchImpl = fetch, env = process.env } = {},
+  { env = process.env, fetchImpl = announceFetch(env) } = {},
 ) {
-  const token = env.GH_TOKEN || env.GITHUB_TOKEN || "";
-  if (!token) return { announced: false, reason: "no GitHub token in this session" };
+  const credential = announceCredential(env);
+  if (!credential.ok) return { announced: false, reason: credential.reason };
   try {
     const res = await fetchImpl(
       `https://api.github.com/repos/${ANNOUNCE_REPO}/actions/workflows/${ANNOUNCE_WORKFLOW}/dispatches`,
@@ -272,7 +334,7 @@ export async function announceCeremony(
         method: "POST",
         headers: {
           accept: "application/vnd.github+json",
-          authorization: `Bearer ${token}`,
+          ...credential.headers,
           "content-type": "application/json",
           "user-agent": "claim-ceremony",
         },
@@ -305,7 +367,7 @@ async function main() {
         // worked, and it stays the one that does not depend on a runner.
         announceCeremony({ repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, approveUrl: url })
           .then((r) => console.error(r.announced
-            ? "Announced to subscribed devices."
+            ? `Announced to subscribed devices — ${ANNOUNCE_WORKFLOW} dispatched on ${ANNOUNCE_REF}; nothing to dispatch by hand.`
             : `Not announced (${r.reason}) — approve at the URL above.\n${
                 handoffNotice({ repo: CLAIM_REPO, issue: CLAIM_ISSUE, claimant: CLAIMANT, approveUrl: url })}`));
       },

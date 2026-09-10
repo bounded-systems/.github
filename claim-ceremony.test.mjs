@@ -14,6 +14,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,11 +23,15 @@ import { parseAuthorizationToken, claimRequestFrom, CLAIM_POLICY_V1 } from "./cl
 import {
   ANNOUNCE_REPO,
   ANNOUNCE_WORKFLOW,
+  PROXY_SENTINEL,
   announceInputs,
   handoffNotice,
   CEREMONY_WINDOW_MS,
   EXPIRY_GRACE_MS,
   announceCeremony,
+  announceCredential,
+  announceFetch,
+  authHeader,
   approvalPrompt,
   buildRequest,
   ceremonyWindowMs,
@@ -287,12 +292,99 @@ test("an API refusal and a transport error are both survived, and distinguishabl
   assert.match(threw.reason, /ECONNRESET/);
 });
 
+// ── The credential rule, and the route (measured 2026-09-10) ─────────────────
+//
+// A cloud session holds the literal sentinel where a token would be, and the
+// real credential is injected by the egress proxy — for requests that go
+// THROUGH it. Sent direct, the sentinel is a 401 (every ceremony 2026-09-05 to
+// 09-09 printed exactly that) and no header is an unauthenticated request. The
+// rule under test is the drift checker's, and the route is the half the header
+// rule cannot supply on its own.
+
+test("the header rule is the drift checker's: absent and sentinel send nothing, a real token sends Bearer", () => {
+  assert.deepEqual(authHeader(""), {});
+  assert.deepEqual(authHeader(undefined), {});
+  assert.deepEqual(authHeader(PROXY_SENTINEL), {});
+  assert.deepEqual(authHeader("ghp_real"), { authorization: "Bearer ghp_real" });
+  assert.equal(PROXY_SENTINEL, "proxy-injected", "the constant must match infra's, or the two rules diverge");
+});
+
+test("the sentinel behind an injecting proxy dispatches with NO Authorization header", async () => {
+  let seen;
+  const r = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    {
+      env: { GITHUB_TOKEN: PROXY_SENTINEL, GH_TOKEN: PROXY_SENTINEL, HTTPS_PROXY: "http://127.0.0.1:1" },
+      fetchImpl: async (_u, init) => { seen = init; return { status: 204 }; },
+    },
+  );
+  assert.equal(r.announced, true);
+  const names = Object.keys(seen.headers).map((k) => k.toLowerCase());
+  assert.ok(!names.includes("authorization"), `sent an Authorization header the proxy would have to overrule: ${JSON.stringify(seen.headers)}`);
+  assert.ok(names.includes("accept") && names.includes("content-type"), "the other headers must survive the rule");
+});
+
+test("a real token is still sent as Bearer, with or without a proxy", async () => {
+  for (const env of [{ GH_TOKEN: "ghp_real" }, { GH_TOKEN: "ghp_real", HTTPS_PROXY: "http://127.0.0.1:1" }]) {
+    let seen;
+    await announceCeremony(
+      { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+      { env, fetchImpl: async (_u, init) => { seen = init; return { status: 204 }; } },
+    );
+    assert.equal(seen.headers.authorization, "Bearer ghp_real", `env ${JSON.stringify(env)}`);
+  }
+  // GH_TOKEN outranks GITHUB_TOKEN, as before; a real one beside a sentinel is still real.
+  assert.deepEqual(announceCredential({ GH_TOKEN: "ghp_a", GITHUB_TOKEN: PROXY_SENTINEL }).headers, { authorization: "Bearer ghp_a" });
+});
+
+test("the sentinel with no proxy to inject a credential skips without touching the network, and says which half is missing", async () => {
+  let called = false;
+  const r = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    { env: { GITHUB_TOKEN: PROXY_SENTINEL }, fetchImpl: async () => { called = true; return { status: 204 }; } },
+  );
+  assert.equal(r.announced, false);
+  assert.match(r.reason, /no GitHub token/);
+  assert.match(r.reason, /proxy/);
+  assert.equal(called, false, "an unauthenticated dispatch is a 404, not a notice");
+});
+
+test("with a proxy named and no transport injected, the dispatch tunnels through THAT proxy", async () => {
+  // A stand-in proxy that records the CONNECT line and refuses the tunnel — no
+  // TLS, no network, and the refusal is the failure branch being survived.
+  const seen = [];
+  const server = net.createServer((sock) => {
+    let buf = "";
+    sock.on("data", (d) => {
+      buf += d;
+      if (buf.includes("\r\n\r\n")) {
+        seen.push(buf.split("\r\n")[0]);
+        sock.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const env = { GITHUB_TOKEN: PROXY_SENTINEL, HTTPS_PROXY: `http://127.0.0.1:${server.address().port}` };
+    assert.notEqual(announceFetch(env), fetch, "a named proxy must select the proxy-aware transport");
+    assert.equal(announceFetch({}), fetch, "no proxy, global fetch — a local PAT goes direct");
+    const r = await announceCeremony(
+      { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+      { env },
+    );
+    assert.equal(r.announced, false);
+    assert.ok(r.reason, "a refused tunnel must be reported, not swallowed");
+    assert.deepEqual(seen, ["CONNECT api.github.com:443 HTTP/1.1"]);
+  } finally {
+    server.close();
+  }
+});
+
 // ── The hand-off, when the dispatch cannot happen (#305) ─────────────────────
 //
-// MEASURED 2026-08-31: this process's env token carries `actions: read` and
-// GitHub itself refuses the dispatch POST with `Resource not accessible by
-// integration`. It is not a transient. So the failure branch is the branch that
-// runs in a session, every time, and what it prints is the whole of its value.
+// Since the credential rule above, this branch runs only when the dispatch was
+// actually refused — a session without a grant on `.github` answers 403 on
+// every path there — and what it prints is then the whole of its value.
 //
 // The property under test is ANTI-DRIFT, not wording. A hand-off is only worth
 // printing if following it produces the notice this file would have sent; a
