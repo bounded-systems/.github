@@ -8,6 +8,12 @@
 # GitHub validates the permission union at load time, before `if:`, so a future revision
 # that raises a floor fails HERE, pre-merge, instead of in every downstream repo. It is
 # also the copy-paste caller template each repo's .github/workflows/standard.yml follows.
+#
+# merge_group is on the trigger list because a merge queue re-runs a branch's required
+# contexts on that event and nothing else: a caller that declares only pull_request never
+# reports there, and the queue waits on `standard / test` until its check timeout
+# (.github-private#913 step 5). The reusable workflow needs nothing for this — it is
+# workflow_call, and the caller supplies the event. workflows.test.mjs pins the key.
 name: repo-standard-selftest
 
 on:
@@ -17,6 +23,7 @@ on:
       - ".github/workflows/repo-scorecard.yml"
       - ".github/workflows/repo-release.yml"
       - ".github/workflows/repo-standard-selftest.yml"
+  merge_group:
   push:
     branches: [main]
 
@@ -37,9 +44,11 @@ jobs:
       descriptor: false
 
   # Contract: repo-scorecard.yml's ceiling is exactly contents: read + actions: read.
-  # Gated to non-PR so PR runs never instantiate the elevated grant.
+  # Gated to non-PR so PR runs never instantiate the elevated grant. A merge-queue run
+  # is a PR run for this purpose: it scores the repo, not a queued merge commit, and the
+  # queue must see exactly what the pull_request run saw.
   scorecard:
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
     uses: ./.github/workflows/repo-scorecard.yml
     permissions:
       contents: read
@@ -47,9 +56,10 @@ jobs:
 
   # Contract: repo-release.yml's ceiling is exactly contents: write. upload-release-assets
   # is false so the self-test exercises the permission contract without creating a release
-  # asset on this repo. Gated to non-PR (same as a real release caller).
+  # asset on this repo. Gated to non-PR (same as a real release caller), and a
+  # merge-queue run is a PR run for this purpose too — nothing is released from a queue.
   release:
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
     uses: ./.github/workflows/repo-release.yml
     permissions:
       contents: write
