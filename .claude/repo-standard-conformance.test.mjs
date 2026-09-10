@@ -34,6 +34,7 @@ function snapshot(overrides = {}) {
       pinned: 1,
       test_lane: { present: 1, absent: 1, "n/a": 0, unmeasured: 0 },
       standard_run: { green: 1, red: 0, other: 0, none: 0, unreadable: 0 },
+      merge_group: 1,
       with_findings: 1,
       findings: 1,
       gaps: 1,
@@ -67,6 +68,7 @@ test("a fresh snapshot prints the totals and the repos with findings, exit 0", (
   assert.match(r.stdout, /standard: {4}d126d721fa50 on main; selftest green/);
   assert.match(r.stdout, /fleet feed: {2}92\/97 observed/);
   assert.match(r.stdout, /callers: {5}1 present · 1 absent · 0 unreadable/);
+  assert.match(r.stdout, /merge queue: 1 callers trigger on merge_group/);
   assert.match(r.stdout, /bounded-systems\/bare {2}caller-absent {3}extra: ci\.yml/);
   assert.doesNotMatch(r.stdout, /bounded-systems\/clean/, "a repo with no findings is not listed as one");
   assert.doesNotMatch(r.stderr, /STALE/);

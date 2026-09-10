@@ -22,7 +22,8 @@
 //     branch or a public log because none is ever read. Private repos'
 //     conformance is `.github-private`'s own pr.yml.
 //   - A FINDING is a defect of the repo (no caller, unpinned ref, filtered
-//     pull_request trigger, a toolchain with no test lane, a red run). A
+//     pull_request trigger, no merge_group trigger, a toolchain with no test
+//     lane, a red run). A
 //     MEASUREMENT GAP is a limit of this lane (a listing it could not read, a
 //     runs endpoint that answered 403). The two are kept in different fields
 //     and never summed, because "we could not tell" is not "there is nothing"
@@ -62,7 +63,6 @@ export const ORG_MANAGED = new Map([
   ["pr-claim.yml", "_pr-claim.yml (this repo)"],
   ["claim-sweep.yml", "_claim-sweep.yml (this repo)"],
   ["version.yml", "mint version.yml"],
-  ["dependabot-auto-merge.yml", ".github-private docs/handoffs/dependabot-auto-merge.yml"],
   ["auto-merge.yml", "_auto-merge.yml (this repo)"],
   ["lease-key-rotation.yml", ".github-private docs/handoffs/lease-key-rotation.yml"],
   ["gate.yml", ".github-private docs/handoffs/gate.yml"],
@@ -162,6 +162,20 @@ export function pullRequestTrigger(on) {
   return { present: false };
 }
 
+/**
+ * Does `on:` carry `merge_group`? A merge queue re-runs a branch's required
+ * contexts on that event and nothing else, so a caller without it never
+ * reports there and the queue waits on `standard / test` until its check
+ * timeout (.github-private#913 step 5). Presence of the key is the whole
+ * predicate: the event has no paths filter, and its only `types` value
+ * (`checks_requested`) is the default.
+ */
+export function mergeGroupTrigger(on) {
+  if (typeof on === "string") return on === "merge_group";
+  if (Array.isArray(on)) return on.includes("merge_group");
+  return Boolean(on && typeof on === "object" && Object.prototype.hasOwnProperty.call(on, "merge_group"));
+}
+
 /** Does `on:` run on pushes to the default branch (or all pushes)? */
 export function pushesDefault(on, defaultBranch) {
   if (typeof on === "string") return on === "push";
@@ -214,6 +228,7 @@ export function findCaller(files, defaultBranch = "main") {
         with: written,
         effective,
         pull_request: pullRequestTrigger(f.doc.on),
+        merge_group: mergeGroupTrigger(f.doc.on),
         push_default: pushesDefault(f.doc.on, defaultBranch),
       };
     }
@@ -266,6 +281,10 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
         if (!pr.unfiltered) findings.push("pull-request-filtered");
         if (!pr.synchronize) findings.push("pull-request-no-synchronize");
       }
+      // The merge-queue half of the same predicate, and it IS applied to the
+      // local caller: the selftest is the reference every standard.yml copies,
+      // so it must carry the key it is measured for.
+      if (!row.caller.merge_group) findings.push("merge-group-absent");
     }
     row.managed = files.map((f) => f.path.split("/").pop()).filter((b) => ORG_MANAGED.has(b)).sort();
     row.extra = files
@@ -316,10 +335,9 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
   // `dark_factory: null`, no finding, no gap. The sweep always passes it.
   const basenames = files ? files.map((f) => f.path.split("/").pop()) : null;
   const arming = basenames ? (basenames.includes("auto-merge.yml") ? "auto-merge.yml" : null) : null;
-  const legacy = basenames ? basenames.includes("dependabot-auto-merge.yml") : null;
   if (rules === undefined) row.dark_factory = null;
   else if (!rules.read) {
-    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, legacy_arming: legacy, gate_ready: null };
+    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, gate_ready: null };
     gaps.push(`rules-unreadable:${rules.reason}`);
   } else {
     const req = rules.contexts;
@@ -330,13 +348,14 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     // `gated` 90 of 90 by construction on the first run (#391). The claim is the
     // passkey's rung — the human touch #913 keeps outside the CI gate on purpose.
     const gated = req.some((c) => c !== "pr-claim / pr-claim");
-    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, legacy_arming: legacy, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
+    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
     // Green gates nothing: a caller whose contexts nothing on the default branch
     // requires is the fail-open case #913 names — the check runs and decides nothing.
     if (row.caller.state === "present" && !gated) findings.push("gate-absent");
     // Green waits for a person: something is required, and nothing arms the merge.
-    // A legacy dependabot-auto-merge.yml does not count — its precondition is false
-    // by construction (.github-private#929). Unreadable workflows are already a gap.
+    // Unreadable workflows are already a gap. (The legacy dependabot-auto-merge.yml
+    // was retired on a measured zero, .github-private#929 / #393; it is no longer
+    // org-managed and no longer reported.)
     if (gated && basenames && arming === null) findings.push("arming-lane-absent");
   }
 
@@ -371,6 +390,8 @@ export function summarize(rows) {
     gated: 0,
     arming_lane: 0,
     gate_ready: 0,
+    // callers whose `on:` carries merge_group — the ones a merge queue can wait on and hear back from
+    merge_group: 0,
   };
   for (const r of rows) {
     if (r.dark_factory) {
@@ -380,6 +401,7 @@ export function summarize(rows) {
     }
     t.caller[r.caller.state]++;
     if (r.caller.state === "present" && r.caller.pinned) t.pinned++;
+    if (r.caller.state === "present" && r.caller.merge_group) t.merge_group++;
     t.test_lane[r.test_lane]++;
     if (r.standard_run) t.standard_run[r.standard_run.state]++;
     if (r.runtime && r.runtime.match === false) t.runtime_mismatch++;
@@ -434,6 +456,7 @@ export function renderSummary(snap, limit = 25) {
   lines.push(`| runtime mismatch (reported) | ${t.runtime_mismatch} |`);
   lines.push(`| repo-specific workflows (reported) | ${t.extra_workflows} |`);
   lines.push(`| gated / arming lane / dark-factory ready | ${t.gated} / ${t.arming_lane} / ${t.gate_ready} |`);
+  lines.push(`| callers triggering on merge_group | ${t.merge_group} |`);
   lines.push(`| repos with findings | ${t.with_findings} (${t.findings} findings) |`);
   lines.push(`| measurement gaps | ${t.gaps} |`);
   lines.push("");

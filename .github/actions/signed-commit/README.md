@@ -81,7 +81,7 @@ steps:
 | `fail-if-unsigned` | no | `false` | `true` fails the step on an unsigned commit |
 | `pr-title` | no | — | set to open a PR; omit to only write the commit |
 | `pr-body-file` | no | — | |
-| `pr-draft` | no | `true` | |
+| `pr-draft` | no | `false` | PRs open **ready**; `true` opens a draft, which the arming lane never merges (#398) |
 
 ### Outputs
 

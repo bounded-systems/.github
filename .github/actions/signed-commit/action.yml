@@ -54,9 +54,14 @@ inputs:
     required: false
     default: ""
   pr-draft:
-    description: Open the PR as a draft.
+    description: >-
+      "true" opens the PR as a draft. Default "false" — ready — because under
+      the arming lane a draft is the one state the factory never merges
+      (`_auto-merge.yml` skips it; `.github`#398): a bot that publishes a
+      commit and opens a draft has opened a PR nothing will pick up. Set
+      "true" only where a human is expected to mark it ready.
     required: false
-    default: "true"
+    default: "false"
 outputs:
   changed:
     description: '"true" when a commit was made; "false" when content already matched.'
@@ -229,7 +234,9 @@ runs:
         #    checked-out branch, and nothing here ever checks `$BRANCH` out.
         if [ -n "$PR_TITLE" ]; then
           pr_args=(pr create --repo "$REPO" --head "$BRANCH" --base "$BASE" --title "$PR_TITLE")
-          # Same `set -e` trap as above: pr-draft="false" would abort the step.
+          # Ready by default (#398): only an explicit pr-draft="true" adds
+          # --draft. Compared as a string, not as shell truthiness — under
+          # `set -e` a bare test on "false" would abort the step.
           if [ "$PR_DRAFT" = "true" ]; then pr_args+=(--draft); fi
           if [ -n "$PR_BODY_FILE" ] && [ -f "$PR_BODY_FILE" ]; then
             pr_args+=(--body-file "$PR_BODY_FILE")
