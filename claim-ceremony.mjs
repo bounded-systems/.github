@@ -301,8 +301,14 @@ export function announceCredential(env) {
 export function proxiedFetch(url, { method = "GET", headers = {}, body } = {}, { env = process.env } = {}) {
   return new Promise((resolve, reject) => {
     const req = https.request(url, { method, headers, agent: new https.Agent({ proxyEnv: env }) }, (res) => {
-      res.resume();
-      res.on("end", () => resolve({ status: res.statusCode }));
+      // The body is READ rather than discarded because on a refusal it is the
+      // only thing that says WHO refused — the proxy and GitHub both answer 403
+      // here and mean different things (#394). Bounded, because an error body
+      // is small and nothing downstream wants more than the message.
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { if (text.length < 2000) text += chunk; });
+      res.on("end", () => resolve({ status: res.statusCode, bodyText: text }));
     });
     req.on("error", reject);
     req.end(body);
@@ -312,6 +318,61 @@ export function proxiedFetch(url, { method = "GET", headers = {}, body } = {}, {
 /** The transport for this environment: through the proxy when one is named, global fetch otherwise. */
 export function announceFetch(env) {
   return proxyUrl(env) ? (url, init) => proxiedFetch(url, init, { env }) : fetch;
+}
+
+/**
+ * The refusal body, from whichever response shape the transport produced, or ""
+ * when there is none to read. Never throws and never blocks the refusal path:
+ * a diagnosis that cannot be made is simply not made.
+ */
+export async function readErrorBody(res) {
+  try {
+    if (typeof res?.text === "function") return String(await res.text()).slice(0, 2000);
+    if (typeof res?.bodyText === "string") return res.bodyText.slice(0, 2000);
+  } catch {
+    // A body that cannot be read is the same as one that was not sent.
+  }
+  return "";
+}
+
+/**
+ * WHO refused, in one clause, or "" when the answer is not one of the measured
+ * shapes.
+ *
+ * MEASURED 2026-09-10 (#394), all three on the same status code, which is the
+ * whole reason this exists: `403` alone sends the next reader to re-derive the
+ * transport, and the transport has not been the problem since #395.
+ *
+ *   - the PROXY refusing a repository scope — the session was not created with
+ *     `.github` attached. Curable, by attaching it.
+ *   - the PROXY refusing outright on session type (`repository_dispatch`), with
+ *     no `X-Accepted-Github-Permissions` at all because GitHub never saw it.
+ *   - GITHUB refusing the injected credential for want of `actions: write`.
+ *     NOT curable from this org: the credential is a GitHub App user-to-server
+ *     token issued by the egress proxy, and an admin can approve only what the
+ *     app requests.
+ *
+ * Matched on the body rather than the status, because the status cannot tell
+ * them apart. A 403 whose body says nothing recognizable gets no clause — an
+ * invented diagnosis would be worse than a bare number.
+ */
+export function diagnoseRefusal({ status, bodyText = "", env = process.env } = {}) {
+  const body = String(bodyText);
+  if (/not enabled for this session|sessions are bound to their configured repositories/i.test(body)) {
+    return "the egress proxy refused the repository scope — this session was not created with " +
+      `${ANNOUNCE_REPO} attached, and no credential change substitutes for that`;
+  }
+  if (/not permitted for this session type/i.test(body)) {
+    return "the egress proxy refused it on session type, before GitHub saw it — no grant opens this route";
+  }
+  if (/Resource not accessible by integration/i.test(body)) {
+    return "the request REACHED GitHub and the injected credential lacks `actions: write` (#394) — " +
+      "the route is not the problem, so no retry or transport change will help";
+  }
+  if (status === 401 && !proxyUrl(env)) {
+    return "GitHub read the credential as bad — no proxy is set, so nothing was injected";
+  }
+  return "";
 }
 
 /**
@@ -342,7 +403,11 @@ export async function announceCeremony(
       },
     );
     if (res.status === 204) return { announced: true };
-    return { announced: false, reason: `dispatch answered HTTP ${res.status}` };
+    const clause = diagnoseRefusal({ status: res.status, bodyText: await readErrorBody(res), env });
+    return {
+      announced: false,
+      reason: `dispatch answered HTTP ${res.status}${clause ? ` — ${clause}` : ""}`,
+    };
   } catch (e) {
     return { announced: false, reason: e.message };
   }
