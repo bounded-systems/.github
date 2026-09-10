@@ -33,6 +33,8 @@ import {
   announceFetch,
   authHeader,
   approvalPrompt,
+  diagnoseRefusal,
+  readErrorBody,
   buildRequest,
   ceremonyWindowMs,
   encodeToken,
@@ -378,6 +380,82 @@ test("with a proxy named and no transport injected, the dispatch tunnels through
   } finally {
     server.close();
   }
+});
+
+// ── Which 403 it was (#394) ──────────────────────────────────────────────────
+//
+// Three refusals measured 2026-09-10 share one status code and mean different
+// things: the proxy refusing a repository scope, the proxy refusing on session
+// type, and GitHub refusing the injected credential for want of `actions:
+// write`. `403` alone sent three separate sessions to re-derive the transport,
+// which #395 had already fixed. The rule is matched on the BODY, because the
+// status cannot tell them apart.
+
+test("each measured refusal is attributed to whoever actually refused it", () => {
+  const proxyScope = diagnoseRefusal({
+    status: 403,
+    bodyText: '{"message":"GitHub access to this repository is not enabled for this session."}',
+  });
+  assert.match(proxyScope, /proxy/i);
+  assert.match(proxyScope, /attached/, "the remedy for a scope refusal is attaching the repo");
+
+  const sessionType = diagnoseRefusal({
+    status: 403,
+    bodyText: '{"message":"repository_dispatch is not permitted for this session type."}',
+  });
+  assert.match(sessionType, /session type/i);
+  assert.match(sessionType, /no grant opens/i, "a grant cannot open a route GitHub never sees");
+
+  const github = diagnoseRefusal({
+    status: 403,
+    bodyText: '{"message":"Resource not accessible by integration"}',
+  });
+  assert.match(github, /REACHED GitHub/);
+  assert.match(github, /actions: write/, "it must name the permission GitHub named");
+  assert.match(github, /#394/, "and where the measurement lives");
+
+  // The three are distinct sentences, not one hedge covering every case.
+  assert.equal(new Set([proxyScope, sessionType, github]).size, 3);
+});
+
+test("an unrecognized body gets no clause — an invented diagnosis is worse than a bare number", () => {
+  assert.equal(diagnoseRefusal({ status: 403, bodyText: '{"message":"something new"}' }), "");
+  assert.equal(diagnoseRefusal({ status: 403, bodyText: "" }), "");
+  assert.equal(diagnoseRefusal({ status: 500, bodyText: "" }), "");
+  // A 401 is only diagnosable when no proxy was in play; behind one it is not this rule's to explain.
+  assert.match(diagnoseRefusal({ status: 401, bodyText: "", env: {} }), /credential as bad/);
+  assert.equal(diagnoseRefusal({ status: 401, bodyText: "", env: { HTTPS_PROXY: "http://127.0.0.1:1" } }), "");
+});
+
+test("the reason carries the diagnosis, so the CLI and a programmatic caller read the same thing", async () => {
+  const r = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    {
+      env: { GITHUB_TOKEN: PROXY_SENTINEL, HTTPS_PROXY: "http://127.0.0.1:1" },
+      fetchImpl: async () => ({ status: 403, bodyText: '{"message":"Resource not accessible by integration"}' }),
+    },
+  );
+  assert.equal(r.announced, false);
+  assert.match(r.reason, /HTTP 403/, "the status still leads — it is what a reader greps for");
+  assert.match(r.reason, /actions: write/, "and the clause says why, so nobody re-derives the transport");
+});
+
+test("a refusal with no readable body still reports, exactly as before", async () => {
+  // The pre-#394 stub shape: a status and nothing else. It must not throw and
+  // must not grow a clause it cannot support.
+  const r = await announceCeremony(
+    { repo: "d", issue: "1", claimant: "c", approveUrl: "https://keeper.bounded.tools/a/x" },
+    { env: { GH_TOKEN: "t" }, fetchImpl: async () => ({ status: 403 }) },
+  );
+  assert.equal(r.reason, "dispatch answered HTTP 403");
+});
+
+test("the body is read from either transport shape, and an unreadable one is not fatal", async () => {
+  assert.equal(await readErrorBody({ bodyText: "from the proxied transport" }), "from the proxied transport");
+  assert.equal(await readErrorBody({ text: async () => "from global fetch" }), "from global fetch");
+  assert.equal(await readErrorBody({ text: async () => { throw new Error("stream already consumed"); } }), "");
+  assert.equal(await readErrorBody({}), "");
+  assert.equal(await readErrorBody(undefined), "");
 });
 
 // ── The hand-off, when the dispatch cannot happen (#305) ─────────────────────
