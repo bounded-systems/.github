@@ -23,8 +23,20 @@ name: repo-standard-conformance
 # ── What it publishes, and what it refuses to ────────────────────────────────
 # Only public repos: the enumeration is `type=public`, verified EXACTLY against
 # /orgs/{org}.public_repos, so no private repository is read or named — in the
-# snapshot, the artifact, the summary or this log. A short enumeration is a
-# refusal (exit 2, no snapshot), as is a credential that reads nothing: a
+# snapshot, the artifact, the summary or this log.
+#
+# "Named" needs one clause the enumeration alone does not buy. Rows carry the
+# rulesets that apply to each public repo, and a ruleset NAME is org-authored
+# free text: the `ci-green-*` family is named after what each one covers, so a
+# name can carry a repo this lane never read. Names are therefore published only
+# from an allowlist of strings already committed to this public repo — the suite
+# proves each one is — and every other name is withheld as `null` beside its id.
+# The argument for an allowlist rather than "the listing is repo-scoped" is in
+# PUBLISHABLE_RULESET_NAMES in the script; the short version is that scoping
+# constrains which rulesets are returned, not what they are called.
+#
+# A short enumeration is a refusal (exit 2, no snapshot), as is a credential that
+# reads nothing: a
 # partial fleet presented as the fleet is the failure this layer exists to
 # prevent (#368's lesson, applied to a public denominator where it can be exact
 # rather than a floor).
@@ -36,7 +48,17 @@ name: repo-standard-conformance
 # baseline-and-ratchet increment (drift-gate's shape) is the next change once
 # the first snapshot exists.
 #
-# ── The one unverified claim, dated ──────────────────────────────────────────
+# ── The unverified claims, dated ─────────────────────────────────────────────
+# The RULESETS listing (GET /repos/{o}/{r}/rulesets?includes_parents=true) was
+# measured on 2026-09-10 against THIS repo: 200 with no credential at all, five
+# rulesets, four of them org-level. So no `administration: read` is needed —
+# `contents: read` is already more than the call requires, and a token cannot
+# have less access than none. What is still unmeasured is the other ~90 public
+# repos and the rate cost of one more call each; the first scheduled run settles
+# both. Anything but a 200 array lands as a `ruleset-names-unreadable` gap on the
+# row and names nothing — the gate is read from a different endpoint and is
+# unaffected, so a failure here costs attribution, never a verdict.
+#
 # Whether GITHUB_TOKEN with `actions: read` may list another public repo's
 # workflow runs is NOT measured as of 2026-09-04 — the session that wrote this
 # could not reach api.github.com for any unattached repo (proxy 403). The row
