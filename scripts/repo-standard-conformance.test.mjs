@@ -417,7 +417,7 @@ test("readRules: the required contexts and the rulesets that require them; anyth
 
 test("classifyRepo: dark factory — the standard and the claim required, and the arming lane present, is gate_ready with no finding", () => {
   const row = classifyRepo({ repo: "desk", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
-  assert.deepEqual(row.dark_factory, { required_checks: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366], arming_lane: "auto-merge.yml", legacy_arming: false, gate_ready: true });
+  assert.deepEqual(row.dark_factory, { required_checks: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366], arming_lane: "auto-merge.yml", gate_ready: true });
   assert.deepEqual(row.findings, []);
   assert.deepEqual(row.gaps, []);
   // The caller is org-managed, so it is not counted as extra CI.
@@ -425,7 +425,7 @@ test("classifyRepo: dark factory — the standard and the claim required, and th
   assert.ok(row.managed.includes("auto-merge.yml"));
 });
 
-test("classifyRepo: dark factory — gated but unarmed is a finding; a caller nothing requires is the fail-open finding; a legacy armer does not count", () => {
+test("classifyRepo: dark factory — gated but unarmed is a finding; a caller nothing requires is the fail-open finding", () => {
   const unarmed = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
   assert.deepEqual(unarmed.findings, ["arming-lane-absent"]);
   assert.equal(unarmed.dark_factory.gate_ready, false);
@@ -447,12 +447,6 @@ test("classifyRepo: dark factory — gated but unarmed is a finding; a caller no
   assert.deepEqual(claimGated.dark_factory.required_checks, ["pr-claim / pr-claim"], "the claim is still LISTED; it just does not count as a gate");
   const bareClaim = classifyRepo({ repo: "k", files: [], root: [], rules: claimOnly });
   assert.deepEqual(bareClaim.findings, ["caller-absent"], "no caller and no CI gate: not arming-lane-absent — there is no green to wait on");
-
-  // Only the legacy lane: still unarmed — its precondition is false by construction (.github-private#929).
-  const legacy = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/dependabot-auto-merge.yml", "name: dependabot-auto-merge\non: pull_request\n")], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
-  assert.deepEqual(legacy.findings, ["arming-lane-absent"]);
-  assert.equal(legacy.dark_factory.legacy_arming, true);
-  assert.equal(legacy.dark_factory.arming_lane, null);
 
   // Gated by something other than the standard (this repo's own `schema`): gated, unarmed, not gate_ready — the standard is not what is required.
   const schema = classifyRepo({ repo: "dot", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: { read: true, contexts: ["pr-claim / pr-claim", "schema"], rulesets: [1] } });
@@ -633,7 +627,7 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
   // The dark-factory read rode along: keycard is gated, armed and ready; the two without a caller are neither gated nor findings for it.
   assert.equal(by.keycard.dark_factory.gate_ready, true);
   assert.deepEqual(by.keycard.dark_factory.required_checks, ["pr-claim / pr-claim", "standard / test"]);
-  assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], arming_lane: null, legacy_arming: false, gate_ready: false });
+  assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], arming_lane: null, gate_ready: false });
   assert.deepEqual(snap.totals.gated, 1);
   assert.deepEqual(snap.totals.gate_ready, 1);
   assert.equal(snap.totals.merge_group, 1, "keycard's caller carries the key; the two without a caller do not count");

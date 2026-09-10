@@ -63,7 +63,6 @@ export const ORG_MANAGED = new Map([
   ["pr-claim.yml", "_pr-claim.yml (this repo)"],
   ["claim-sweep.yml", "_claim-sweep.yml (this repo)"],
   ["version.yml", "mint version.yml"],
-  ["dependabot-auto-merge.yml", ".github-private docs/handoffs/dependabot-auto-merge.yml"],
   ["auto-merge.yml", "_auto-merge.yml (this repo)"],
   ["lease-key-rotation.yml", ".github-private docs/handoffs/lease-key-rotation.yml"],
   ["gate.yml", ".github-private docs/handoffs/gate.yml"],
@@ -336,10 +335,9 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
   // `dark_factory: null`, no finding, no gap. The sweep always passes it.
   const basenames = files ? files.map((f) => f.path.split("/").pop()) : null;
   const arming = basenames ? (basenames.includes("auto-merge.yml") ? "auto-merge.yml" : null) : null;
-  const legacy = basenames ? basenames.includes("dependabot-auto-merge.yml") : null;
   if (rules === undefined) row.dark_factory = null;
   else if (!rules.read) {
-    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, legacy_arming: legacy, gate_ready: null };
+    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, gate_ready: null };
     gaps.push(`rules-unreadable:${rules.reason}`);
   } else {
     const req = rules.contexts;
@@ -350,13 +348,14 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     // `gated` 90 of 90 by construction on the first run (#391). The claim is the
     // passkey's rung — the human touch #913 keeps outside the CI gate on purpose.
     const gated = req.some((c) => c !== "pr-claim / pr-claim");
-    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, legacy_arming: legacy, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
+    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
     // Green gates nothing: a caller whose contexts nothing on the default branch
     // requires is the fail-open case #913 names — the check runs and decides nothing.
     if (row.caller.state === "present" && !gated) findings.push("gate-absent");
     // Green waits for a person: something is required, and nothing arms the merge.
-    // A legacy dependabot-auto-merge.yml does not count — its precondition is false
-    // by construction (.github-private#929). Unreadable workflows are already a gap.
+    // Unreadable workflows are already a gap. (The legacy dependabot-auto-merge.yml
+    // was retired on a measured zero, .github-private#929 / #393; it is no longer
+    // org-managed and no longer reported.)
     if (gated && basenames && arming === null) findings.push("arming-lane-absent");
   }
 
