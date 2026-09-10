@@ -16,7 +16,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   ORG,
   STANDARD_INPUT_DEFAULTS,
@@ -36,6 +37,8 @@ import {
   summarize,
   sweep,
   readRules,
+  readRulesetNames,
+  PUBLISHABLE_RULESET_NAMES,
 } from "./repo-standard-conformance.mjs";
 
 // ── fixtures: real callers ───────────────────────────────────────────────────
@@ -387,6 +390,8 @@ test("classifyRepo: a workflow that does not parse is recorded on the row, not d
 // ── the dark-factory arrangement (.github-private#913 step 4) ────────────────
 
 const RULES_37 = { read: true, contexts: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366] };
+// The name side, shaped like a real listing: one publishable name, one withheld.
+const NAMES_37 = { read: true, names: { 21805316: "required-baseline", 22333366: "ci-green-dot-github" } };
 const AUTO_MERGE = `name: auto-merge
 on:
   pull_request:
@@ -415,9 +420,55 @@ test("readRules: the required contexts and the rulesets that require them; anyth
   assert.deepEqual(readRules({ status: 200, body: { not: "an array" } }), { read: false, reason: "200" });
 });
 
+test("readRulesetNames: ids to names, redacted to the allowlist; anything but a 200 array is unreadable", () => {
+  const r = readRulesetNames({ status: 200, body: [
+    { id: 22333366, name: "ci-green-dot-github", enforcement: "active", source_type: "Organization" },
+    { id: 21805316, name: "required-baseline", enforcement: "active", source_type: "Organization" },
+    // A name the allowlist does not admit: the id is kept, the name is withheld —
+    // NOT dropped, so the row shows that something applies here it did not name.
+    { id: 18646713, name: "default-branch-protection", enforcement: "active" },
+    { id: 999, enforcement: "active" },        // no name at all: skipped, not published as null
+    { name: "no id either" },
+  ] });
+  assert.deepEqual(r, { read: true, names: { 18646713: null, 21805316: "required-baseline", 22333366: "ci-green-dot-github" } });
+  assert.deepEqual(readRulesetNames({ status: 200, body: [] }), { read: true, names: {} });
+  // Missing attribution is never wrong attribution, and never "no ruleset applies".
+  assert.deepEqual(readRulesetNames({ status: 403, body: { message: "no" } }), { read: false, reason: "403" });
+  assert.deepEqual(readRulesetNames({ status: 200, body: { not: "an array" } }), { read: false, reason: "200" });
+  // Integer-like keys serialise ascending, so the committed snapshot diffs stably.
+  assert.equal(JSON.stringify(r.names), '{"18646713":null,"21805316":"required-baseline","22333366":"ci-green-dot-github"}');
+});
+
+// This is the redaction's safety argument, mechanised. A name may be published only
+// because it is ALREADY a public string in this repo; if that stops being true, or if
+// someone adds a name that was never public, this fails rather than leaking. The two
+// files that carry the list are excluded, or the check would prove itself.
+test("PUBLISHABLE_RULESET_NAMES: every publishable name is already committed elsewhere in this public repo", () => {
+  const SELF = ["scripts/repo-standard-conformance.mjs", "scripts/repo-standard-conformance.test.mjs"];
+  const ROOT = fileURLToPath(new URL("../", import.meta.url));
+  const corpus = [];
+  (function walk(rel) {
+    for (const e of readdirSync(ROOT + rel, { withFileTypes: true })) {
+      if (e.name === ".git" || e.name === "node_modules") continue;
+      const path = rel + e.name;
+      if (e.isDirectory()) walk(path + "/");
+      else if (e.isFile() && !SELF.includes(path) && statSync(ROOT + path).size < 1_000_000) {
+        corpus.push(readFileSync(ROOT + path, "utf8"));
+      }
+    }
+  })("");
+  assert.ok(corpus.length > 50, `expected this repo's tree, found ${corpus.length} files — the proof would be vacuous`);
+  for (const name of PUBLISHABLE_RULESET_NAMES) {
+    assert.ok(corpus.some((t) => t.includes(name)), `"${name}" may not be published: it is not committed anywhere else in this public repo`);
+  }
+  // And the list is a redaction, not a pass-through: a name shaped like the family
+  // but carrying a repo this lane never read is NOT admitted by being ci-green-ish.
+  assert.equal(PUBLISHABLE_RULESET_NAMES.has("ci-green-fleet"), false);
+});
+
 test("classifyRepo: dark factory — the standard and the claim required, and the arming lane present, is gate_ready with no finding", () => {
-  const row = classifyRepo({ repo: "desk", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
-  assert.deepEqual(row.dark_factory, { required_checks: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366], arming_lane: "auto-merge.yml", gate_ready: true });
+  const row = classifyRepo({ repo: "desk", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37, rulesetNames: NAMES_37 });
+  assert.deepEqual(row.dark_factory, { required_checks: ["pr-claim / pr-claim", "standard / test"], rulesets: [21805316, 22333366], ruleset_names: { 21805316: "required-baseline", 22333366: "ci-green-dot-github" }, arming_lane: "auto-merge.yml", gate_ready: true });
   assert.deepEqual(row.findings, []);
   assert.deepEqual(row.gaps, []);
   // The caller is org-managed, so it is not counted as extra CI.
@@ -454,12 +505,50 @@ test("classifyRepo: dark factory — gated but unarmed is a finding; a caller no
   assert.equal(schema.dark_factory.gate_ready, false);
 });
 
+// The point of the field: `gate-absent` says a caller's green decides nothing, and on
+// its own it does not say WHY. The applying rulesets, by name, split the two remedies.
+test("classifyRepo: dark factory — ruleset names attribute gate-absent to enrolment or to a toothless ruleset", () => {
+  const caller = [wf(".github/workflows/standard.yml", KEYCARD)];
+  const claimOnly = { read: true, contexts: ["pr-claim / pr-claim"], rulesets: [21805316] };
+
+  // Never enrolled: the org floor applies, no ci-green ruleset does. Remedy: add the repo.
+  const unenrolled = classifyRepo({ repo: "k", files: caller, root: RUST_ROOT, run: run("success"), rules: claimOnly, rulesetNames: { read: true, names: { 21805316: "required-baseline" } } });
+  assert.deepEqual(unenrolled.findings, ["gate-absent"]);
+  assert.deepEqual(unenrolled.dark_factory.ruleset_names, { 21805316: "required-baseline" });
+
+  // Enrolled but toothless: ci-green applies and still requires no CI context.
+  // Remedy: fix the ruleset. Same finding, and now the row tells them apart.
+  const toothless = classifyRepo({ repo: "k", files: caller, root: RUST_ROOT, run: run("success"), rules: claimOnly, rulesetNames: { read: true, names: { 21805316: "required-baseline", 22333366: "ci-green-dot-github" } } });
+  assert.deepEqual(toothless.findings, ["gate-absent"], "attribution changes nothing about the verdict");
+  assert.deepEqual(toothless.dark_factory.rulesets, [21805316], "still only the rulesets that require a check");
+  assert.deepEqual(toothless.dark_factory.ruleset_names, { 21805316: "required-baseline", 22333366: "ci-green-dot-github" }, "but every ruleset that APPLIES is named, which is what attributes the finding");
+
+  // A ruleset applies whose name is not public: the id says something is there, the
+  // null says this lane will not name it. Not dropped, not guessed at.
+  const withheld = classifyRepo({ repo: "k", files: caller, root: RUST_ROOT, run: run("success"), rules: claimOnly, rulesetNames: readRulesetNames({ status: 200, body: [{ id: 21805316, name: "required-baseline" }, { id: 4242, name: "some-ruleset-named-elsewhere" }] }) });
+  assert.deepEqual(withheld.dark_factory.ruleset_names, { 4242: null, 21805316: "required-baseline" });
+  assert.deepEqual(withheld.findings, ["gate-absent"]);
+});
+
 test("classifyRepo: dark factory — unreadable rules are a gap with the status, never a finding; not measured at all is null", () => {
   const unreadable = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: { read: false, reason: "403" } });
   assert.deepEqual(unreadable.findings, []);
   assert.deepEqual(unreadable.gaps, ["rules-unreadable:403"]);
   assert.equal(unreadable.dark_factory.gate_ready, null);
   assert.equal(unreadable.dark_factory.required_checks, null);
+  assert.equal(unreadable.dark_factory.ruleset_names, null, "rulesetNames not passed: attribution is absent, and silent");
+  // The two listings fail independently. A names 403 is its own gap with its own status,
+  // and it never lets the gate read as empty: required_checks still comes from `rules`.
+  const noNames = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD), wf(".github/workflows/auto-merge.yml", AUTO_MERGE)], root: RUST_ROOT, run: run("success"), rules: RULES_37, rulesetNames: { read: false, reason: "403" } });
+  assert.deepEqual(noNames.findings, [], "an unnamed ruleset is a limit of this lane, never a defect of the repo");
+  assert.deepEqual(noNames.gaps, ["ruleset-names-unreadable:403"]);
+  assert.equal(noNames.dark_factory.ruleset_names, null);
+  assert.deepEqual(noNames.dark_factory.required_checks, ["pr-claim / pr-claim", "standard / test"]);
+  assert.equal(noNames.dark_factory.gate_ready, true, "the gate is read from its own endpoint and is unaffected");
+  // Both down: two gaps, in endpoint order, still no finding.
+  const neither = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: { read: false, reason: "500" }, rulesetNames: { read: false, reason: "403" } });
+  assert.deepEqual(neither.gaps, ["rules-unreadable:500", "ruleset-names-unreadable:403"]);
+  assert.deepEqual(neither.findings, []);
   // Workflows unreadable AND rules readable: gated, but whether it is armed is unknown — no arming finding on top of the workflows gap.
   const dark = classifyRepo({ repo: "k", files: null, filesError: "403", root: null, rootError: "403", rules: RULES_37 });
   assert.deepEqual(dark.findings, []);
@@ -467,6 +556,11 @@ test("classifyRepo: dark factory — unreadable rules are a gap with the status,
   assert.equal(dark.dark_factory.gate_ready, false);
   // The unit surface: rules not passed is "not under measurement", stated as null rather than defaulted to ungated.
   assert.equal(classifyRepo({ repo: "k", files: [], root: [] }).dark_factory, null);
+  // rulesetNames not passed is the same surface: no attribution and NO gap, so the
+  // hundreds of existing classifier assertions do not each acquire a phantom gap.
+  const noArg = classifyRepo({ repo: "k", files: [wf(".github/workflows/standard.yml", KEYCARD)], root: RUST_ROOT, run: run("success"), rules: RULES_37 });
+  assert.deepEqual(noArg.gaps, []);
+  assert.equal(noArg.dark_factory.ruleset_names, null);
 });
 
 test("summarize + renderSummary: the dark-factory totals count what was measured, and the row prints even at zero", () => {
@@ -538,7 +632,7 @@ test("fleetSlice: the repo's red rows and whether the feed lists it unobserved",
 
 // ── the sweep, against a fake GitHub ─────────────────────────────────────────
 
-function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRepo, rulesByRepo = {}, fleet = null, selftest = "success" }) {
+function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRepo, rulesByRepo = {}, rulesetsByRepo = {}, fleet = null, selftest = "success" }) {
   const json = (status, body) => ({ status, headers: new Headers(), json: async () => body, text: async () => JSON.stringify(body) });
   const text = (status, body) => ({ status, headers: new Headers(), json: async () => { throw new Error("not json"); }, text: async () => body });
   return async (url) => {
@@ -565,6 +659,11 @@ function fakeGitHub({ publicRepos, repos, workflowsByRepo, rootByRepo, runsByRep
     }
     if (rest.startsWith("contents/")) return rootByRepo[repo] ? json(200, rootByRepo[repo].map((name) => ({ name, type: "file" }))) : json(403, {});
     if (rest.startsWith("properties/values")) return json(403, {});
+    if (rest === "rulesets") {
+      const rs = rulesetsByRepo[repo];
+      if (rs === "forbidden") return json(403, {});
+      return json(200, (rs ?? []).map(([id, name]) => ({ id, name, enforcement: "active", source_type: "Organization" })));
+    }
     if (rest.startsWith("rules/branches/")) {
       const rr = rulesByRepo[repo];
       if (rr === "forbidden") return json(403, {});
@@ -606,6 +705,10 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
     runsByRepo: { keycard: "forbidden" },
     // keycard is gated on the two contexts the dark factory needs; the other two have no rules at all.
     rulesByRepo: { keycard: ["standard / test", "pr-claim / pr-claim"] },
+    // keycard's applying rulesets: one publishable name, one the allowlist withholds.
+    // repo-health's listing 403s, so the row shows a gap rather than "nothing applies";
+    // night-audit has a listing and it is empty.
+    rulesetsByRepo: { keycard: [[100, "ci-green-dot-github"], [101, "not-a-public-name"]], "repo-health": "forbidden" },
     fleet: { generated_at: "2026-09-04T14:13:32Z", repos_known: 97, repos_observed: 92, coverage_complete: false, unobserved: ["bounded-systems/night-audit"], red: [{ repo: "bounded-systems/repo-health", workflow: "ci", conclusion: "failure", since: "s", run_url: "r" }] },
   });
   const snap = await sweep({ fetchImpl, token: "t", now: "2026-09-04T15:00:00Z", headSha: "d126d721fa50275e12af0bdeaf1a2ff3016eedfd", log: () => {} });
@@ -627,7 +730,11 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
   // The dark-factory read rode along: keycard is gated, armed and ready; the two without a caller are neither gated nor findings for it.
   assert.equal(by.keycard.dark_factory.gate_ready, true);
   assert.deepEqual(by.keycard.dark_factory.required_checks, ["pr-claim / pr-claim", "standard / test"]);
-  assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], arming_lane: null, gate_ready: false });
+  assert.deepEqual(by.keycard.dark_factory.ruleset_names, { 100: "ci-green-dot-github", 101: null }, "the redaction is applied on the way into the snapshot, not on the way out");
+  assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], ruleset_names: null, arming_lane: null, gate_ready: false });
+  assert.ok(by["repo-health"].gaps.includes("ruleset-names-unreadable:403"), "a listing this lane could not read is a gap, not an empty attribution");
+  assert.deepEqual(by["night-audit"].dark_factory.ruleset_names, {}, "a listing that read and returned nothing is {} — measured, and empty");
+  assert.deepEqual(by["night-audit"].findings, ["caller-absent"], "attribution adds no finding anywhere");
   assert.deepEqual(snap.totals.gated, 1);
   assert.deepEqual(snap.totals.gate_ready, 1);
   assert.equal(snap.totals.merge_group, 1, "keycard's caller carries the key; the two without a caller do not count");
