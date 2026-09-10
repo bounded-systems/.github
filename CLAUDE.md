@@ -88,8 +88,10 @@ Org-level defaults and the public profile README for bounded-systems. It is
 **public** — nothing from `.github-private` belongs here, and `prx init`'s public
 scaffolder must never carry the org context hook (there is a no-leak guard test).
 
-One change → one PR → merge; no direct pushes to `main`. Open PRs as draft. Pin
-every Action to a commit SHA; default `permissions: { contents: read }`. Run
+One change → one PR → merge; no direct pushes to `main`. Open PRs **ready**, not
+draft: the check is the gate and the arming lane merges on green, and a draft is
+the one state it never touches (#398) — a branch that is not ready is not a PR yet.
+Pin every Action to a commit SHA; default `permissions: { contents: read }`. Run
 `node --test .claude/*.test.mjs` and `node --test *.test.mjs` before pushing.
 
 ## Then read
