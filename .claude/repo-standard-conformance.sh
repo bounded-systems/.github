@@ -15,7 +15,7 @@
 # Where it disagrees with a repo's actual workflows, the repo is right and this
 # is stale — which is why the age is printed on every run and not only when
 # something is wrong. A FINDING is the repo's (no caller, unpinned, filtered
-# pull_request, toolchain without a test lane, red run); a GAP is the lane's
+# pull_request, no merge_group, toolchain without a test lane, red run); a GAP is the lane's
 # (a listing it could not read). Never sum them.
 set -euo pipefail
 
@@ -99,6 +99,7 @@ jq -r --arg stamp "$stamp" --arg human "$human" '
   "  test lane:   \(.totals.test_lane.present) present · \(.totals.test_lane.absent) absent · \(.totals.test_lane["n/a"]) n/a · \(.totals.test_lane.unmeasured) unmeasured",
   "  runs:        \(.totals.standard_run.green) green · \(.totals.standard_run.red) red · \(.totals.standard_run.other) other · \(.totals.standard_run.none) none · \(.totals.standard_run.unreadable) unreadable",
   "  gate:        \(.totals.gated // "?") gated · \(.totals.arming_lane // "?") arming lane · \(.totals.gate_ready // "?") dark-factory ready",
+  "  merge queue: \(.totals.merge_group // "?") callers trigger on merge_group",
   "  findings:    \(.totals.findings) across \(.totals.with_findings) repos    gaps: \(.totals.gaps)"
 ' <<<"$body"
 
