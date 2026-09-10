@@ -289,3 +289,39 @@ test("_auto-merge: broker-minted identity, no checkout, never pull_request_targe
   assert.match(armStep, /GH_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/, "the arm step uses the minted token");
   assert.doesNotMatch(armStep, /github\.token/, "the arm step never falls back to GITHUB_TOKEN");
 });
+
+// ── The reference caller triggers on merge_group ─────────────────────────────
+//
+// A merge queue re-runs a branch's required contexts on `merge_group` and on
+// nothing else. A caller of repo-standard that declares only `pull_request`
+// never reports there, so the queue waits on `standard / test` until its check
+// timeout and every queued PR fails without a red line anywhere
+// (.github-private#913 step 5). repo-standard-selftest.yml is the caller every
+// repo's standard.yml copies, and the conformance lane measures each copy for
+// the same key (`merge-group-absent`), so the reference must carry it first.
+//
+// The second half is the two elevated jobs: under `merge_group` they must stay
+// as dormant as under `pull_request`, or a queue run instantiates contents:
+// write and runs Scorecard against a queue commit. Both asserted from the file,
+// with comments stripped first — the header names the key to explain it.
+test("repo-standard-selftest: triggers on merge_group, and the elevated jobs stay gated under it", () => {
+  const src = readFileSync(join(DIR, "repo-standard-selftest.yml"), "utf8")
+    .split("\n").filter((l) => !/^\s*#/.test(l)).join("\n");
+  // The `on:` block: from the key to the next top-level key.
+  const on = /^on:\n([\s\S]*?)^[A-Za-z_][\w-]*:/m.exec(src);
+  assert.ok(on, "repo-standard-selftest.yml has no on: block");
+  assert.match(on[1], /^ {2}pull_request:/m, "the reference caller must still trigger on pull_request");
+  assert.match(on[1], /^ {2}merge_group:/m,
+    "repo-standard-selftest.yml no longer triggers on merge_group. A merge queue " +
+    "re-runs required contexts on that event only; a caller without it hangs the " +
+    "queue on standard / test until the check timeout.");
+
+  const gates = [...src.matchAll(/^\s*if: \$\{\{ (.*) \}\}\s*$/gm)].map((m) => m[1]);
+  assert.ok(gates.length >= 2, "expected the scorecard and release jobs to be event-gated");
+  for (const g of gates) {
+    if (!g.includes("github.event_name != 'pull_request'")) continue;
+    assert.ok(g.includes("github.event_name != 'merge_group'"),
+      `a job gated \`${g}\` runs under merge_group — a queue run would instantiate ` +
+      `its elevated grant. Gate it on both events.`);
+  }
+});

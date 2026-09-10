@@ -7,9 +7,10 @@
 //
 // Runs under bun, not node: the YAML parser is Bun.YAML, and the fixtures below
 // are real workflow text (fetched 2026-09-04 over raw.githubusercontent.com
-// from keycard, guest-room, conformance-kit and repo-health) — the point is that
-// a caller shaped like the ones in the org classifies the way the survey
-// classified it by hand. The suite uses node:test's API so it reads like every
+// from keycard, guest-room, conformance-kit and repo-health, plus the bare
+// `merge_group:` the conformance template gained on 2026-09-10 for the merge
+// queue — .github-private#913 step 5) — the point is that a caller shaped like
+// the ones in the org classifies the way the survey classified it by hand. The suite uses node:test's API so it reads like every
 // other suite here; `.claude/test-coverage.test.mjs` recognises the `bun test`
 // line in org-defaults.yml for the same reason it recognises `node --test`.
 
@@ -25,6 +26,7 @@ import {
   findCaller,
   fleetSlice,
   matchStandard,
+  mergeGroupTrigger,
   orderRows,
   parseYaml,
   pullRequestTrigger,
@@ -43,6 +45,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 permissions:
   contents: read
 jobs:
@@ -67,6 +70,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 permissions:
   contents: read
 jobs:
@@ -84,6 +88,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 permissions:
   contents: read
 jobs:
@@ -172,6 +177,17 @@ test("pullRequestTrigger: the survey's predicate over every `on:` shape", () => 
   assert.deepEqual(pullRequestTrigger(undefined), { present: false });
 });
 
+test("mergeGroupTrigger: the key's presence over every `on:` shape", () => {
+  assert.equal(mergeGroupTrigger({ pull_request: null, merge_group: null }), true, "a bare key is the template's shape");
+  assert.equal(mergeGroupTrigger({ pull_request: null, merge_group: { types: ["checks_requested"] } }), true);
+  assert.equal(mergeGroupTrigger({ pull_request: null, push: { branches: ["main"] } }), false);
+  assert.equal(mergeGroupTrigger(["pull_request", "merge_group"]), true);
+  assert.equal(mergeGroupTrigger(["pull_request"]), false);
+  assert.equal(mergeGroupTrigger("merge_group"), true);
+  assert.equal(mergeGroupTrigger("pull_request"), false);
+  assert.equal(mergeGroupTrigger(undefined), false);
+});
+
 test("pushesDefault: branches list, unfiltered push, list form", () => {
   assert.equal(pushesDefault({ push: { branches: ["main"] } }, "main"), true);
   assert.equal(pushesDefault({ push: { branches: ["release"] } }, "main"), false);
@@ -181,6 +197,12 @@ test("pushesDefault: branches list, unfiltered push, list form", () => {
 });
 
 // ── findCaller ───────────────────────────────────────────────────────────────
+
+test("findCaller: merge_group is reported per caller — present on the template's shape, absent on a pull_request-only caller", () => {
+  assert.equal(findCaller([wf(".github/workflows/standard.yml", KEYCARD)]).merge_group, true);
+  const legacy = GUEST_ROOM.replace("  merge_group:\n", "");
+  assert.equal(findCaller([wf(".github/workflows/standard.yml", legacy)]).merge_group, false);
+});
 
 test("findCaller: keycard — pinned, folded test-command flattened, effective inputs carry the defaults", () => {
   const c = findCaller([wf(".github/workflows/standard.yml", KEYCARD)]);
@@ -300,12 +322,27 @@ test("classifyRepo: an unpinned ref and a path-filtered pull_request are finding
   assert.ok(!row.findings.includes("runtime-mismatch"), "…but never a finding");
 });
 
+test("classifyRepo: a caller with merge_group has no finding for it; a pull_request-only caller is merge-group-absent — the queue would wait on it forever", () => {
+  const withKey = classifyRepo({ repo: "gr", files: [wf(".github/workflows/standard.yml", GUEST_ROOM)], root: ["package.json", "bun.lock"], run: run("success") });
+  assert.equal(withKey.caller.merge_group, true);
+  assert.deepEqual(withKey.findings, []);
+
+  const without = classifyRepo({ repo: "gr", files: [wf(".github/workflows/standard.yml", GUEST_ROOM.replace("  merge_group:\n", ""))], root: ["package.json", "bun.lock"], run: run("success") });
+  assert.equal(without.caller.merge_group, false);
+  assert.deepEqual(without.findings, ["merge-group-absent"]);
+  // The pull_request predicate is untouched by the new key: both halves report independently.
+  assert.deepEqual(without.caller.pull_request, { present: true, unfiltered: true, synchronize: true });
+});
+
 test("classifyRepo: the local selftest caller is exempt from the trigger predicate — this repo's gate is `schema`", () => {
   const row = classifyRepo({ repo: ".github", files: [wf(".github/workflows/repo-standard-selftest.yml", SELFTEST)], root: ["package.json", "bun.lock"], run: run("success") });
   assert.ok(!row.findings.includes("pull-request-filtered"), row.findings.join(","));
   assert.match(row.caller.trigger_predicate, /not applied/);
   assert.equal(row.caller.pin, "local");
   assert.equal(row.caller.pin_is_head, null);
+  // ...but NOT from the merge_group half: the selftest is the reference every
+  // standard.yml copies, so it carries the key it is measured for.
+  assert.equal(row.caller.merge_group, true, "repo-standard-selftest.yml must trigger on merge_group");
   // And this is TRUE of this repo, left in on purpose: its tests run in
   // org-defaults.yml's schema job, not through the standard's test lane. The
   // standard's own repo is the first "extra CI that could fold into the
@@ -450,8 +487,10 @@ test("summarize + renderSummary: the dark-factory totals count what was measured
   assert.equal(t.gated, 2, "the claim-only repo is not gated");
   assert.equal(t.arming_lane, 1);
   assert.equal(t.gate_ready, 1);
+  assert.equal(t.merge_group, 3, "every present caller here carries merge_group; the caller-less repo is not counted");
   const snap = buildSnapshot({ now: "2026-09-08T12:00:00Z", rows, denominator: { public_repos: 4, enumerated: 4, verified: true, archived: 0, rows: 4 }, fleet: { unavailable: "x" }, standard: { head_sha: null, selftest: { state: "none" } }, strict: false });
   assert.match(renderSummary(snap), /\| gated \/ arming lane \/ dark-factory ready \| 2 \/ 1 \/ 1 \|/);
+  assert.match(renderSummary(snap), /\| callers triggering on merge_group \| 3 \|/);
 });
 
 test("assertDenominator: exact equality, and a non-integer is a refusal too", () => {
@@ -597,6 +636,7 @@ test("sweep: the happy path — rows, denominator, standard block, fleet join, a
   assert.deepEqual(by["repo-health"].dark_factory, { required_checks: [], rulesets: [], arming_lane: null, legacy_arming: false, gate_ready: false });
   assert.deepEqual(snap.totals.gated, 1);
   assert.deepEqual(snap.totals.gate_ready, 1);
+  assert.equal(snap.totals.merge_group, 1, "keycard's caller carries the key; the two without a caller do not count");
 });
 
 test("sweep: an unavailable fleet feed is recorded, not fatal, and rows carry no join", async () => {
