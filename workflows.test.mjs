@@ -290,6 +290,48 @@ test("_auto-merge: broker-minted identity, no checkout, never pull_request_targe
   assert.doesNotMatch(armStep, /github\.token/, "the arm step never falls back to GITHUB_TOKEN");
 });
 
+// ── signed-commit opens PRs ready, not draft (#398) ──────────────────────────
+//
+// Under the arming lane a draft is the one state the factory never merges:
+// `_auto-merge.yml` skips it, `pr-sweep.yml` skips it, and nothing else marks
+// it ready. So a bot that publishes a commit and opens a DRAFT has opened a PR
+// nothing will pick up — 128 of them, measured 2026-09-10 (`.github-private`#913).
+// The input stays, so a caller can still ask for a draft explicitly; only the
+// default is ratcheted. Same indentation-bounded read as `_labels` above.
+test("signed-commit: pr-draft defaults to false — PRs open ready", () => {
+  const src = readFileSync(".github/actions/signed-commit/action.yml", "utf8");
+  const lines = src.split("\n");
+  const start = lines.findIndex((l) => /^\s{2}pr-draft:\s*$/.test(l));
+  assert.notEqual(start, -1, "signed-commit declares no 'pr-draft' input — a caller can no longer ask for a draft");
+
+  const indent = lines[start].search(/\S/);
+  let dflt = null;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim() === "") continue;
+    if (lines[i].search(/\S/) <= indent) break;
+    const m = /^\s*default:\s*(\S+)/.exec(lines[i]);
+    if (m) { dflt = m[1]; break; }
+  }
+  assert.equal(
+    dflt,
+    '"false"',
+    `signed-commit input 'pr-draft' defaults to ${dflt}, must be "false". A draft ` +
+      `default re-opens the state the arming lane ignores, and every such PR ` +
+      `sits green and unmerged — which is why this is a test, not a comment.`,
+  );
+
+  // The gate on `--draft` must stay an explicit string compare: under `set -e`
+  // a truthiness test on the value "false" would abort the step.
+  assert.match(src, /if \[ "\$PR_DRAFT" = "true" \]; then pr_args\+=\(--draft\); fi/);
+});
+
+// The convention text that sessions read every start says the same thing.
+test("CLAUDE.md no longer tells a session to open PRs as draft", () => {
+  const src = readFileSync("CLAUDE.md", "utf8");
+  assert.doesNotMatch(src, /Open PRs as draft/i, "CLAUDE.md §3 must say PRs open ready (#398)");
+  assert.match(src, /Open PRs \*\*ready\*\*/, "CLAUDE.md §3 states the ready convention");
+});
+
 // ── The reference caller triggers on merge_group ─────────────────────────────
 //
 // A merge queue re-runs a branch's required contexts on `merge_group` and on
