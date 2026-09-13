@@ -47,6 +47,14 @@ jobs:
       # state #85 shipped in, which nothing caught until it was read out of
       # /tmp/env-manager.log by hand.
       - run: node --test .claude/bootstrap-steps.test.mjs
+      # The OTHER direction on the same declaration (#406). bootstrap-steps
+      # relates boot.sh to the manifest; this relates .claude/settings.json's
+      # SessionStart hooks to whether a session WITHOUT this repo attached gets
+      # them. Two of the three had been undelivered cold for as long as anyone
+      # had looked, and neither existing gate could see it: sessionStartCommands
+      # reads settings.json out of an attached checkout, so cold the whole
+      # declaration is invisible.
+      - run: node --test .claude/cold-hook-coverage.test.mjs
       # What keeps the settings write a MERGE (#343). The bug it pins was silent
       # -- a clobber leaves a file that parses perfectly -- so these are mostly
       # preservation tests: each puts something in the document the org did not
