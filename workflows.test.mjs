@@ -360,6 +360,28 @@ test("CLAUDE.md no longer tells a session to open PRs as draft", () => {
   assert.match(src, /Open PRs \*\*ready\*\*/, "CLAUDE.md §3 states the ready convention");
 });
 
+// CLAUDE.md's pre-push line is followed literally by a session, so a test file it
+// omits is a file that never runs locally. `scripts/` was omitted outright, and it
+// is also the one directory node cannot run: it needs `Bun.YAML`, so widening the
+// existing globs to `node --test scripts/*.test.mjs` fails most of the suite on the
+// runner alone and reads as a broken repo (#418). CI was always correct
+// (org-defaults.yml runs the bun line); only the instructions were wrong, which is
+// why this asserts on the text rather than on a lane.
+test("CLAUDE.md's pre-push commands cover scripts/, and name bun as its runner", () => {
+  const src = readFileSync("CLAUDE.md", "utf8");
+  // Newlines are permitted between the words: the sentence wraps in the source.
+  assert.match(
+    src,
+    /bun test\s+scripts\/\*\.test\.mjs/,
+    "CLAUDE.md must tell a session to run scripts/ — neither node glob reaches it (#418)",
+  );
+  assert.doesNotMatch(
+    src,
+    /node --test\s+scripts\//,
+    "scripts/ under `node --test` fails 22 of 34 on the runner alone; CLAUDE.md must not send a session there",
+  );
+});
+
 // ── The reference caller triggers on merge_group ─────────────────────────────
 //
 // A merge queue re-runs a branch's required contexts on `merge_group` and on
