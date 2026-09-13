@@ -18,9 +18,13 @@
 //
 // ── What it measures, and what it deliberately does not ──────────────────────
 //   - PUBLIC repos only. The enumeration is `type=public`, verified EXACTLY
-//     against /orgs/{org}.public_repos. No private name can enter a public
-//     branch or a public log because none is ever read. Private repos'
-//     conformance is `.github-private`'s own pr.yml.
+//     against /orgs/{org}.public_repos, so no private repository is read. Private
+//     repos' conformance is `.github-private`'s own pr.yml.
+//     One field is not covered by "none is ever read": a RULESET NAME, which the
+//     org writes by hand and which can therefore carry a repo name this lane never
+//     read. Those are redacted to an allowlist of names already public in this
+//     repo — see PUBLISHABLE_RULESET_NAMES for why an allowlist and not a scope
+//     argument. Ruleset IDs are opaque integers and are published unredacted.
 //   - A FINDING is a defect of the repo (no caller, unpinned ref, filtered
 //     pull_request trigger, no merge_group trigger, a toolchain with no test
 //     lane, a red run). A
@@ -251,7 +255,7 @@ export function runtimeExpectation(rootNames, configured) {
  * ({conclusion, url, sha, at} | {unreadable} | null); `fleet` is the per-repo
  * slice of ci.json or null when the feed was unavailable.
  */
-export function classifyRepo({ repo, archived = false, defaultBranch = "main", files, filesError = null, root, rootError = null, run = null, fleet = null, headSha = null, tier = null, rules }) {
+export function classifyRepo({ repo, archived = false, defaultBranch = "main", files, filesError = null, root, rootError = null, run = null, fleet = null, headSha = null, tier = null, rules, rulesetNames }) {
   const findings = [];
   const gaps = [];
   const row = { repo: `${ORG}/${repo}`, archived, default_branch: defaultBranch, tier };
@@ -333,11 +337,24 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
   // in infra github-admin/repositories.tf, and this row does not guess at it.
   // `rules` not passed at all (the unit surface) means not under measurement —
   // `dark_factory: null`, no finding, no gap. The sweep always passes it.
+  //
+  // `ruleset_names` ATTRIBUTES those ids — which rulesets apply to this repo at all,
+  // by name — so `gate-absent` can be told apart from repo-not-enrolled: a ci-green
+  // ruleset listed here while nothing is required is a toothless ruleset, and none
+  // listed at all is a repo the family never took in (`_auto-merge.yml`'s "expected
+  // until the repo is in a ci-green-* ruleset"). It reads a SECOND endpoint and so
+  // carries its own failure, kept separate from `rules`: null with a
+  // `ruleset-names-unreadable` gap is a listing this lane could not read, never a
+  // claim that no ruleset applies. Names are redacted to null unless
+  // PUBLISHABLE_RULESET_NAMES admits them; the id is published either way, so a
+  // withheld name is visible in the row rather than silently missing.
   const basenames = files ? files.map((f) => f.path.split("/").pop()) : null;
   const arming = basenames ? (basenames.includes("auto-merge.yml") ? "auto-merge.yml" : null) : null;
+  // Not passed at all is the unit surface, exactly as for `rules`: no attribution, no gap.
+  const names = rulesetNames === undefined || !rulesetNames.read ? null : rulesetNames.names;
   if (rules === undefined) row.dark_factory = null;
   else if (!rules.read) {
-    row.dark_factory = { required_checks: null, rulesets: null, arming_lane: arming, gate_ready: null };
+    row.dark_factory = { required_checks: null, rulesets: null, ruleset_names: names, arming_lane: arming, gate_ready: null };
     gaps.push(`rules-unreadable:${rules.reason}`);
   } else {
     const req = rules.contexts;
@@ -348,7 +365,7 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     // `gated` 90 of 90 by construction on the first run (#391). The claim is the
     // passkey's rung — the human touch #913 keeps outside the CI gate on purpose.
     const gated = req.some((c) => c !== "pr-claim / pr-claim");
-    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, arming_lane: arming, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
+    row.dark_factory = { required_checks: req, rulesets: rules.rulesets, ruleset_names: names, arming_lane: arming, gate_ready: hasTest && hasClaim && arming === "auto-merge.yml" };
     // Green gates nothing: a caller whose contexts nothing on the default branch
     // requires is the fail-open case #913 names — the check runs and decides nothing.
     if (row.caller.state === "present" && !gated) findings.push("gate-absent");
@@ -358,6 +375,7 @@ export function classifyRepo({ repo, archived = false, defaultBranch = "main", f
     // org-managed and no longer reported.)
     if (gated && basenames && arming === null) findings.push("arming-lane-absent");
   }
+  if (rules !== undefined && rulesetNames !== undefined && !rulesetNames.read) gaps.push(`ruleset-names-unreadable:${rulesetNames.reason}`);
 
   row.fleet = fleet;
   row.findings = findings;
@@ -541,15 +559,89 @@ export function readRules(res) {
   return { read: true, contexts: [...contexts].sort(), rulesets: [...rulesets].sort((a, b) => a - b) };
 }
 
+/**
+ * Ruleset names this lane may PUBLISH. Every other name is withheld — the id is
+ * still published, the name reads `null`.
+ *
+ * A ruleset name is org-authored free text, and the org names the `ci-green-*`
+ * family after WHAT EACH ONE COVERS. So a ruleset covering a private repo carries
+ * that repo's name inside its own name. This snapshot is committed to a public
+ * branch and served anonymously to desk, under the workflow's promise that no
+ * private repository is read or named — in the snapshot, the artifact, the summary
+ * or the log. Publishing the listing verbatim would put that promise at the mercy
+ * of a naming habit.
+ *
+ * Two weaker rules were considered and rejected:
+ *   - "the listing is repo-scoped, so a private-only ruleset cannot be returned for
+ *     a public repo." Probably true — and the wrong guarantee. It constrains SCOPE,
+ *     not NAMES: a ruleset that covers private repos AND one public repo is returned
+ *     for that public repo, name and all, and nothing here would notice. The safety
+ *     of a published field would then rest on the shape of a conditions block in a
+ *     private repo this lane does not read and cannot watch — a mechanism asserted
+ *     from how it ought to be wired rather than from how it is, which is the mistake
+ *     `workflows.test.mjs` exists to catch.
+ *   - "publish anything matching `ci-green-*`." That family is exactly where the
+ *     convention puts the covered repo's name, so the prefix selects FOR the leak.
+ *
+ * What is left needs no guarantee at all: a string ALREADY COMMITTED TO THIS PUBLIC
+ * REPO discloses nothing by being published again. That is the rule below, and it is
+ * machine-checked — the suite asserts each name appears in some other tracked file
+ * here, so the list cannot grow without the name being public first. Adding one is a
+ * deliberate, reviewable disclosure; the failure mode is a withheld name, never a leak.
+ *
+ * What this is NOT. Measured 2026-09-10: the listing answers 200 with NO credential,
+ * so a name it returns for a public repo is already world-readable and a withheld one
+ * is not a secret. The promise this protects is narrower and is about the ARTIFACT —
+ * "no private repository is named — in the snapshot, the artifact, the summary or this
+ * log". Aggregating org ruleset names into a feed desk serves is what would name one,
+ * and it would do it in the one place that makes it findable. So redact by what this
+ * repo has already said, not by what is technically fetchable somewhere.
+ */
+export const PUBLISHABLE_RULESET_NAMES = new Set([
+  "ci-green",             // workflows.test.mjs
+  "ci-green-dot-github",  // .github/CODEOWNERS, codeowners-check.yml, org-defaults.yml
+  "required-baseline",    // .github/workflows/required-baseline.yml, _auto-merge.yml
+]);
+
+/**
+ * The rulesets that apply to a repo, from `/repos/{full}/rulesets?includes_parents=true`
+ * — repo-scoped, and org-level rulesets come back too (`source_type: "Organization"`).
+ * Measured 2026-09-10 against this repo: 200 unauthenticated, five rulesets, four of
+ * them `Organization`. No `administration: read` is needed and none is asked for. Reduced to `{ "<id>": name | null }`, redacted by
+ * PUBLISHABLE_RULESET_NAMES. Integer-like keys serialise in ascending numeric order per
+ * the language spec, so the committed snapshot diffs stably without sorting here.
+ *
+ * Separate from `readRules` on purpose: this is a different endpoint with a different
+ * failure, and folding it in would let a 403 here turn a read gate into an empty one.
+ * Anything but a 200 array is `unreadable` with the status — attribution is missing,
+ * never wrong, and never mistaken for "no ruleset applies".
+ */
+export function readRulesetNames(res) {
+  if (res.status !== 200 || !Array.isArray(res.body)) return { read: false, reason: `${res.status}` };
+  const names = {};
+  for (const rs of res.body) {
+    if (rs?.id == null || typeof rs.name !== "string") continue;
+    names[String(rs.id)] = PUBLISHABLE_RULESET_NAMES.has(rs.name) ? rs.name : null;
+  }
+  return { read: true, names };
+}
+
 async function fetchRepo({ fetchImpl, token, name, defaultBranch, parse, log }) {
   const full = `${ORG}/${name}`;
-  const [wfList, rootList, props, rulesRes] = await Promise.all([
+  const [wfList, rootList, props, rulesRes, rulesetsRes] = await Promise.all([
     api(fetchImpl, token, `/repos/${full}/contents/.github/workflows?ref=${encodeURIComponent(defaultBranch)}`),
     api(fetchImpl, token, `/repos/${full}/contents/?ref=${encodeURIComponent(defaultBranch)}`),
     api(fetchImpl, token, `/repos/${full}/properties/values`),
     api(fetchImpl, token, `/repos/${full}/rules/branches/${encodeURIComponent(defaultBranch)}`),
+    // The name side of the same question, in the same round trip rather than a
+    // second one. Repo-scoped ON PURPOSE: `/orgs/{org}/rulesets` needs org
+    // admin, which this lane's token is not and which it will never be minted;
+    // `includes_parents=true` returns the org rulesets that apply to THIS repo
+    // anyway, which is the only part any row is about.
+    api(fetchImpl, token, `/repos/${full}/rulesets?includes_parents=true`),
   ]);
   const rules = readRules(rulesRes);
+  const rulesetNames = readRulesetNames(rulesetsRes);
 
   let files = null;
   let filesError = null;
@@ -595,7 +687,7 @@ async function fetchRepo({ fetchImpl, token, name, defaultBranch, parse, log }) 
   }
 
   log(`  ${full}: caller ${caller.state}${files ? ` (${files.length} workflows)` : ""}`);
-  return { name, files, filesError, root, rootError, run, tier, rules };
+  return { name, files, filesError, root, rootError, run, tier, rules, rulesetNames };
 }
 
 export async function fetchFleet(fetchImpl) {
