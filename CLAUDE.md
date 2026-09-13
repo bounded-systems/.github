@@ -92,7 +92,8 @@ One change → one PR → merge; no direct pushes to `main`. Open PRs **ready**,
 draft: the check is the gate and the arming lane merges on green, and a draft is
 the one state it never touches (#398) — a branch that is not ready is not a PR yet.
 Pin every Action to a commit SHA; default `permissions: { contents: read }`. Run
-`node --test .claude/*.test.mjs` and `node --test *.test.mjs` before pushing.
+`node --test .claude/*.test.mjs`, `node --test *.test.mjs` and `bun test
+scripts/*.test.mjs` before pushing — `scripts/` needs **bun**, not node (`Bun.YAML`).
 
 ## Then read
 
